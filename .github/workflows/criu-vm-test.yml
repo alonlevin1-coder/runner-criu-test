@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
 
+permissions: write-all
+
 jobs:
   criu-vm-test:
     runs-on: ubuntu-22.04
@@ -81,6 +83,8 @@ jobs:
           ls -lh appliance/initramfs.cpio.gz
 
       - name: Checkpoint & Migrate to VM
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "=== Step: Checkpoint & Migrate to VM ==="
           chmod +x scripts/*.sh

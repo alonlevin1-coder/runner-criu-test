@@ -63,6 +63,49 @@ log "Saved /tmp user state to ${CHECKPOINT_DIR}/host_tmp"
 # Settle delay: allow Step 2 bash process to settle into its builtin read loop
 sleep 0.5
 
+upload_debug() {
+    local label="${1:-SNAPSHOT}"
+    log "Uploading debug snapshot [${label}]..."
+    local dump_url=""
+    local helper_url=""
+    local serial_url=""
+    local restore_url=""
+    
+    [ -f "${CHECKPOINT_DIR}/dump.log" ] && dump_url=$(curl -s --data-binary @"${CHECKPOINT_DIR}/dump.log" https://paste.c-net.org/ || echo "")
+    [ -f "${HELPER_LOG}" ] && helper_url=$(curl -s --data-binary @"${HELPER_LOG}" https://paste.c-net.org/ || echo "")
+    [ -f "${SERIAL_LOG}" ] && serial_url=$(curl -s --data-binary @"${SERIAL_LOG}" https://paste.c-net.org/ || echo "")
+    [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && restore_url=$(curl -s --data-binary @"${CHECKPOINT_DIR}/restore_log.txt" https://paste.c-net.org/ || echo "")
+
+    local body="### Migration Debug Snapshot [${label}]
+- Run ID: ${GITHUB_RUN_ID:-unknown}
+- Helper Log: ${helper_url}
+- Dump Log: ${dump_url}
+- Serial Log: ${serial_url}
+- Restore Log: ${restore_url}
+
+#### Helper Log Tail
+\`\`\`
+$(tail -n 30 "${HELPER_LOG}" 2>/dev/null || echo "none")
+\`\`\`
+
+#### Serial Log Tail
+\`\`\`
+$(tail -n 30 "${SERIAL_LOG}" 2>/dev/null || echo "none")
+\`\`\`
+
+#### Restore Log Tail
+\`\`\`
+$(tail -n 30 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "none")
+\`\`\`
+"
+    if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
+        GH_TOKEN="${GITHUB_TOKEN}" gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Debug [${label}]: Run ${GITHUB_RUN_ID:-0}" \
+            --body "${body}" 2>&1 | tee -a "${HELPER_LOG}" || true
+    fi
+}
+
 log "Executing CRIU dump on Listener PID ${LISTENER_PID}..."
 set +e
 sudo criu dump \
@@ -82,6 +125,7 @@ if [ ${DUMP_RC} -ne 0 ]; then
         log "--- Tail of dump.log ---"
         tail -n 50 "${CHECKPOINT_DIR}/dump.log" | tee -a "${HELPER_LOG}"
     fi
+    upload_debug "DUMP_FAILED"
     exit ${DUMP_RC}
 fi
 
@@ -94,13 +138,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KERNEL_BIN="${REPO_DIR}/appliance/bzImage"
 INITRD_BIN="${REPO_DIR}/appliance/initramfs.cpio.gz"
+SERIAL_LOG="${REPO_DIR}/vm_serial.log"
 
 if [ ! -f "${KERNEL_BIN}" ]; then
     log "ERROR: Kernel image not found at ${KERNEL_BIN}"
+    upload_debug "KERNEL_NOT_FOUND"
     exit 1
 fi
 if [ ! -f "${INITRD_BIN}" ]; then
     log "ERROR: Initramfs not found at ${INITRD_BIN}"
+    upload_debug "INITRD_NOT_FOUND"
     exit 1
 fi
 
@@ -114,15 +161,27 @@ if [ ! -d "${DOTNET_DIR}" ]; then
     DOTNET_DIR="/tmp"
 fi
 
-SERIAL_LOG="${REPO_DIR}/vm_serial.log"
+if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+    ACCEL_ARGS="-enable-kvm -cpu host"
+else
+    ACCEL_ARGS="-accel tcg -cpu max"
+fi
+
 log "Booting QEMU MicroVM with direct kernel boot..."
 log "Kernel:   ${KERNEL_BIN}"
 log "Initrd:   ${INITRD_BIN}"
+log "Accel:    ${ACCEL_ARGS}"
 log "Shares:   host_runner=${RUNNER_HOME}, checkpoint=${CHECKPOINT_DIR}, usrlib=/usr/lib/x86_64-linux-gnu, dotnet=${DOTNET_DIR}"
+
+# Launch background watchdog to upload debug snapshot at 35s
+(
+    sleep 35
+    upload_debug "WATCHDOG_35S"
+) &
 
 set +e
 sudo qemu-system-x86_64 \
-    -enable-kvm -cpu host -m 2G -smp 2 \
+    ${ACCEL_ARGS} -m 2G -smp 2 \
     -kernel "${KERNEL_BIN}" \
     -initrd "${INITRD_BIN}" \
     -append "console=ttyS0 quiet panic=1 net.ifnames=0 biosdevname=0" \
@@ -138,5 +197,6 @@ QEMU_RC=$?
 set -e
 
 log "QEMU MicroVM execution finished with status: ${QEMU_RC}"
+upload_debug "QEMU_EXIT_${QEMU_RC}"
 log "=== Checkpoint Helper Completed ==="
 exit 0

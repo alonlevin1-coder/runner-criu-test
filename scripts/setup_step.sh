@@ -42,7 +42,7 @@ chmod +x "${SCRIPT_DIR}/detect_migration.sh"
 
 # 5. Launch detached checkpoint helper
 echo "[STEP 2] Launching detached checkpoint helper via daemonize..."
-sudo "${SCRIPT_DIR}/daemonize" "${SCRIPT_DIR}/checkpoint_helper.sh" "${LISTENER_PID}" "${WORKER_PID}" "${CHECKPOINT_DIR}"
+sudo -E "${SCRIPT_DIR}/daemonize" "${SCRIPT_DIR}/checkpoint_helper.sh" "${LISTENER_PID}" "${WORKER_PID}" "${CHECKPOINT_DIR}"
 
 # 6. Enter migration wait loop
 echo "[STEP 2] Entering migration detection loop..."
