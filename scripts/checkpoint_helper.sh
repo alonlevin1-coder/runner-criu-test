@@ -206,40 +206,21 @@ log "Kernel:   ${KERNEL_BIN}"
 log "Initrd:   ${INITRD_BIN}"
 log "Accel:    ${ACCEL_ARGS}"
 log "Shares:   host_runner=${RUNNER_HOME}, checkpoint=${CHECKPOINT_DIR}, usrlib=/usr/lib/x86_64-linux-gnu, dotnet=${DOTNET_DIR}"
+log "KVM node: $(ls -l /dev/kvm 2>&1 || true)"
+command -v qemu-system-x86_64 | tee -a "${HELPER_LOG}" || true
 
-send_ntfy "Booting QEMU" "Accel: ${ACCEL_ARGS}, Kernel: ${KERNEL_BIN}"
-
-# Ensure serial log file exists immediately with permissive permissions
-touch "${SERIAL_LOG}"
+# Truncate serial so watchdog size is meaningful
+: > "${SERIAL_LOG}"
 chmod 666 "${SERIAL_LOG}"
-
-# Launch continuous background watchdog to upload debug snapshots to ntfy every 4s
-(
-    set +e
-    for i in 1 2 3 4 5 6 7 8 9 10 12 14 16 18 20 25 30 35 40; do
-        sleep 4
-        chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" /tmp/daemon_helper.log 2>/dev/null || true
-        if [ -f "${SERIAL_LOG}" ] && [ -s "${SERIAL_LOG}" ]; then
-            tail -n 30 "${SERIAL_LOG}" | curl -s --max-time 5 -H "Title: VM Serial (${i})" --data-binary @- "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-        fi
-        if [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && [ -s "${CHECKPOINT_DIR}/restore_log.txt" ]; then
-            tail -n 30 "${CHECKPOINT_DIR}/restore_log.txt" | curl -s --max-time 5 -H "Title: Restore Log (${i})" --data-binary @- "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-        fi
-        if [ -f "${CHECKPOINT_DIR}/step3_verification.txt" ]; then
-            send_ntfy "STEP 3 VERIFIED IN VM!" "$(cat "${CHECKPOINT_DIR}/step3_verification.txt")"
-            break
-        fi
-    done
-) &
-WATCHDOG_PID=$!
+QEMU_DEBUG_LOG="${CHECKPOINT_DIR}/qemu.log"
 
 set +e
-timeout -k 5s 90s qemu-system-x86_64 \
+qemu-system-x86_64 \
     ${ACCEL_ARGS} -m 2G -smp 2 \
     -display none -monitor none \
     -kernel "${KERNEL_BIN}" \
     -initrd "${INITRD_BIN}" \
-    -append "console=ttyS0 panic=1 loglevel=7 net.ifnames=0 biosdevname=0" \
+    -append "earlyprintk=ttyS0 console=ttyS0 panic=1 loglevel=7 net.ifnames=0 biosdevname=0" \
     -no-reboot \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
     -virtfs local,path="${RUNNER_HOME}",mount_tag=host_runner,security_model=none,id=host_runner \
@@ -247,13 +228,73 @@ timeout -k 5s 90s qemu-system-x86_64 \
     -virtfs local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib \
     -virtfs local,path="${DOTNET_DIR}",mount_tag=dotnet,security_model=none,id=dotnet \
     -virtfs local,path="${CHECKPOINT_DIR}",mount_tag=checkpoint,security_model=none,id=checkpoint \
-    -serial "file:${SERIAL_LOG}" < /dev/null >> "${HELPER_LOG}" 2>&1
+    -D "${QEMU_DEBUG_LOG}" \
+    -serial "file:${SERIAL_LOG}" < /dev/null >> "${HELPER_LOG}" 2>&1 &
+QEMU_PID=$!
+set -e
+
+sleep 0.3
+QEMU_ALIVE="no"
+if kill -0 "${QEMU_PID}" 2>/dev/null; then
+    QEMU_ALIVE="yes"
+fi
+SERIAL_BYTES=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
+log "QEMU launched pid=${QEMU_PID} alive=${QEMU_ALIVE} serial_bytes=${SERIAL_BYTES}"
+send_ntfy "QEMU PID ${QEMU_PID}" "alive=${QEMU_ALIVE} serial_bytes=${SERIAL_BYTES} kvm=$(ls -l /dev/kvm 2>&1)
+$(ps -o pid,stat,etime,cmd -p ${QEMU_PID} 2>/dev/null || echo 'ps: qemu pid gone')
+--- helper ---
+$(tail -n 25 "${HELPER_LOG}" 2>/dev/null || true)"
+
+# Watchdog: always ntfy, even when serial is empty
+(
+    set +e
+    for i in 0 1 2 3 4 5 6 7 8 9 10 12 14 16 18 20; do
+        chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" /tmp/daemon_helper.log 2>/dev/null || true
+        serial_sz=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
+        qemu_alive=no
+        kill -0 "${QEMU_PID}" 2>/dev/null && qemu_alive=yes
+        serial_tail=$(tail -n 25 "${SERIAL_LOG}" 2>/dev/null || echo "(empty)")
+        helper_tail=$(tail -n 20 "${HELPER_LOG}" 2>/dev/null || echo "(empty)")
+        restore_tail=$(tail -n 20 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "(no restore log)")
+        qemu_dbg=$(tail -n 15 "${QEMU_DEBUG_LOG}" 2>/dev/null || echo "(no qemu.log)")
+        send_ntfy "Watchdog ${i}" "qemu_pid=${QEMU_PID} alive=${qemu_alive} serial_bytes=${serial_sz}
+--- serial ---
+${serial_tail}
+--- helper ---
+${helper_tail}
+--- restore ---
+${restore_tail}
+--- qemu.log ---
+${qemu_dbg}"
+        if [ -f "${CHECKPOINT_DIR}/step3_verification.txt" ]; then
+            send_ntfy "STEP 3 VERIFIED IN VM!" "$(cat "${CHECKPOINT_DIR}/step3_verification.txt")"
+            break
+        fi
+        sleep 4
+    done
+) &
+WATCHDOG_PID=$!
+
+# Hard deadline: SIGKILL QEMU after 90s (GNU timeout is unreliable after setsid)
+(
+    sleep 90
+    if kill -0 "${QEMU_PID}" 2>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [HELPER] Hard-killing QEMU pid ${QEMU_PID} after 90s" >> "${HELPER_LOG}"
+        kill -9 "${QEMU_PID}" 2>/dev/null || true
+        sleep 1
+        kill -9 "${QEMU_PID}" 2>/dev/null || true
+    fi
+) &
+KILLER_PID=$!
+
+set +e
+wait "${QEMU_PID}"
 QEMU_RC=$?
 set -e
 
-kill -9 "${WATCHDOG_PID}" 2>/dev/null || true
+kill -9 "${WATCHDOG_PID}" "${KILLER_PID}" 2>/dev/null || true
 
-log "QEMU MicroVM execution finished with status: ${QEMU_RC}"
+log "QEMU MicroVM execution finished pid=${QEMU_PID} status=${QEMU_RC} serial_bytes=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)"
 upload_debug "QEMU_EXIT_${QEMU_RC}"
 
 # If Step 3 was not verified and QEMU exited, cancel orphaned workflow run to fail fast
