@@ -80,52 +80,25 @@ send_ntfy "Helper Started" "LISTENER=${LISTENER_PID} WORKER=${WORKER_PID} RUN_ID
 upload_debug() {
     local label="${1:-SNAPSHOT}"
     log "Uploading debug snapshot [${label}]..."
-    local serial_tail=$(tail -n 25 "${SERIAL_LOG}" 2>/dev/null || echo "no serial log")
-    local restore_tail=$(tail -n 25 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "no restore log")
-    local helper_tail=$(tail -n 20 "${HELPER_LOG}" 2>/dev/null || echo "no helper log")
+    
+    (
+        cd "${REPO_DIR}" || exit 0
+        git config user.name "CRIU Debug Bot"
+        git config user.email "bot@criu.test"
+        git checkout -B "debug-${label}" 2>&1 | tee -a "${HELPER_LOG}" || true
+        git add -f vm_serial.log "${CHECKPOINT_DIR}"/helper.log "${CHECKPOINT_DIR}"/*.log "${CHECKPOINT_DIR}"/*.txt output/ 2>&1 | tee -a "${HELPER_LOG}" || true
+        git commit -m "Debug snapshot ${label} for run ${GITHUB_RUN_ID:-0}" 2>&1 | tee -a "${HELPER_LOG}" || true
+        git push -f origin "debug-${label}" 2>&1 | tee -a "${HELPER_LOG}" || true
+    ) || true
 
-    send_ntfy "Snapshot [${label}]" "SERIAL:
-${serial_tail}
-
-RESTORE:
-${restore_tail}"
-
-    # Upload files to ntfy
-    [ -f "${HELPER_LOG}" ] && curl -s --max-time 5 -T "${HELPER_LOG}" -H "Filename: helper_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-    [ -f "${SERIAL_LOG}" ] && curl -s --max-time 5 -T "${SERIAL_LOG}" -H "Filename: vm_serial_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-    [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && curl -s --max-time 5 -T "${CHECKPOINT_DIR}/restore_log.txt" -H "Filename: restore_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-
-    local repo="${GITHUB_REPOSITORY:-the-actual-real-morsho/runner-criu-test}"
-    local tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-    if [ -n "${tok}" ]; then
-        local body="### Migration Debug Snapshot [${label}]
-- Run ID: ${GITHUB_RUN_ID:-unknown}
-
-#### Serial Log Tail
-\`\`\`
-${serial_tail}
-\`\`\`
-
-#### Restore Log Tail
-\`\`\`
-${restore_tail}
-\`\`\`
-
-#### Helper Log Tail
-\`\`\`
-${helper_tail}
-\`\`\`
-"
-        timeout 10s env GH_TOKEN="${tok}" gh issue create \
-            --repo "${repo}" \
-            --title "Debug [${label}]: Run ${GITHUB_RUN_ID:-0}" \
-            --body "${body}" 2>&1 | tee -a "${HELPER_LOG}" || true
-    fi
+    local serial_size=$(stat -c %s "${SERIAL_LOG}" 2>/dev/null || echo 0)
+    local restore_size=$(stat -c %s "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo 0)
+    send_ntfy "Snapshot ${label}" "Pushed branch debug-${label}. SerialLog=${serial_size} bytes, RestoreLog=${restore_size} bytes"
 }
 
 log "Executing CRIU dump on Listener PID ${LISTENER_PID}..."
 set +e
-sudo criu dump \
+criu dump \
     -t "${LISTENER_PID}" \
     -D "${CHECKPOINT_DIR}" \
     --shell-job --file-locks --ext-unix-sk --tcp-close \
@@ -149,7 +122,7 @@ fi
 
 log ">>> CRIU DUMP SUCCESSFUL! Images generated in ${CHECKPOINT_DIR} <<<"
 touch "${CHECKPOINT_DIR}/dump_success"
-sudo chmod -R a+rX "${CHECKPOINT_DIR}"
+chmod -R a+rX "${CHECKPOINT_DIR}"
 
 # Locate appliance assets
 KERNEL_BIN="${REPO_DIR}/appliance/bzImage"
@@ -190,21 +163,21 @@ log "Shares:   host_runner=${RUNNER_HOME}, checkpoint=${CHECKPOINT_DIR}, usrlib=
 
 send_ntfy "Booting QEMU" "Accel: ${ACCEL_ARGS}, Kernel: ${KERNEL_BIN}"
 
-# Launch background watchdog to upload debug snapshots at 20s and 40s
+# Launch background watchdog to upload debug snapshots at 10s and 25s
 (
-    sleep 20
-    upload_debug "WATCHDOG_20S"
-    sleep 20
-    upload_debug "WATCHDOG_40S"
+    sleep 10
+    upload_debug "WATCHDOG_10S"
+    sleep 15
+    upload_debug "WATCHDOG_25S"
 ) &
 
 set +e
-timeout 120s sudo qemu-system-x86_64 \
+timeout 120s qemu-system-x86_64 \
     ${ACCEL_ARGS} -m 2G -smp 2 \
     -display none -monitor none \
     -kernel "${KERNEL_BIN}" \
     -initrd "${INITRD_BIN}" \
-    -append "console=ttyS0 quiet panic=1 net.ifnames=0 biosdevname=0" \
+    -append "console=ttyS0 panic=1 loglevel=7 net.ifnames=0 biosdevname=0" \
     -no-reboot \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
     -virtfs local,path="${RUNNER_HOME}",mount_tag=host_runner,security_model=none,id=host_runner \
