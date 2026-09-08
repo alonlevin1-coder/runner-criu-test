@@ -42,7 +42,7 @@ jobs:
               echo "Detected migration restored marker!"
               break
             fi
-            sleep 0.2
+            read -t 0.2 < /dev/null || true
           done
           
           echo "=== STEP 2: Successfully migrated into VM! Exiting step. ==="
