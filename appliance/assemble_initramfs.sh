@@ -333,7 +333,7 @@ if [ ${RESTORE_RC} -ne 0 ]; then
     /bin/busybox tail -n 60 /mnt/checkpoint/restore_log.txt 2>/dev/null || true
     /bin/busybox sync
     /bin/busybox sleep 2
-    /bin/busybox poweroff -f 2>/dev/null || true
+    /bin/busybox poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger 2>/dev/null || true
     exit ${RESTORE_RC}
 fi
 

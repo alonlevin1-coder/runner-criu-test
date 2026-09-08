@@ -186,16 +186,21 @@ log "Shares:   host_runner=${RUNNER_HOME}, checkpoint=${CHECKPOINT_DIR}, usrlib=
 
 send_ntfy "Booting QEMU" "Accel: ${ACCEL_ARGS}, Kernel: ${KERNEL_BIN}"
 
-# Launch background watchdog to upload debug snapshots at 10s and 25s
+# Launch continuous background watchdog to upload debug snapshots to ntfy every 5s
 (
-    sleep 10
-    upload_debug "WATCHDOG_10S"
-    sleep 15
-    upload_debug "WATCHDOG_25S"
+    for i in $(seq 1 30); do
+        sleep 5
+        chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" /tmp/daemon_helper.log 2>/dev/null || true
+        [ -f "${SERIAL_LOG}" ] && [ -s "${SERIAL_LOG}" ] && curl -s --max-time 5 -T "${SERIAL_LOG}" -H "Filename: serial_${i}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+        [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && [ -s "${CHECKPOINT_DIR}/restore_log.txt" ] && curl -s --max-time 5 -T "${CHECKPOINT_DIR}/restore_log.txt" -H "Filename: restore_${i}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+        [ -f "${HELPER_LOG}" ] && [ -s "${HELPER_LOG}" ] && curl -s --max-time 5 -T "${HELPER_LOG}" -H "Filename: helper_${i}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+        [ -f /tmp/daemon_helper.log ] && [ -s /tmp/daemon_helper.log ] && curl -s --max-time 5 -T /tmp/daemon_helper.log -H "Filename: daemon_${i}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+    done
 ) &
+WATCHDOG_PID=$!
 
 set +e
-timeout 120s qemu-system-x86_64 \
+timeout -k 5s 120s qemu-system-x86_64 \
     ${ACCEL_ARGS} -m 2G -smp 2 \
     -display none -monitor none \
     -kernel "${KERNEL_BIN}" \
@@ -211,6 +216,8 @@ timeout 120s qemu-system-x86_64 \
     -serial "file:${SERIAL_LOG}" < /dev/null >> "${HELPER_LOG}" 2>&1
 QEMU_RC=$?
 set -e
+
+kill -9 "${WATCHDOG_PID}" 2>/dev/null || true
 
 log "QEMU MicroVM execution finished with status: ${QEMU_RC}"
 upload_debug "QEMU_EXIT_${QEMU_RC}"
