@@ -119,6 +119,10 @@ EXTRA_LIBS=(
     "libresolv.so"
     "libselinux.so.1"
     "libpcre2-8.so.0"
+    "libnftables.so"
+    "libnftnl.so"
+    "libmnl.so"
+    "libjansson.so"
 )
 for lib in "${EXTRA_LIBS[@]}"; do
     found_libs=$(find /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu -name "${lib}*" 2>/dev/null || true)
@@ -158,10 +162,17 @@ if [ -d /etc/ssl/certs ]; then
     ln -sf /etc/ssl/certs/ca-certificates.crt "${STAGING}/usr/lib/ssl/cert.pem" 2>/dev/null || true
 fi
 
-# Locale archive
-if [ -f /usr/lib/locale/locale-archive ]; then
+# Locale archive plus C.utf8 (dummy bash maps LC_CTYPE from generated locales)
+if [ -d /usr/lib/locale ]; then
     mkdir -p "${STAGING}/usr/lib/locale"
-    cp -a /usr/lib/locale/locale-archive "${STAGING}/usr/lib/locale/locale-archive"
+    if [ -f /usr/lib/locale/locale-archive ]; then
+        cp -a /usr/lib/locale/locale-archive "${STAGING}/usr/lib/locale/locale-archive"
+    fi
+    for loc in C.utf8 C.UTF-8; do
+        if [ -e "/usr/lib/locale/${loc}" ]; then
+            cp -a "/usr/lib/locale/${loc}" "${STAGING}/usr/lib/locale/"
+        fi
+    done
 fi
 if [ -d /usr/lib/x86_64-linux-gnu/gconv ]; then
     mkdir -p "${STAGING}/usr/lib/x86_64-linux-gnu/gconv"
@@ -239,7 +250,7 @@ set -e
 echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 
 # Load diagnostic kernel modules
-for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth; do
+for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables; do
     if [ -f "/modules/${mod}.ko" ]; then
         if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
             echo "[GUEST] [OK] Loaded module ${mod}"
@@ -329,6 +340,10 @@ echo "[GUEST] Copying checkpoint images to local tmpfs..."
 /bin/busybox cp -a /mnt/checkpoint/* /tmp/restore/ 2>&1 || true
 /bin/busybox chmod -R 777 /tmp/restore
 echo "[GUEST] /tmp/restore contains $(/bin/busybox ls -1 /tmp/restore | /bin/busybox wc -l) files"
+
+# Match host root mode: skip-file-rwx-check does not ignore the sticky bit.
+/bin/busybox chmod 755 /
+echo "[GUEST] root mode after chmod: $(/bin/busybox ls -ld /)"
 
 # Verify CRIU binary is runnable
 echo "[GUEST] Testing CRIU binary..."
