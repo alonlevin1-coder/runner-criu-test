@@ -131,7 +131,7 @@ if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
     cp -a /lib64/ld-linux-x86-64.so.2 "${STAGING}/lib64/ld-linux-x86-64.so.2" 2>/dev/null || true
 fi
 
-# 5. Configure system files (SSL certs, ld cache, users, DNS)
+# 5. Configure system files (SSL certs, ld cache, users, DNS, ICU timezone data)
 echo "[5/7] Configuring system configuration files..."
 if [ -f /etc/ld.so.cache ]; then
     cp -a /etc/ld.so.cache "${STAGING}/etc/ld.so.cache"
@@ -160,6 +160,18 @@ fi
 if [ -d /usr/lib/x86_64-linux-gnu/gconv ]; then
     mkdir -p "${STAGING}/usr/lib/x86_64-linux-gnu/gconv"
     cp -a /usr/lib/x86_64-linux-gnu/gconv/* "${STAGING}/usr/lib/x86_64-linux-gnu/gconv/" 2>/dev/null || true
+fi
+
+# CRITICAL: Copy ICU zoneinfo files mapped by .NET 8 CoreCLR
+if [ -d /usr/share/zoneinfo-icu ]; then
+    echo "  -> Copying /usr/share/zoneinfo-icu files..."
+    mkdir -p "${STAGING}/usr/share/zoneinfo-icu"
+    cp -a /usr/share/zoneinfo-icu/* "${STAGING}/usr/share/zoneinfo-icu/" 2>/dev/null || true
+fi
+if [ -d /usr/share/zoneinfo ]; then
+    echo "  -> Copying /usr/share/zoneinfo files..."
+    mkdir -p "${STAGING}/usr/share/zoneinfo"
+    cp -a /usr/share/zoneinfo/* "${STAGING}/usr/share/zoneinfo/" 2>/dev/null || true
 fi
 
 # Users and groups
@@ -280,11 +292,14 @@ if [ -d /mnt/checkpoint/dev_shm ]; then
     /bin/busybox chmod 1777 /dev/shm
 fi
 
-# Populate host /tmp if needed
+# Populate host /tmp if needed (excluding any stale socket files)
 if [ -d /mnt/checkpoint/host_tmp ]; then
     echo "[GUEST] Restoring /tmp from host..."
     /bin/busybox cp -a /mnt/checkpoint/host_tmp/* /tmp/ 2>/dev/null || true
 fi
+
+# Ensure diagnostic socket path is clean for CRIU bind
+/bin/busybox rm -f /tmp/dotnet-diagnostic-*
 
 # Copy checkpoint images to tmpfs for fast CRIU access
 /bin/busybox mkdir -p /tmp/restore
