@@ -81,7 +81,24 @@ upload_debug() {
     local label="${1:-SNAPSHOT}"
     log "Uploading debug snapshot [${label}]..."
     chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" /tmp/daemon_helper.log 2>/dev/null || true
-    
+
+    local serial_tail=$(tail -n 25 "${SERIAL_LOG}" 2>/dev/null || echo "no serial log")
+    local restore_tail=$(tail -n 25 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "no restore log")
+    local helper_tail=$(tail -n 15 "${HELPER_LOG}" 2>/dev/null || echo "no helper log")
+
+    # 1. Immediate ntfy notification with text body
+    send_ntfy "VM [${label}]" "SERIAL:
+${serial_tail}
+
+RESTORE:
+${restore_tail}"
+
+    # 2. Upload log files to ntfy
+    [ -f "${SERIAL_LOG}" ] && curl -s --max-time 5 -T "${SERIAL_LOG}" -H "Filename: serial_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+    [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && curl -s --max-time 5 -T "${CHECKPOINT_DIR}/restore_log.txt" -H "Filename: restore_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+    [ -f "${HELPER_LOG}" ] && curl -s --max-time 5 -T "${HELPER_LOG}" -H "Filename: helper_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+
+    # 3. Git branch upload (TEXT/LOG FILES ONLY, NEVER binary .img files)
     (
         cd "${REPO_DIR}" || exit 0
         git config --global --add safe.directory "*"
@@ -89,17 +106,13 @@ upload_debug() {
         git config user.email "bot@criu.test"
         git checkout -B "debug-${label}" 2>&1 | tee -a "${HELPER_LOG}" || true
         mkdir -p debug_logs
-        cp -a "${CHECKPOINT_DIR}"/* debug_logs/ 2>/dev/null || true
+        cp -a "${CHECKPOINT_DIR}"/*.log "${CHECKPOINT_DIR}"/*.txt debug_logs/ 2>/dev/null || true
         [ -f "${SERIAL_LOG}" ] && cp -a "${SERIAL_LOG}" debug_logs/ 2>/dev/null || true
         [ -f /tmp/daemon_helper.log ] && cp -a /tmp/daemon_helper.log debug_logs/ 2>/dev/null || true
         git add debug_logs/ 2>&1 | tee -a "${HELPER_LOG}" || true
         git commit -m "Debug snapshot ${label} for run ${GITHUB_RUN_ID:-0}" 2>&1 | tee -a "${HELPER_LOG}" || true
-        git push -f origin "debug-${label}" 2>&1 | tee -a "${HELPER_LOG}" || true
+        timeout 15s git push -f origin "debug-${label}" 2>&1 | tee -a "${HELPER_LOG}" || true
     ) || true
-
-    local serial_size=$(stat -c %s "${SERIAL_LOG}" 2>/dev/null || echo 0)
-    local restore_size=$(stat -c %s "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo 0)
-    send_ntfy "Snapshot ${label}" "Pushed branch debug-${label}. SerialLog=${serial_size} bytes, RestoreLog=${restore_size} bytes"
 }
 
 log "Executing CRIU dump on Listener PID ${LISTENER_PID}..."
