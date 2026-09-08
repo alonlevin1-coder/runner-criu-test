@@ -72,7 +72,7 @@ NTFY_TOPIC="runner-criu-debug-morsho-test"
 send_ntfy() {
     local title="${1:-Debug}"
     local msg="${2:-}"
-    curl -s --max-time 5 -H "Title: ${title}" -d "${msg}" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+    printf '%s' "${msg}" | curl -s --max-time 10 -H "Title: ${title}" --data-binary @- "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
 }
 
 send_ntfy "Helper Started" "LISTENER=${LISTENER_PID} WORKER=${WORKER_PID} RUN_ID=${GITHUB_RUN_ID:-0}"
@@ -80,25 +80,19 @@ send_ntfy "Helper Started" "LISTENER=${LISTENER_PID} WORKER=${WORKER_PID} RUN_ID
 upload_debug() {
     local label="${1:-SNAPSHOT}"
     log "Uploading debug snapshot [${label}]..."
+    set +e
     chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" /tmp/daemon_helper.log 2>/dev/null || true
 
-    local serial_tail=$(tail -n 25 "${SERIAL_LOG}" 2>/dev/null || echo "no serial log")
-    local restore_tail=$(tail -n 25 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "no restore log")
-    local helper_tail=$(tail -n 15 "${HELPER_LOG}" 2>/dev/null || echo "no helper log")
+    local serial_tail=$(tail -n 35 "${SERIAL_LOG}" 2>/dev/null || echo "no serial log")
+    local restore_tail=$(tail -n 35 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "no restore log")
+    local helper_tail=$(tail -n 20 "${HELPER_LOG}" 2>/dev/null || echo "no helper log")
 
-    # 1. Immediate ntfy notification with text body
-    send_ntfy "VM [${label}]" "SERIAL:
-${serial_tail}
+    # Immediate ntfy notifications with text body using --data-binary @-
+    send_ntfy "VM [${label}] Serial" "${serial_tail}"
+    send_ntfy "VM [${label}] Restore" "${restore_tail}"
+    send_ntfy "VM [${label}] Helper" "${helper_tail}"
 
-RESTORE:
-${restore_tail}"
-
-    # 2. Upload log files to ntfy
-    [ -f "${SERIAL_LOG}" ] && curl -s --max-time 5 -T "${SERIAL_LOG}" -H "Filename: serial_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-    [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && curl -s --max-time 5 -T "${CHECKPOINT_DIR}/restore_log.txt" -H "Filename: restore_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-    [ -f "${HELPER_LOG}" ] && curl -s --max-time 5 -T "${HELPER_LOG}" -H "Filename: helper_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-
-    # 3. Git branch upload (TEXT/LOG FILES ONLY, NEVER binary .img files)
+    # Git branch upload (TEXT/LOG FILES ONLY, NEVER binary .img files)
     (
         cd "${REPO_DIR}" || exit 0
         git config --global --add safe.directory "*"
@@ -186,21 +180,32 @@ log "Shares:   host_runner=${RUNNER_HOME}, checkpoint=${CHECKPOINT_DIR}, usrlib=
 
 send_ntfy "Booting QEMU" "Accel: ${ACCEL_ARGS}, Kernel: ${KERNEL_BIN}"
 
-# Launch continuous background watchdog to upload debug snapshots to ntfy every 5s
+# Ensure serial log file exists immediately with permissive permissions
+touch "${SERIAL_LOG}"
+chmod 666 "${SERIAL_LOG}"
+
+# Launch continuous background watchdog to upload debug snapshots to ntfy every 4s
 (
-    for i in $(seq 1 30); do
-        sleep 5
+    set +e
+    for i in 1 2 3 4 5 6 7 8 9 10 12 14 16 18 20 25 30 35 40; do
+        sleep 4
         chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" /tmp/daemon_helper.log 2>/dev/null || true
-        [ -f "${SERIAL_LOG}" ] && [ -s "${SERIAL_LOG}" ] && curl -s --max-time 5 -T "${SERIAL_LOG}" -H "Filename: serial_${i}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-        [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && [ -s "${CHECKPOINT_DIR}/restore_log.txt" ] && curl -s --max-time 5 -T "${CHECKPOINT_DIR}/restore_log.txt" -H "Filename: restore_${i}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-        [ -f "${HELPER_LOG}" ] && [ -s "${HELPER_LOG}" ] && curl -s --max-time 5 -T "${HELPER_LOG}" -H "Filename: helper_${i}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-        [ -f /tmp/daemon_helper.log ] && [ -s /tmp/daemon_helper.log ] && curl -s --max-time 5 -T /tmp/daemon_helper.log -H "Filename: daemon_${i}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+        if [ -f "${SERIAL_LOG}" ] && [ -s "${SERIAL_LOG}" ]; then
+            tail -n 30 "${SERIAL_LOG}" | curl -s --max-time 5 -H "Title: VM Serial (${i})" --data-binary @- "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+        fi
+        if [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && [ -s "${CHECKPOINT_DIR}/restore_log.txt" ]; then
+            tail -n 30 "${CHECKPOINT_DIR}/restore_log.txt" | curl -s --max-time 5 -H "Title: Restore Log (${i})" --data-binary @- "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+        fi
+        if [ -f "${CHECKPOINT_DIR}/step3_verification.txt" ]; then
+            send_ntfy "STEP 3 VERIFIED IN VM!" "$(cat "${CHECKPOINT_DIR}/step3_verification.txt")"
+            break
+        fi
     done
 ) &
 WATCHDOG_PID=$!
 
 set +e
-timeout -k 5s 120s qemu-system-x86_64 \
+timeout -k 5s 90s qemu-system-x86_64 \
     ${ACCEL_ARGS} -m 2G -smp 2 \
     -display none -monitor none \
     -kernel "${KERNEL_BIN}" \
@@ -221,5 +226,13 @@ kill -9 "${WATCHDOG_PID}" 2>/dev/null || true
 
 log "QEMU MicroVM execution finished with status: ${QEMU_RC}"
 upload_debug "QEMU_EXIT_${QEMU_RC}"
+
+# If Step 3 was not verified and QEMU exited, cancel orphaned workflow run to fail fast
+if [ ! -f "${CHECKPOINT_DIR}/step3_verification.txt" ] && [ -n "${GITHUB_RUN_ID:-}" ] && [ "${GITHUB_RUN_ID}" != "0" ]; then
+    log "Migration did not complete before QEMU exit. Cancelling orphaned workflow run ${GITHUB_RUN_ID}..."
+    send_ntfy "Workflow Auto-Cancel" "Cancelling run ${GITHUB_RUN_ID} because QEMU exited (RC=${QEMU_RC}) without completing Step 3"
+    gh run cancel "${GITHUB_RUN_ID}" 2>/dev/null || true
+fi
+
 log "=== Checkpoint Helper Completed ==="
 exit 0

@@ -239,16 +239,28 @@ set -e
 echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 
 # Load diagnostic kernel modules
-for mod in unix_diag af_packet_diag netlink_diag inet_diag tcp_diag veth; do
+for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth; do
     if [ -f "/modules/${mod}.ko" ]; then
-        /bin/busybox insmod "/modules/${mod}.ko" 2>/dev/null || true
+        if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
+            echo "[GUEST] [OK] Loaded module ${mod}"
+        else
+            echo "[GUEST] [WARN] Failed to load module ${mod}"
+        fi
+    else
+        echo "[GUEST] [WARN] Module file /modules/${mod}.ko not found"
     fi
 done
 
 # Load 9p virtio filesystem modules in dependency order
 for mod in netfs 9pnet 9pnet_virtio 9p; do
     if [ -f "/modules/${mod}.ko" ]; then
-        /bin/busybox insmod "/modules/${mod}.ko" 2>/dev/null || true
+        if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
+            echo "[GUEST] [OK] Loaded module ${mod}"
+        else
+            echo "[GUEST] [FAIL] Failed to load 9p module ${mod}"
+        fi
+    else
+        echo "[GUEST] [FAIL] 9p module /modules/${mod}.ko not found!"
     fi
 done
 
@@ -256,7 +268,7 @@ done
 /bin/busybox ifconfig lo up 2>/dev/null || true
 if /bin/busybox ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null; then
     /bin/busybox route add default gw 10.0.2.2 dev eth0 2>/dev/null || true
-    echo "[GUEST] eth0 configured: IP 10.0.2.15, Gateway 10.0.2.2"
+    echo "[GUEST] [OK] eth0 configured: IP 10.0.2.15, Gateway 10.0.2.2"
 else
     echo "[GUEST] WARNING: eth0 interface not found!"
 fi
@@ -272,11 +284,11 @@ echo "=========================================================="
 /bin/busybox mkdir -p /mnt/checkpoint /home/runner /host_tmp /mnt/usrlib /usr/share/dotnet
 
 echo "[GUEST] Mounting 9p shares..."
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose checkpoint /mnt/checkpoint 2>/dev/null && echo "[GUEST] Mounted checkpoint share" || echo "[GUEST] Warning: checkpoint mount"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>/dev/null && echo "[GUEST] Mounted host_runner share" || echo "[GUEST] Warning: host_runner mount"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_tmp /host_tmp 2>/dev/null && echo "[GUEST] Mounted host_tmp share" || echo "[GUEST] Warning: host_tmp mount"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose usrlib /mnt/usrlib 2>/dev/null && echo "[GUEST] Mounted usrlib share" || echo "[GUEST] Warning: usrlib mount"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose dotnet /usr/share/dotnet 2>/dev/null && echo "[GUEST] Mounted dotnet share" || echo "[GUEST] Warning: dotnet mount"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose checkpoint /mnt/checkpoint 2>&1 && echo "[GUEST] [OK] Mounted checkpoint share" || echo "[GUEST] [FAIL] Checkpoint share mount failed!"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>&1 && echo "[GUEST] [OK] Mounted host_runner share" || echo "[GUEST] [FAIL] host_runner mount failed!"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_tmp /host_tmp 2>&1 && echo "[GUEST] [OK] Mounted host_tmp share" || echo "[GUEST] [FAIL] host_tmp mount failed!"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose usrlib /mnt/usrlib 2>&1 && echo "[GUEST] [OK] Mounted usrlib share" || echo "[GUEST] [WARN] usrlib mount failed (using initramfs libs)"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose dotnet /usr/share/dotnet 2>&1 && echo "[GUEST] [OK] Mounted dotnet share" || echo "[GUEST] [WARN] dotnet mount failed"
 
 # Populate missing libraries from usrlib share
 if [ -d /mnt/usrlib ]; then
@@ -307,22 +319,27 @@ fi
 # Ensure diagnostic socket path is clean for CRIU bind
 /bin/busybox rm -f /tmp/dotnet-diagnostic-*
 
+# Inspect checkpoint share before restore
+echo "[GUEST] Inspecting /mnt/checkpoint contents:"
+/bin/busybox ls -lh /mnt/checkpoint 2>&1 || true
+
 # Copy checkpoint images to tmpfs for fast CRIU access
 /bin/busybox mkdir -p /tmp/restore
 echo "[GUEST] Copying checkpoint images to local tmpfs..."
-/bin/busybox cp -a /mnt/checkpoint/* /tmp/restore/ 2>/dev/null || true
+/bin/busybox cp -a /mnt/checkpoint/* /tmp/restore/ 2>&1 || true
 /bin/busybox chmod -R 777 /tmp/restore
+echo "[GUEST] /tmp/restore contains $(/bin/busybox ls -1 /tmp/restore | /bin/busybox wc -l) files"
 
 # Verify CRIU binary is runnable
 echo "[GUEST] Testing CRIU binary..."
-/usr/sbin/criu --version || echo "[GUEST] Warning: /usr/sbin/criu failed"
+/usr/sbin/criu --version 2>&1 || echo "[GUEST] Warning: /usr/sbin/criu failed"
 
 # Execute CRIU restore
 echo "[GUEST] Executing CRIU restore command..."
 set +e
 /usr/sbin/criu restore -d -D /tmp/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check --tcp-close \
-    -v4 -o /mnt/checkpoint/restore_log.txt
+    -v4 -o /mnt/checkpoint/restore_log.txt 2>&1
 RESTORE_RC=$?
 set -e
 
