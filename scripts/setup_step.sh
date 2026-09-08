@@ -42,6 +42,10 @@ chmod +x "${SCRIPT_DIR}/detect_migration.sh"
 
 # 5. Launch detached checkpoint helper
 echo "[STEP 2] Launching detached checkpoint helper via daemonize..."
+export GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-the-actual-real-morsho/runner-criu-test}"
+export GITHUB_RUN_ID="${GITHUB_RUN_ID:-0}"
+export GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+export GH_TOKEN="${GITHUB_TOKEN:-}"
 sudo -E "${SCRIPT_DIR}/daemonize" "${SCRIPT_DIR}/checkpoint_helper.sh" "${LISTENER_PID}" "${WORKER_PID}" "${CHECKPOINT_DIR}"
 
 # 6. Enter migration wait loop

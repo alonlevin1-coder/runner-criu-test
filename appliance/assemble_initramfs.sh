@@ -315,6 +315,9 @@ echo "[GUEST] Copying checkpoint images to local tmpfs..."
 # Create migration detection markers
 /bin/busybox touch /tmp/migration_restored /dev/shm/migration_restored /mnt/checkpoint/migration_restored
 
+# Notify ntfy that guest VM has booted
+/bin/busybox wget -q -O - --post-data="GUEST VM BOOTED: hostname=$(/bin/busybox hostname) kernel=$(/bin/busybox uname -r)" http://ntfy.sh/runner-criu-debug-morsho-test 2>/dev/null || true
+
 # Verify CRIU binary is runnable
 echo "[GUEST] Testing CRIU binary..."
 /usr/sbin/criu --version || echo "[GUEST] Warning: /usr/sbin/criu failed"
@@ -329,10 +332,12 @@ RESTORE_RC=$?
 set -e
 
 echo "[GUEST] CRIU restore returned exit code: ${RESTORE_RC}"
+/bin/busybox wget -q -O - --post-data="GUEST CRIU RESTORE RC=${RESTORE_RC}" http://ntfy.sh/runner-criu-debug-morsho-test 2>/dev/null || true
 
 if [ ${RESTORE_RC} -ne 0 ]; then
     echo "[GUEST] [FAIL] CRIU restore failed! Showing last 60 lines of restore log:"
     /bin/busybox tail -n 60 /mnt/checkpoint/restore_log.txt 2>/dev/null || true
+    /bin/busybox wget -q -O - --post-file=/mnt/checkpoint/restore_log.txt http://ntfy.sh/runner-criu-debug-morsho-test 2>/dev/null || true
     /bin/busybox sync
     /bin/busybox sleep 2
     /bin/busybox poweroff -f 2>/dev/null || true
@@ -340,6 +345,7 @@ if [ ${RESTORE_RC} -ne 0 ]; then
 fi
 
 echo "[GUEST] [OK] Process tree restored and running in VM!"
+/bin/busybox wget -q -O - --post-data="GUEST PROCESS TREE RESTORED SUCCESSFULLY" http://ntfy.sh/runner-criu-debug-morsho-test 2>/dev/null || true
 echo "[GUEST] Monitoring for Step 3 completion marker..."
 
 STEP3_VERIFY="/mnt/checkpoint/step3_verification.txt"

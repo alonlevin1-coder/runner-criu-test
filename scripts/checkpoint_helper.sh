@@ -67,6 +67,9 @@ log "Saved /tmp user state to ${CHECKPOINT_DIR}/host_tmp"
 # Settle delay: allow Step 2 bash process to settle into its builtin read loop
 sleep 0.5
 
+NTFY_TOPIC="runner-criu-debug-morsho-test"
+curl -s -d "Helper started: LISTENER=${LISTENER_PID} WORKER=${WORKER_PID} RUN_ID=${GITHUB_RUN_ID:-0}" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+
 upload_debug() {
     local label="${1:-SNAPSHOT}"
     log "Uploading debug snapshot [${label}]..."
@@ -102,9 +105,19 @@ $(tail -n 30 "${SERIAL_LOG}" 2>/dev/null || echo "none")
 $(tail -n 30 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "none")
 \`\`\`
 "
-    if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
-        GH_TOKEN="${GITHUB_TOKEN}" gh issue create \
-            --repo "${GITHUB_REPOSITORY}" \
+    # Send snapshot summary to ntfy
+    curl -s -d "Snapshot [${label}]: dump=${dump_url} serial=${serial_url} helper=${helper_url} restore=${restore_url}" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+
+    # Upload files to ntfy
+    [ -f "${HELPER_LOG}" ] && curl -s -T "${HELPER_LOG}" -H "Filename: helper_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+    [ -f "${SERIAL_LOG}" ] && curl -s -T "${SERIAL_LOG}" -H "Filename: vm_serial_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+    [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && curl -s -T "${CHECKPOINT_DIR}/restore_log.txt" -H "Filename: restore_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+
+    local repo="${GITHUB_REPOSITORY:-the-actual-real-morsho/runner-criu-test}"
+    local tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+    if [ -n "${tok}" ]; then
+        GH_TOKEN="${tok}" gh issue create \
+            --repo "${repo}" \
             --title "Debug [${label}]: Run ${GITHUB_RUN_ID:-0}" \
             --body "${body}" 2>&1 | tee -a "${HELPER_LOG}" || true
     fi
@@ -121,6 +134,7 @@ DUMP_RC=$?
 set -e
 
 log "CRIU dump exited with status: ${DUMP_RC}"
+curl -s -d "CRIU dump exited with RC=${DUMP_RC}" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
 
 if [ ${DUMP_RC} -ne 0 ]; then
     log ">>> CRIU DUMP FAILED! Exit code: ${DUMP_RC} <<<"
