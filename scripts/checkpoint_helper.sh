@@ -9,9 +9,12 @@ LISTENER_PID="${1:-}"
 WORKER_PID="${2:-}"
 CHECKPOINT_DIR="${3:-./checkpoint}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 mkdir -p "${CHECKPOINT_DIR}"
 CHECKPOINT_DIR="$(cd "${CHECKPOINT_DIR}" && pwd)"
 HELPER_LOG="${CHECKPOINT_DIR}/helper.log"
+SERIAL_LOG="${REPO_DIR}/vm_serial.log"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [HELPER] $*" | tee -a "${HELPER_LOG}"
@@ -21,6 +24,7 @@ log "=== Detached Checkpoint Helper Initiated ==="
 log "Helper PID: $$, PGID: $(ps -o pgid= -p $$ | tr -d ' '), SID: $(ps -o sid= -p $$ | tr -d ' ')"
 log "Targeting Listener PID: ${LISTENER_PID}, Worker PID: ${WORKER_PID}"
 log "Checkpoint Directory: ${CHECKPOINT_DIR}"
+log "Serial Log: ${SERIAL_LOG}"
 
 if [ -z "${LISTENER_PID}" ]; then
     log "ERROR: LISTENER_PID not provided!"
@@ -134,11 +138,8 @@ touch "${CHECKPOINT_DIR}/dump_success"
 sudo chmod -R a+rX "${CHECKPOINT_DIR}"
 
 # Locate appliance assets
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KERNEL_BIN="${REPO_DIR}/appliance/bzImage"
 INITRD_BIN="${REPO_DIR}/appliance/initramfs.cpio.gz"
-SERIAL_LOG="${REPO_DIR}/vm_serial.log"
 
 if [ ! -f "${KERNEL_BIN}" ]; then
     log "ERROR: Kernel image not found at ${KERNEL_BIN}"
@@ -192,7 +193,7 @@ sudo qemu-system-x86_64 \
     -virtfs local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none \
     -virtfs local,path="${DOTNET_DIR}",mount_tag=dotnet,security_model=none \
     -virtfs local,path="${CHECKPOINT_DIR}",mount_tag=checkpoint,security_model=none \
-    -serial mon:stdio 2>&1 | tee "${SERIAL_LOG}"
+    -serial "file:${SERIAL_LOG}" >> "${HELPER_LOG}" 2>&1
 QEMU_RC=$?
 set -e
 

@@ -42,21 +42,18 @@ int main(int argc, char *argv[]) {
     }
 
     // Grandchild (the detached daemon):
-    // Redirect stdio to /tmp/daemon_helper.log
+    // Redirect stdin to /dev/null (O_RDONLY) and stdout/stderr to /tmp/daemon_helper.log
+    int in_fd = open("/dev/null", O_RDONLY);
+    if (in_fd >= 0) {
+        dup2(in_fd, STDIN_FILENO);
+        if (in_fd > STDERR_FILENO) close(in_fd);
+    }
+
     int log_fd = open("/tmp/daemon_helper.log", O_WRONLY | O_CREAT | O_APPEND, 0666);
     if (log_fd >= 0) {
-        dup2(log_fd, STDIN_FILENO);
         dup2(log_fd, STDOUT_FILENO);
         dup2(log_fd, STDERR_FILENO);
         if (log_fd > STDERR_FILENO) close(log_fd);
-    } else {
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-            dup2(devnull, STDIN_FILENO);
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            if (devnull > STDERR_FILENO) close(devnull);
-        }
     }
 
     // Close any other inherited open file descriptors >= 3
