@@ -20,17 +20,22 @@ jobs:
         run: |
           echo "=== Installing Dependencies ==="
           sudo apt-get update -qq
-          sudo apt-get install -y criu qemu-system-x86 gdb
+          sudo apt-get install -y qemu-system-x86 gdb
           sudo chmod 666 /dev/kvm
-          
-          echo "--- CRIU Version ---"
-          criu --version
-          
-          echo "--- CRIU Kernel Compatibility Check ---"
-          sudo criu check || true
-          
           echo "--- QEMU Version ---"
           qemu-system-x86_64 --version
+
+      - name: Build CRIU from Source
+        run: |
+          echo "=== Building CRIU from source (AMX/XSAVE sized buffer) ==="
+          chmod +x scripts/build_criu.sh
+          ./scripts/build_criu.sh
+          echo "--- CRIU Kernel Compatibility Check ---"
+          sudo criu check || true
+          echo "--- Host XSAVE / CPU features ---"
+          grep -m1 '^model name' /proc/cpuinfo || true
+          grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(xsave|osxsave|avx|avx2|avx512|amx|xsavec|xsaveopt|xsaves)' || true
+          /tmp/xsave_size || true
 
       - name: Diagnose Runner.Listener
         run: |

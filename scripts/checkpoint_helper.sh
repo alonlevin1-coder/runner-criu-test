@@ -109,14 +109,34 @@ upload_debug() {
     ) || true
 }
 
+CRIU_BIN="$(command -v criu || true)"
+if [ -x /usr/sbin/criu ]; then
+    CRIU_BIN="/usr/sbin/criu"
+fi
+if [ -z "${CRIU_BIN}" ] || [ ! -x "${CRIU_BIN}" ]; then
+    log "ERROR: criu binary not found"
+    touch "${CHECKPOINT_DIR}/dump_failed"
+    exit 1
+fi
+log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null | head -n 1 || true))"
+log "CPU model: $(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | xargs || true)"
+log "CPU xsave flags: $(grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(xsave|osxsave|avx512|amx)' | tr '\n' ' ' || true)"
+if [ -x /tmp/xsave_size ]; then
+    log "$(/tmp/xsave_size)"
+fi
+send_ntfy "CRIU Host Caps" "bin=${CRIU_BIN}
+$(${CRIU_BIN} --version 2>/dev/null | head -n 2)
+$(grep -m1 '^model name' /proc/cpuinfo)
+$(/tmp/xsave_size 2>/dev/null || true)"
+
 DUMP_ATTEMPTS=0
 DUMP_RC=1
 while [ ${DUMP_ATTEMPTS} -lt 3 ] && [ ${DUMP_RC} -ne 0 ]; do
     DUMP_ATTEMPTS=$((DUMP_ATTEMPTS + 1))
     log "Executing CRIU dump on Listener PID ${LISTENER_PID} (attempt ${DUMP_ATTEMPTS}/3)..."
-    rm -rf "${CHECKPOINT_DIR}"/*.img "${CHECKPOINT_DIR}"/*.log 2>/dev/null || true
+    find "${CHECKPOINT_DIR}" -maxdepth 1 \( -name '*.img' -o -name 'dump.log' \) -delete 2>/dev/null || true
     set +e
-    sudo criu dump \
+    sudo "${CRIU_BIN}" dump \
         -t "${LISTENER_PID}" \
         -D "${CHECKPOINT_DIR}" \
         --shell-job --file-locks --ext-unix-sk --tcp-close \
