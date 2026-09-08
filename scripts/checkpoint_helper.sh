@@ -103,25 +103,29 @@ if [ ! -d "${RUNNER_HOME}" ]; then
     RUNNER_HOME="${HOME}"
 fi
 
+DOTNET_DIR="/usr/share/dotnet"
+if [ ! -d "${DOTNET_DIR}" ]; then
+    DOTNET_DIR="/tmp"
+fi
+
 SERIAL_LOG="${REPO_DIR}/vm_serial.log"
 log "Booting QEMU MicroVM with direct kernel boot..."
 log "Kernel:   ${KERNEL_BIN}"
 log "Initrd:   ${INITRD_BIN}"
-log "Shares:   host_usr=/usr, host_lib=/lib, host_runner=${RUNNER_HOME}, checkpoint=${CHECKPOINT_DIR}"
+log "Shares:   host_runner=${RUNNER_HOME}, checkpoint=${CHECKPOINT_DIR}, usrlib=/usr/lib/x86_64-linux-gnu, dotnet=${DOTNET_DIR}"
 
 set +e
 sudo qemu-system-x86_64 \
     -enable-kvm -cpu host -m 2G -smp 2 \
     -kernel "${KERNEL_BIN}" \
     -initrd "${INITRD_BIN}" \
-    -append "console=ttyS0 quiet panic=1" \
+    -append "console=ttyS0 quiet panic=1 net.ifnames=0 biosdevname=0" \
     -nographic -no-reboot \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
-    -virtfs local,path=/usr,mount_tag=host_usr,security_model=none \
-    -virtfs local,path=/lib,mount_tag=host_lib,security_model=none \
-    -virtfs local,path=/etc/ssl,mount_tag=host_ssl,security_model=none \
     -virtfs local,path="${RUNNER_HOME}",mount_tag=host_runner,security_model=none \
     -virtfs local,path=/tmp,mount_tag=host_tmp,security_model=none \
+    -virtfs local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none \
+    -virtfs local,path="${DOTNET_DIR}",mount_tag=dotnet,security_model=none \
     -virtfs local,path="${CHECKPOINT_DIR}",mount_tag=checkpoint,security_model=none \
     -serial mon:stdio 2>&1 | tee "${SERIAL_LOG}"
 QEMU_RC=$?

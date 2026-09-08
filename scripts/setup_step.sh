@@ -29,14 +29,10 @@ WORKER_PID=$(pgrep -f "Runner.Worker" | head -n 1 || echo "")
 echo "[STEP 2] Identified Runner.Listener PID: ${LISTENER_PID}"
 echo "[STEP 2] Identified Runner.Worker   PID: ${WORKER_PID}"
 
-# 3. Pre-process and sanitize listener/worker file descriptors
-echo "[STEP 2] Sanitizing file descriptors (closing /dev/pts leakage)..."
+# 3. Pre-process and sanitize listener file descriptors (closing /dev/pts leakage)
+echo "[STEP 2] Sanitizing Runner.Listener file descriptors..."
 chmod +x "${SCRIPT_DIR}/fix_listener_fds.sh"
-if [ -n "${WORKER_PID}" ]; then
-    sudo "${SCRIPT_DIR}/fix_listener_fds.sh" "${LISTENER_PID}" "${WORKER_PID}"
-else
-    sudo "${SCRIPT_DIR}/fix_listener_fds.sh" "${LISTENER_PID}"
-fi
+sudo "${SCRIPT_DIR}/fix_listener_fds.sh" "${LISTENER_PID}"
 
 # 4. Prepare checkpoint directory
 rm -rf "${CHECKPOINT_DIR}"

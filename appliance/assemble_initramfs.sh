@@ -16,10 +16,10 @@ rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
 # 1. Base directory layout
-mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,modules}
+mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,usr/share/dotnet,modules}
 
-# 2. Install busybox and standard symlinks
-echo "[1/6] Installing busybox utilities..."
+# 2. Install busybox utilities
+echo "[1/7] Installing busybox utilities..."
 if [ -f "${SCRIPT_DIR}/busybox" ]; then
     cp -a "${SCRIPT_DIR}/busybox" "${STAGING}/bin/busybox"
     chmod 755 "${STAGING}/bin/busybox"
@@ -29,9 +29,9 @@ else
     chmod 755 "${STAGING}/bin/busybox"
 fi
 
-# Create symlinks for common busybox applets
+# Create symlinks for busybox applets (EXCLUDING bash to prevent mmap size mismatch!)
 BB_APPLETS=(
-    sh bash mount umount mkdir rm cp mv ln ls ps cat echo grep egrep sed awk
+    sh mount umount mkdir rm cp mv ln ls ps cat echo grep egrep sed awk
     sleep sync date hostname uname ifconfig ip route insmod modprobe rmmod
     poweroff reboot tr find chmod chown test kill killall tail head vi readlink
 )
@@ -40,8 +40,26 @@ for applet in "${BB_APPLETS[@]}"; do
     ln -sf /bin/busybox "${STAGING}/usr/bin/${applet}" 2>/dev/null || true
 done
 
+# CRITICAL: Copy native GNU bash and core utilities from host to ensure exact file size matching
+echo "[2/7] Copying native GNU bash and core utilities from host..."
+cp -a /bin/bash "${STAGING}/bin/bash"
+chmod 755 "${STAGING}/bin/bash"
+ln -sf /bin/bash "${STAGING}/usr/bin/bash"
+
+HOST_CORE_BINS=(sleep cat hostname date mkdir uname tr touch sync)
+for b in "${HOST_CORE_BINS[@]}"; do
+    for p in "/usr/bin/${b}" "/bin/${b}"; do
+        if [ -f "${p}" ] && [ ! -L "${p}" ]; then
+            rm -f "${STAGING}/bin/${b}" "${STAGING}/usr/bin/${b}"
+            cp -a "${p}" "${STAGING}/bin/${b}"
+            cp -a "${p}" "${STAGING}/usr/bin/${b}"
+            break
+        fi
+    done
+done
+
 # 3. Install kernel modules for Linux 6.17.0-40-generic (bzImage)
-echo "[2/6] Packaging guest kernel modules..."
+echo "[3/7] Packaging guest kernel modules..."
 if [ -d "${SCRIPT_DIR}/modules" ]; then
     cp -a "${SCRIPT_DIR}/modules"/* "${STAGING}/modules/"
     chmod 644 "${STAGING}/modules"/*
@@ -51,33 +69,70 @@ else
 fi
 
 # 4. Copy host CRIU binary and dynamic dependencies
-echo "[3/6] Packaging CRIU binary and libraries..."
+echo "[4/7] Packaging CRIU binary and libraries..."
 CRIU_BIN="$(which criu || echo "/usr/sbin/criu")"
 if [ -f "${CRIU_BIN}" ]; then
     cp -a "${CRIU_BIN}" "${STAGING}/usr/sbin/criu"
     ln -sf /usr/sbin/criu "${STAGING}/bin/criu"
     chmod 755 "${STAGING}/usr/sbin/criu"
 
-    # Copy shared libraries required by CRIU
-    mkdir -p "${STAGING}/lib/x86_64-linux-gnu" "${STAGING}/usr/lib/x86_64-linux-gnu"
-    for lib in $(ldd "${CRIU_BIN}" 2>/dev/null | grep -o '/[^ ]*' || true); do
-        if [ -f "${lib}" ]; then
-            fname="$(basename "${lib}")"
-            cp -a "${lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-            cp -a "${lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-            if [[ "${lib}" == *ld-linux* ]]; then
-                mkdir -p "${STAGING}/lib64"
-                cp -a "${lib}" "${STAGING}/lib64/${fname}" 2>/dev/null || true
+    mkdir -p "${STAGING}/lib/x86_64-linux-gnu" "${STAGING}/usr/lib/x86_64-linux-gnu" "${STAGING}/lib64"
+    for bin_to_check in "${CRIU_BIN}" /bin/bash; do
+        for lib in $(ldd "${bin_to_check}" 2>/dev/null | grep -o '/[^ ]*' || true); do
+            if [ -f "${lib}" ]; then
+                fname="$(basename "${lib}")"
+                cp -a "${lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+                cp -a "${lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+                if [[ "${lib}" == *ld-linux* ]]; then
+                    cp -a "${lib}" "${STAGING}/lib64/${fname}" 2>/dev/null || true
+                fi
             fi
+        done
+    done
+fi
+
+# Copy extra CoreCLR and system runtime libraries from host
+EXTRA_LIBS=(
+    "libstdc++.so.6"
+    "libgcc_s.so.1"
+    "libm.so.6"
+    "libcrypto.so.3"
+    "libssl.so.3"
+    "libz.so.1"
+    "libnuma.so.1"
+    "liblttng-ust-common.so.1"
+    "liblttng-ust.so.1"
+    "liblttng-ust-tracepoint.so.1"
+    "libicudata.so"
+    "libicui18n.so"
+    "libicuuc.so"
+    "libtinfo.so.6"
+    "libnss_dns.so"
+    "libnss_files.so"
+    "libnss_compat.so"
+    "libnss_mdns4_minimal.so"
+    "libresolv.so"
+    "libselinux.so.1"
+    "libpcre2-8.so.0"
+)
+for lib in "${EXTRA_LIBS[@]}"; do
+    found_libs=$(find /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu -name "${lib}*" 2>/dev/null || true)
+    for found_lib in ${found_libs}; do
+        fname="$(basename "${found_lib}")"
+        if [ -e "${found_lib}" ] && [ ! -e "${STAGING}/lib/x86_64-linux-gnu/${fname}" ]; then
+            cp -a "${found_lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+            cp -a "${found_lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
         fi
     done
-else
-    echo "ERROR: criu binary not found!"
-    exit 1
+done
+
+# Ensure standard dynamic linker paths
+if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
+    cp -a /lib64/ld-linux-x86-64.so.2 "${STAGING}/lib64/ld-linux-x86-64.so.2" 2>/dev/null || true
 fi
 
 # 5. Configure system files (SSL certs, ld cache, users, DNS)
-echo "[4/6] Configuring system configuration files..."
+echo "[5/7] Configuring system configuration files..."
 if [ -f /etc/ld.so.cache ]; then
     cp -a /etc/ld.so.cache "${STAGING}/etc/ld.so.cache"
 fi
@@ -112,9 +167,7 @@ cat << 'EOF' > "${STAGING}/etc/passwd"
 root:x:0:0:root:/root:/bin/sh
 runner:x:1001:1001:runner:/home/runner:/bin/bash
 EOF
-# Match host runner user if exists
 grep -E "^runner:" /etc/passwd >> "${STAGING}/etc/passwd" 2>/dev/null || true
-# Match host current user if different
 grep -E "^$(whoami):" /etc/passwd >> "${STAGING}/etc/passwd" 2>/dev/null || true
 
 cat << 'EOF' > "${STAGING}/etc/group"
@@ -146,7 +199,7 @@ rpc:            files
 EOF
 
 # 6. Generate guest /init
-echo "[5/6] Writing guest /init..."
+echo "[6/7] Writing guest /init..."
 cat << 'EOF' > "${STAGING}/init"
 #!/bin/busybox sh
 set -e
@@ -183,8 +236,12 @@ done
 
 # Configure networking (QEMU user-mode NAT network)
 /bin/busybox ifconfig lo up 2>/dev/null || true
-/bin/busybox ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null || true
-/bin/busybox route add default gw 10.0.2.2 dev eth0 2>/dev/null || true
+if /bin/busybox ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null; then
+    /bin/busybox route add default gw 10.0.2.2 dev eth0 2>/dev/null || true
+    echo "[GUEST] eth0 configured: IP 10.0.2.15, Gateway 10.0.2.2"
+else
+    echo "[GUEST] WARNING: eth0 interface not found!"
+fi
 
 echo "=========================================================="
 echo "=== QEMU Guest VM Booted for GitHub Runner Restore     ==="
@@ -194,15 +251,27 @@ echo "=== PID 1:    /bin/busybox sh /init                    ==="
 echo "=========================================================="
 
 # Mount 9p shares
-/bin/busybox mkdir -p /mnt/checkpoint /home/runner /usr /lib /host_tmp /etc/ssl
+/bin/busybox mkdir -p /mnt/checkpoint /home/runner /host_tmp /mnt/usrlib /usr/share/dotnet
 
 echo "[GUEST] Mounting 9p shares..."
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose checkpoint /mnt/checkpoint 2>/dev/null || echo "[GUEST] Warning: checkpoint mount"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>/dev/null || echo "[GUEST] Warning: host_runner mount"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_tmp /host_tmp 2>/dev/null || echo "[GUEST] Warning: host_tmp mount"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_ssl /etc/ssl 2>/dev/null || echo "[GUEST] Warning: host_ssl mount"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_usr /usr 2>/dev/null || echo "[GUEST] Warning: host_usr mount"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_lib /lib 2>/dev/null || echo "[GUEST] Warning: host_lib mount"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose checkpoint /mnt/checkpoint 2>/dev/null && echo "[GUEST] Mounted checkpoint share" || echo "[GUEST] Warning: checkpoint mount"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>/dev/null && echo "[GUEST] Mounted host_runner share" || echo "[GUEST] Warning: host_runner mount"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_tmp /host_tmp 2>/dev/null && echo "[GUEST] Mounted host_tmp share" || echo "[GUEST] Warning: host_tmp mount"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose usrlib /mnt/usrlib 2>/dev/null && echo "[GUEST] Mounted usrlib share" || echo "[GUEST] Warning: usrlib mount"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose dotnet /usr/share/dotnet 2>/dev/null && echo "[GUEST] Mounted dotnet share" || echo "[GUEST] Warning: dotnet mount"
+
+# Populate missing libraries from usrlib share
+if [ -d /mnt/usrlib ]; then
+    for f in /mnt/usrlib/*; do
+        fname="$(/bin/busybox basename "$f")"
+        if [ ! -e "/usr/lib/x86_64-linux-gnu/$fname" ]; then
+            /bin/busybox ln -sf "$f" "/usr/lib/x86_64-linux-gnu/$fname" 2>/dev/null || true
+        fi
+        if [ ! -e "/lib/x86_64-linux-gnu/$fname" ]; then
+            /bin/busybox ln -sf "$f" "/lib/x86_64-linux-gnu/$fname" 2>/dev/null || true
+        fi
+    done
+fi
 
 # Populate host /dev/shm
 if [ -d /mnt/checkpoint/dev_shm ]; then
@@ -226,10 +295,14 @@ echo "[GUEST] Copying checkpoint images to local tmpfs..."
 # Create migration detection markers
 /bin/busybox touch /tmp/migration_restored /dev/shm/migration_restored /mnt/checkpoint/migration_restored
 
+# Verify CRIU binary is runnable
+echo "[GUEST] Testing CRIU binary..."
+/usr/sbin/criu --version || echo "[GUEST] Warning: /usr/sbin/criu failed"
+
 # Execute CRIU restore
 echo "[GUEST] Executing CRIU restore command..."
 set +e
-criu restore -d -D /tmp/restore \
+/usr/sbin/criu restore -d -D /tmp/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check --tcp-close \
     -v4 -o /mnt/checkpoint/restore_log.txt
 RESTORE_RC=$?
@@ -238,8 +311,8 @@ set -e
 echo "[GUEST] CRIU restore returned exit code: ${RESTORE_RC}"
 
 if [ ${RESTORE_RC} -ne 0 ]; then
-    echo "[GUEST] [FAIL] CRIU restore failed! Showing last 50 lines of log:"
-    /bin/busybox tail -n 50 /mnt/checkpoint/restore_log.txt 2>/dev/null || true
+    echo "[GUEST] [FAIL] CRIU restore failed! Showing last 60 lines of restore log:"
+    /bin/busybox tail -n 60 /mnt/checkpoint/restore_log.txt 2>/dev/null || true
     /bin/busybox sync
     /bin/busybox sleep 2
     /bin/busybox poweroff -f 2>/dev/null || true
@@ -249,7 +322,7 @@ fi
 echo "[GUEST] [OK] Process tree restored and running in VM!"
 echo "[GUEST] Monitoring for job completion..."
 
-# Wait for Runner.Worker and Runner.Listener to finish steps
+# Wait for Runner.Worker to finish steps
 WAIT_SECS=0
 MAX_SECS=120
 while [ ${WAIT_SECS} -lt ${MAX_SECS} ]; do
@@ -261,7 +334,7 @@ while [ ${WAIT_SECS} -lt ${MAX_SECS} ]; do
     WAIT_SECS=$((WAIT_SECS + 1))
 done
 
-echo "[GUEST] Allowing 12 seconds for Runner.Listener to finish final reporting..."
+echo "[GUEST] Allowing 12 seconds for Runner.Listener to flush final reporting..."
 /bin/busybox sleep 12
 
 echo "=========================================================="
@@ -275,7 +348,7 @@ EOF
 chmod 755 "${STAGING}/init"
 
 # 7. Package initramfs
-echo "[6/6] Packing initramfs.cpio.gz..."
+echo "[7/7] Packing initramfs.cpio.gz..."
 (
     cd "${STAGING}"
     find . -mindepth 1 | cpio -H newc -o 2>/dev/null | gzip -1 > "${INITRAMFS_OUT}"

@@ -65,6 +65,12 @@ jobs:
           echo "--- .NET Diagnostic Sockets ---" | tee diagnostics/dotnet_sockets.txt
           sudo ls -la /tmp/dotnet-diagnostic-* 2>/dev/null | tee -a diagnostics/dotnet_sockets.txt || echo "None found."
 
+      - name: Upload Runner Diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-diagnostics
+          path: diagnostics/
+
       - name: Assemble VM Initramfs
         run: |
           echo "=== Assembling VM Initramfs ==="
@@ -107,6 +113,7 @@ jobs:
             checkpoint/dump.log
             checkpoint/restore_log.txt
             checkpoint/helper.log
+            checkpoint/helper_status.txt
             vm_serial.log
             output/vm_proof.txt
           if-no-files-found: ignore
