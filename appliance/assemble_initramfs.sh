@@ -75,9 +75,9 @@ fi
 
 # 4. Copy host CRIU binary and dynamic dependencies
 echo "[4/7] Packaging CRIU binary and libraries..."
-CRIU_BIN="$(which criu || echo "/usr/sbin/criu")"
+CRIU_BIN="$(which criu 2>/dev/null || echo "/usr/sbin/criu")"
 if [ -f "${CRIU_BIN}" ]; then
-    cp -a "${CRIU_BIN}" "${STAGING}/usr/sbin/criu"
+    cp -L "${CRIU_BIN}" "${STAGING}/usr/sbin/criu"
     ln -sf /usr/sbin/criu "${STAGING}/bin/criu"
     chmod 755 "${STAGING}/usr/sbin/criu"
 
@@ -86,10 +86,10 @@ if [ -f "${CRIU_BIN}" ]; then
         for lib in $(ldd "${bin_to_check}" 2>/dev/null | grep -o '/[^ ]*' || true); do
             if [ -f "${lib}" ]; then
                 fname="$(basename "${lib}")"
-                cp -a "${lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-                cp -a "${lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+                cp -L "${lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+                cp -L "${lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
                 if [[ "${lib}" == *ld-linux* ]]; then
-                    cp -a "${lib}" "${STAGING}/lib64/${fname}" 2>/dev/null || true
+                    cp -L "${lib}" "${STAGING}/lib64/${fname}" 2>/dev/null || true
                 fi
             fi
         done
@@ -125,15 +125,16 @@ for lib in "${EXTRA_LIBS[@]}"; do
     for found_lib in ${found_libs}; do
         fname="$(basename "${found_lib}")"
         if [ -e "${found_lib}" ] && [ ! -e "${STAGING}/lib/x86_64-linux-gnu/${fname}" ]; then
-            cp -a "${found_lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-            cp -a "${found_lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+            cp -L "${found_lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+            cp -L "${found_lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
         fi
     done
 done
 
 # Ensure standard dynamic linker paths
 if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
-    cp -a /lib64/ld-linux-x86-64.so.2 "${STAGING}/lib64/ld-linux-x86-64.so.2" 2>/dev/null || true
+    cp -L /lib64/ld-linux-x86-64.so.2 "${STAGING}/lib64/ld-linux-x86-64.so.2" 2>/dev/null || true
+    cp -L /lib64/ld-linux-x86-64.so.2 "${STAGING}/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" 2>/dev/null || true
 fi
 
 # 5. Configure system files (SSL certs, ld cache, users, DNS, ICU timezone data)
