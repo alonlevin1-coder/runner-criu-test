@@ -46,7 +46,7 @@ cp -a /bin/bash "${STAGING}/bin/bash"
 chmod 755 "${STAGING}/bin/bash"
 ln -sf /bin/bash "${STAGING}/usr/bin/bash"
 
-HOST_CORE_BINS=(sleep cat hostname date mkdir uname tr touch sync)
+HOST_CORE_BINS=(sleep cat hostname date mkdir uname tr touch sync git)
 for b in "${HOST_CORE_BINS[@]}"; do
     for p in "/usr/bin/${b}" "/bin/${b}"; do
         if [ -f "${p}" ] && [ ! -L "${p}" ]; then
@@ -57,6 +57,11 @@ for b in "${HOST_CORE_BINS[@]}"; do
         fi
     done
 done
+
+if [ -d /usr/lib/git-core ]; then
+    mkdir -p "${STAGING}/usr/lib/git-core"
+    cp -a /usr/lib/git-core/* "${STAGING}/usr/lib/git-core/" 2>/dev/null || true
+fi
 
 # 3. Install kernel modules for Linux 6.17.0-40-generic (bzImage)
 echo "[3/7] Packaging guest kernel modules..."
@@ -335,28 +340,48 @@ if [ ${RESTORE_RC} -ne 0 ]; then
 fi
 
 echo "[GUEST] [OK] Process tree restored and running in VM!"
-echo "[GUEST] Monitoring for job completion..."
+echo "[GUEST] Monitoring for Step 3 completion marker..."
 
-# Wait for Runner.Worker to finish steps
-WAIT_SECS=0
-MAX_SECS=120
-while [ ${WAIT_SECS} -lt ${MAX_SECS} ]; do
-    if ! /bin/busybox ps | /bin/busybox grep -E "Runner\.Worker" >/dev/null 2>&1; then
-        echo "[GUEST] Runner.Worker has completed (${WAIT_SECS}s elapsed)."
+STEP3_VERIFY="/mnt/checkpoint/step3_verification.txt"
+POLL=0
+MAX_POLL=60
+FOUND=0
+
+while [ ${POLL} -lt ${MAX_POLL} ]; do
+    if [ -f "${STEP3_VERIFY}" ] && [ -s "${STEP3_VERIFY}" ]; then
+        FOUND=1
+        echo "[GUEST] Found Step 3 verification output after ${POLL}s!"
         break
     fi
     /bin/busybox sleep 1
-    WAIT_SECS=$((WAIT_SECS + 1))
+    POLL=$((POLL + 1))
 done
 
-echo "[GUEST] Allowing 12 seconds for Runner.Listener to flush final reporting..."
-/bin/busybox sleep 12
+if [ ${FOUND} -eq 1 ]; then
+    echo "=== [GUEST] Step 3 Verification Content ==="
+    /bin/busybox cat "${STEP3_VERIFY}"
+else
+    echo "[GUEST] [WARNING] Step 3 verification file not generated or empty after ${MAX_POLL}s!"
+fi
+
+# Allow Runner.Worker and Runner.Listener to upload step logs and report completion
+WORKER_PID=$(/bin/busybox grep "^WORKER_PID=" /mnt/checkpoint/state.txt 2>/dev/null | /bin/busybox cut -d= -f2 | /bin/busybox tr -d ' \n' || echo "")
+echo "[GUEST] Monitoring Runner.Worker (PID ${WORKER_PID}) completion..."
+WAIT_WORKER=0
+while [ -n "${WORKER_PID}" ] && [ -d "/proc/${WORKER_PID}" ] && [ ${WAIT_WORKER} -lt 60 ]; do
+    /bin/busybox sleep 1
+    WAIT_WORKER=$((WAIT_WORKER + 1))
+done
+echo "[GUEST] Runner.Worker completed (${WAIT_WORKER}s elapsed)."
+
+echo "[GUEST] Waiting 15 seconds for Runner.Listener to flush final reporting..."
+/bin/busybox sleep 15
 
 echo "=========================================================="
 echo "=== VM CI Tasks Complete. Syncing and Powering off.    ==="
 echo "=========================================================="
 /bin/busybox sync
-/bin/busybox sleep 1
+/bin/busybox sleep 2
 /bin/busybox poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger 2>/dev/null || true
 /bin/busybox reboot -f 2>/dev/null || true
 EOF

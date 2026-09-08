@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Dependencies
         run: |
@@ -93,7 +95,7 @@ jobs:
           echo "Message: Hello world from GitHub-hosted runner in QEMU VM!"
           echo "=== PROOF OF VM EXECUTION ==="
           
-          mkdir -p output
+          mkdir -p output checkpoint
           cat << 'EOF' > output/vm_proof.txt
           === GITHUB-HOSTED RUNNER IN VM PROOF ===
           VERDICT: SUCCESS
@@ -102,9 +104,22 @@ jobs:
           echo "PID 1: $(cat /proc/1/cmdline | tr '\0' ' ')" >> output/vm_proof.txt
           echo "Kernel: $(uname -r)" >> output/vm_proof.txt
           echo "Date: $(date -u)" >> output/vm_proof.txt
+          
+          cat output/vm_proof.txt
+          cp output/vm_proof.txt checkpoint/step3_verification.txt
+          sync
+
+          echo "=== RESTORE LOG TAIL ==="
+          tail -n 40 checkpoint/restore_log.txt 2>/dev/null || true
+          echo "=== DUMP LOG TAIL ==="
+          tail -n 40 checkpoint/dump.log 2>/dev/null || true
+          echo "=== HELPER LOG TAIL ==="
+          tail -n 40 checkpoint/helper.log 2>/dev/null || true
+          echo "Step Hello World completed successfully inside MicroVM!"
 
       - name: Upload Diagnostics & Logs
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: diagnostics-and-logs
@@ -114,6 +129,7 @@ jobs:
             checkpoint/restore_log.txt
             checkpoint/helper.log
             checkpoint/helper_status.txt
+            checkpoint/step3_verification.txt
             vm_serial.log
             output/vm_proof.txt
           if-no-files-found: ignore

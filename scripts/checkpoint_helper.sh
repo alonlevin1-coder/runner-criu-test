@@ -28,6 +28,12 @@ if [ -z "${LISTENER_PID}" ]; then
     exit 1
 fi
 
+cat << EOF > "${CHECKPOINT_DIR}/state.txt"
+LISTENER_PID=${LISTENER_PID}
+WORKER_PID=${WORKER_PID}
+EOF
+log "Saved runner state to ${CHECKPOINT_DIR}/state.txt"
+
 STEP2_READY="${CHECKPOINT_DIR}/step2_ready"
 log "Waiting for Step 2 readiness signal (${STEP2_READY})..."
 
