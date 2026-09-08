@@ -54,14 +54,14 @@ jobs:
           echo "VM PID 1: $(cat /proc/1/cmdline 2>/dev/null | tr '\0' ' ')"
           echo "VM Kernel: $(uname -r)"
           
-          cat <<EOF > /home/m/runner_idea/scratch/t8b_real_runner/output/step3_verification.txt
-=== REAL RUNNER STEP 3 VERIFICATION ===
-VERDICT: SUCCESS
-Message: hello world from real GitHub Actions runner in VM!
-Hostname: $(hostname)
-PID 1: $(cat /proc/1/cmdline 2>/dev/null | tr '\0' ' ')
-Kernel: $(uname -r)
-Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-=======================================
-EOF
+          mkdir -p /home/m/runner_idea/scratch/t8b_real_runner/output
+          echo "=== REAL RUNNER STEP 3 VERIFICATION ===" > /home/m/runner_idea/scratch/t8b_real_runner/output/step3_verification.txt
+          echo "VERDICT: SUCCESS" >> /home/m/runner_idea/scratch/t8b_real_runner/output/step3_verification.txt
+          echo "Message: hello world from real GitHub Actions runner in VM!" >> /home/m/runner_idea/scratch/t8b_real_runner/output/step3_verification.txt
+          echo "Hostname: $(hostname)" >> /home/m/runner_idea/scratch/t8b_real_runner/output/step3_verification.txt
+          echo "PID 1: $(cat /proc/1/cmdline 2>/dev/null | tr '\0' ' ')" >> /home/m/runner_idea/scratch/t8b_real_runner/output/step3_verification.txt
+          echo "Kernel: $(uname -r)" >> /home/m/runner_idea/scratch/t8b_real_runner/output/step3_verification.txt
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> /home/m/runner_idea/scratch/t8b_real_runner/output/step3_verification.txt
+          echo "=======================================" >> /home/m/runner_idea/scratch/t8b_real_runner/output/step3_verification.txt
+          
           echo "Verification file written. CI Job in VM complete!"
