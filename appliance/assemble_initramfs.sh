@@ -233,6 +233,16 @@ cat << 'EOF' > "${STAGING}/init"
 #!/bin/busybox sh
 set -e
 
+progress() {
+    msg="$*"
+    echo "[GUEST] ${msg}"
+    # Only the 9p checkpoint share is visible on the host helper.
+    if [ -f /mnt/checkpoint/state.txt ]; then
+        echo "${msg}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+        /bin/busybox sync 2>/dev/null || true
+    fi
+}
+
 # Mount pseudo-filesystems
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
@@ -295,7 +305,8 @@ echo "=========================================================="
 /bin/busybox mkdir -p /mnt/checkpoint /home/runner /host_tmp /mnt/usrlib /usr/share/dotnet
 
 echo "[GUEST] Mounting 9p shares..."
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose checkpoint /mnt/checkpoint 2>&1 && echo "[GUEST] [OK] Mounted checkpoint share" || echo "[GUEST] [FAIL] Checkpoint share mount failed!"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=none checkpoint /mnt/checkpoint 2>&1 && echo "[GUEST] [OK] Mounted checkpoint share" || echo "[GUEST] [FAIL] Checkpoint share mount failed!"
+progress "checkpoint 9p mounted"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>&1 && echo "[GUEST] [OK] Mounted host_runner share" || echo "[GUEST] [FAIL] host_runner mount failed!"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_tmp /host_tmp 2>&1 && echo "[GUEST] [OK] Mounted host_tmp share" || echo "[GUEST] [FAIL] host_tmp mount failed!"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose usrlib /mnt/usrlib 2>&1 && echo "[GUEST] [OK] Mounted usrlib share" || echo "[GUEST] [WARN] usrlib mount failed (using initramfs libs)"
@@ -340,6 +351,7 @@ echo "[GUEST] Copying checkpoint images to local tmpfs..."
 /bin/busybox cp -a /mnt/checkpoint/* /tmp/restore/ 2>&1 || true
 /bin/busybox chmod -R 777 /tmp/restore
 echo "[GUEST] /tmp/restore contains $(/bin/busybox ls -1 /tmp/restore | /bin/busybox wc -l) files"
+progress "images copied to /tmp/restore"
 
 # Match host root mode: skip-file-rwx-check does not ignore the sticky bit.
 /bin/busybox chmod 755 /
@@ -351,6 +363,7 @@ echo "[GUEST] Testing CRIU binary..."
 
 # Execute CRIU restore
 echo "[GUEST] Executing CRIU restore command..."
+progress "calling criu restore"
 set +e
 /usr/sbin/criu restore -d -D /tmp/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check --tcp-close \
@@ -359,6 +372,7 @@ RESTORE_RC=$?
 set -e
 
 echo "[GUEST] CRIU restore returned exit code: ${RESTORE_RC}"
+progress "criu restore rc=${RESTORE_RC}"
 
 if [ ${RESTORE_RC} -ne 0 ]; then
     echo "[GUEST] [FAIL] CRIU restore failed! Showing last 60 lines of restore log:"
@@ -370,6 +384,7 @@ if [ ${RESTORE_RC} -ne 0 ]; then
 fi
 
 echo "[GUEST] [OK] Process tree restored and running in VM!"
+progress "restore ok, waiting for step3"
 
 # Create migration detection markers after successful restore
 /bin/busybox touch /tmp/migration_restored /dev/shm/migration_restored /mnt/checkpoint/migration_restored

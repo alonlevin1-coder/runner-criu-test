@@ -72,6 +72,10 @@ NTFY_TOPIC="runner-criu-debug-morsho-test"
 send_ntfy() {
     local title="${1:-Debug}"
     local msg="${2:-}"
+    # ntfy drops oversized payloads; never send kernel serial dumps.
+    if [ "${#msg}" -gt 1800 ]; then
+        msg="$(printf '%s' "${msg}" | tail -c 1800)"
+    fi
     printf '%s' "${msg}" | curl -s --max-time 10 -H "Title: ${title}" --data-binary @- "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
 }
 
@@ -83,14 +87,13 @@ upload_debug() {
     set +e
     chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" /tmp/daemon_helper.log 2>/dev/null || true
 
-    local serial_tail=$(tail -n 35 "${SERIAL_LOG}" 2>/dev/null || echo "no serial log")
-    local restore_tail=$(tail -n 35 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "no restore log")
-    local helper_tail=$(tail -n 20 "${HELPER_LOG}" 2>/dev/null || echo "no helper log")
+    local progress="$(cat "${CHECKPOINT_DIR}/guest_progress.txt" 2>/dev/null || echo "(no guest_progress.txt)")"
+    local guest_serial="$(grep -E '\[GUEST\]|QEMU Guest VM Booted|CRIU restore returned' "${SERIAL_LOG}" 2>/dev/null | tail -n 20 || true)"
+    local restore_err="$(grep -E 'Error \(|CRIU restore' "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null | tail -n 12 || echo "(no restore errors)")"
 
-    # Immediate ntfy notifications with text body using --data-binary @-
-    send_ntfy "VM [${label}] Serial" "${serial_tail}"
-    send_ntfy "VM [${label}] Restore" "${restore_tail}"
-    send_ntfy "VM [${label}] Helper" "${helper_tail}"
+    send_ntfy "VM [${label}] Progress" "${progress}"
+    send_ntfy "VM [${label}] Guest" "${guest_serial:-no [GUEST] lines yet}"
+    send_ntfy "VM [${label}] Restore" "${restore_err}"
 
     # Git branch upload (TEXT/LOG FILES ONLY, NEVER binary .img files)
     (
@@ -241,12 +244,9 @@ if kill -0 "${QEMU_PID}" 2>/dev/null; then
 fi
 SERIAL_BYTES=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
 log "QEMU launched pid=${QEMU_PID} alive=${QEMU_ALIVE} serial_bytes=${SERIAL_BYTES}"
-send_ntfy "QEMU PID ${QEMU_PID}" "alive=${QEMU_ALIVE} serial_bytes=${SERIAL_BYTES} kvm=$(ls -l /dev/kvm 2>&1)
-$(ps -o pid,stat,etime,cmd -p ${QEMU_PID} 2>/dev/null || echo 'ps: qemu pid gone')
---- helper ---
-$(tail -n 25 "${HELPER_LOG}" 2>/dev/null || true)"
+send_ntfy "QEMU PID ${QEMU_PID}" "alive=${QEMU_ALIVE} serial_bytes=${SERIAL_BYTES}"
 
-# Watchdog: always ntfy, even when serial is empty
+# Watchdog: 9p guest_progress.txt + [GUEST] serial lines only (not kernel dmesg).
 (
     set +e
     for i in 0 1 2 3 4 5 6 7 8 9 10 12 14 16 18 20; do
@@ -254,19 +254,16 @@ $(tail -n 25 "${HELPER_LOG}" 2>/dev/null || true)"
         serial_sz=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
         qemu_alive=no
         kill -0 "${QEMU_PID}" 2>/dev/null && qemu_alive=yes
-        serial_tail=$(tail -n 25 "${SERIAL_LOG}" 2>/dev/null || echo "(empty)")
-        helper_tail=$(tail -n 20 "${HELPER_LOG}" 2>/dev/null || echo "(empty)")
-        restore_tail=$(tail -n 20 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "(no restore log)")
-        qemu_dbg=$(tail -n 15 "${QEMU_DEBUG_LOG}" 2>/dev/null || echo "(no qemu.log)")
-        send_ntfy "Watchdog ${i}" "qemu_pid=${QEMU_PID} alive=${qemu_alive} serial_bytes=${serial_sz}
---- serial ---
-${serial_tail}
---- helper ---
-${helper_tail}
+        progress="$(cat "${CHECKPOINT_DIR}/guest_progress.txt" 2>/dev/null || echo "(no guest_progress.txt)")"
+        guest_serial="$(grep -E '\[GUEST\]|QEMU Guest VM Booted|CRIU restore returned' "${SERIAL_LOG}" 2>/dev/null | tail -n 15 || true)"
+        restore_err="$(grep -E 'Error \(' "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null | tail -n 8 || echo "(no restore log)")"
+        send_ntfy "Watchdog ${i}" "qemu=${qemu_alive} serial_bytes=${serial_sz}
+--- progress ---
+${progress}
+--- guest ---
+${guest_serial:-none}
 --- restore ---
-${restore_tail}
---- qemu.log ---
-${qemu_dbg}"
+${restore_err}"
         if [ -f "${CHECKPOINT_DIR}/step3_verification.txt" ]; then
             send_ntfy "STEP 3 VERIFIED IN VM!" "$(cat "${CHECKPOINT_DIR}/step3_verification.txt")"
             break
