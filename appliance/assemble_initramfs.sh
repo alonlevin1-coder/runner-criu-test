@@ -313,9 +313,6 @@ echo "[GUEST] Copying checkpoint images to local tmpfs..."
 /bin/busybox cp -a /mnt/checkpoint/* /tmp/restore/ 2>/dev/null || true
 /bin/busybox chmod -R 777 /tmp/restore
 
-# Create migration detection markers
-/bin/busybox touch /tmp/migration_restored /dev/shm/migration_restored /mnt/checkpoint/migration_restored
-
 # Verify CRIU binary is runnable
 echo "[GUEST] Testing CRIU binary..."
 /usr/sbin/criu --version || echo "[GUEST] Warning: /usr/sbin/criu failed"
@@ -341,6 +338,11 @@ if [ ${RESTORE_RC} -ne 0 ]; then
 fi
 
 echo "[GUEST] [OK] Process tree restored and running in VM!"
+
+# Create migration detection markers after successful restore
+/bin/busybox touch /tmp/migration_restored /dev/shm/migration_restored /mnt/checkpoint/migration_restored
+echo "[GUEST] Created migration markers in /tmp, /dev/shm, and /mnt/checkpoint"
+
 echo "[GUEST] Monitoring for Step 3 completion marker..."
 
 STEP3_VERIFY="/mnt/checkpoint/step3_verification.txt"

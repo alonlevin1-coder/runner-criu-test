@@ -22,17 +22,23 @@ echo "[STEP 2] Waiting for CRIU dump, QEMU boot, and VM restore..."
 
 # Wait until migrated into VM
 while true; do
-    CUR_HOST=$(hostname)
-    CUR_BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "none")
-
-    if [ "${CUR_HOST}" != "${INITIAL_HOST}" ]; then
-        echo ">>> [STEP 2] Hostname transition detected: ${INITIAL_HOST} -> ${CUR_HOST} <<<"
-        break
-    fi
-
-    if [ "${CUR_BOOT}" != "${INITIAL_BOOT}" ]; then
-        echo ">>> [STEP 2] Kernel boot_id transition detected: ${INITIAL_BOOT} -> ${CUR_BOOT} <<<"
-        break
+    # Check if helper failed first
+    if [ -f "${CHECKPOINT_DIR}/dump_failed" ]; then
+        echo ">>> [STEP 2] [ERROR] Checkpoint helper reported dump failure! <<<"
+        sudo chmod -R a+r "${CHECKPOINT_DIR}" /tmp/daemon_helper.log 2>/dev/null || true
+        if [ -f "${CHECKPOINT_DIR}/dump.log" ]; then
+            echo "--- dump.log tail ---"
+            tail -n 60 "${CHECKPOINT_DIR}/dump.log" 2>/dev/null || true
+        fi
+        if [ -f "${CHECKPOINT_DIR}/helper.log" ]; then
+            echo "--- helper.log tail ---"
+            tail -n 60 "${CHECKPOINT_DIR}/helper.log" 2>/dev/null || true
+        fi
+        if [ -f /tmp/daemon_helper.log ]; then
+            echo "--- daemon_helper.log tail ---"
+            tail -n 60 /tmp/daemon_helper.log 2>/dev/null || true
+        fi
+        exit 1
     fi
 
     if [ -f /tmp/migration_restored ] || [ -f /dev/shm/migration_restored ] || [ -f "${CHECKPOINT_DIR}/migration_restored" ]; then
@@ -40,17 +46,19 @@ while true; do
         break
     fi
 
-    # Check if helper failed
-    if [ -f "${CHECKPOINT_DIR}/dump_failed" ]; then
-        echo ">>> [STEP 2] [ERROR] Checkpoint helper reported dump failure! <<<"
-        if [ -f "${CHECKPOINT_DIR}/dump.log" ]; then
-            echo "--- dump.log tail ---"
-            tail -n 40 "${CHECKPOINT_DIR}/dump.log" 2>/dev/null || true
-        fi
-        exit 1
+    CUR_HOST=$(hostname)
+    if [ "${CUR_HOST}" != "${INITIAL_HOST}" ]; then
+        echo ">>> [STEP 2] Hostname transition detected: ${INITIAL_HOST} -> ${CUR_HOST} <<<"
+        break
     fi
 
-    sleep 0.1
+    CUR_BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "none")
+    if [ "${CUR_BOOT}" != "${INITIAL_BOOT}" ]; then
+        echo ">>> [STEP 2] Kernel boot_id transition detected: ${INITIAL_BOOT} -> ${CUR_BOOT} <<<"
+        break
+    fi
+
+    sleep 1
 done
 
 echo "=========================================================="

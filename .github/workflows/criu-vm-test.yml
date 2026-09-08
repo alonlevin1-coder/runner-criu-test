@@ -114,6 +114,7 @@ jobs:
           cp output/vm_proof.txt checkpoint/step3_verification.txt
           sync
 
+          sudo chmod -R a+r checkpoint/ 2>/dev/null || true
           echo "=== RESTORE LOG TAIL ==="
           tail -n 40 checkpoint/restore_log.txt 2>/dev/null || true
           echo "=== DUMP LOG TAIL ==="

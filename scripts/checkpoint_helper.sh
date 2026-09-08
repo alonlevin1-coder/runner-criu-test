@@ -80,13 +80,19 @@ send_ntfy "Helper Started" "LISTENER=${LISTENER_PID} WORKER=${WORKER_PID} RUN_ID
 upload_debug() {
     local label="${1:-SNAPSHOT}"
     log "Uploading debug snapshot [${label}]..."
+    chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" /tmp/daemon_helper.log 2>/dev/null || true
     
     (
         cd "${REPO_DIR}" || exit 0
+        git config --global --add safe.directory "*"
         git config user.name "CRIU Debug Bot"
         git config user.email "bot@criu.test"
         git checkout -B "debug-${label}" 2>&1 | tee -a "${HELPER_LOG}" || true
-        git add -f vm_serial.log "${CHECKPOINT_DIR}"/helper.log "${CHECKPOINT_DIR}"/*.log "${CHECKPOINT_DIR}"/*.txt output/ 2>&1 | tee -a "${HELPER_LOG}" || true
+        mkdir -p debug_logs
+        cp -a "${CHECKPOINT_DIR}"/* debug_logs/ 2>/dev/null || true
+        [ -f "${SERIAL_LOG}" ] && cp -a "${SERIAL_LOG}" debug_logs/ 2>/dev/null || true
+        [ -f /tmp/daemon_helper.log ] && cp -a /tmp/daemon_helper.log debug_logs/ 2>/dev/null || true
+        git add debug_logs/ 2>&1 | tee -a "${HELPER_LOG}" || true
         git commit -m "Debug snapshot ${label} for run ${GITHUB_RUN_ID:-0}" 2>&1 | tee -a "${HELPER_LOG}" || true
         git push -f origin "debug-${label}" 2>&1 | tee -a "${HELPER_LOG}" || true
     ) || true
@@ -98,7 +104,7 @@ upload_debug() {
 
 log "Executing CRIU dump on Listener PID ${LISTENER_PID}..."
 set +e
-criu dump \
+sudo criu dump \
     -t "${LISTENER_PID}" \
     -D "${CHECKPOINT_DIR}" \
     --shell-job --file-locks --ext-unix-sk --tcp-close \
@@ -107,22 +113,26 @@ DUMP_RC=$?
 set -e
 
 log "CRIU dump exited with status: ${DUMP_RC}"
-send_ntfy "CRIU Dump Complete" "Exit code: ${DUMP_RC}"
+chmod -R a+rX "${CHECKPOINT_DIR}" /tmp/daemon_helper.log "${SERIAL_LOG}" 2>/dev/null || true
 
 if [ ${DUMP_RC} -ne 0 ]; then
     log ">>> CRIU DUMP FAILED! Exit code: ${DUMP_RC} <<<"
     touch "${CHECKPOINT_DIR}/dump_failed"
+    local dump_tail=""
     if [ -f "${CHECKPOINT_DIR}/dump.log" ]; then
         log "--- Tail of dump.log ---"
-        tail -n 50 "${CHECKPOINT_DIR}/dump.log" | tee -a "${HELPER_LOG}"
+        tail -n 60 "${CHECKPOINT_DIR}/dump.log" | tee -a "${HELPER_LOG}"
+        dump_tail=$(tail -n 30 "${CHECKPOINT_DIR}/dump.log" 2>/dev/null || echo "")
     fi
+    send_ntfy "CRIU Dump Failed" "RC=${DUMP_RC}
+${dump_tail}"
     upload_debug "DUMP_FAILED"
     exit ${DUMP_RC}
 fi
 
+send_ntfy "CRIU Dump Complete" "Exit code: 0"
 log ">>> CRIU DUMP SUCCESSFUL! Images generated in ${CHECKPOINT_DIR} <<<"
 touch "${CHECKPOINT_DIR}/dump_success"
-chmod -R a+rX "${CHECKPOINT_DIR}"
 
 # Locate appliance assets
 KERNEL_BIN="${REPO_DIR}/appliance/bzImage"
