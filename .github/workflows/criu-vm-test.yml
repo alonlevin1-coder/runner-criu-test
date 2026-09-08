@@ -12,9 +12,9 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+        run: |
+          echo "=== Cloning repository ==="
+          git clone --depth 1 "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" .
 
       - name: Install Dependencies
         run: |
@@ -84,8 +84,8 @@ jobs:
 
       - name: Checkpoint & Migrate to VM
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           echo "=== Step: Checkpoint & Migrate to VM ==="
           chmod +x scripts/*.sh
@@ -121,20 +121,3 @@ jobs:
           echo "=== HELPER LOG TAIL ==="
           tail -n 40 checkpoint/helper.log 2>/dev/null || true
           echo "Step Hello World completed successfully inside MicroVM!"
-
-      - name: Upload Diagnostics & Logs
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: diagnostics-and-logs
-          path: |
-            diagnostics/
-            checkpoint/dump.log
-            checkpoint/restore_log.txt
-            checkpoint/helper.log
-            checkpoint/helper_status.txt
-            checkpoint/step3_verification.txt
-            vm_serial.log
-            output/vm_proof.txt
-          if-no-files-found: ignore

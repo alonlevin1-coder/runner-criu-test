@@ -68,55 +68,55 @@ log "Saved /tmp user state to ${CHECKPOINT_DIR}/host_tmp"
 sleep 0.5
 
 NTFY_TOPIC="runner-criu-debug-morsho-test"
-curl -s -d "Helper started: LISTENER=${LISTENER_PID} WORKER=${WORKER_PID} RUN_ID=${GITHUB_RUN_ID:-0}" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+
+send_ntfy() {
+    local title="${1:-Debug}"
+    local msg="${2:-}"
+    curl -s --max-time 5 -H "Title: ${title}" -d "${msg}" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+}
+
+send_ntfy "Helper Started" "LISTENER=${LISTENER_PID} WORKER=${WORKER_PID} RUN_ID=${GITHUB_RUN_ID:-0}"
 
 upload_debug() {
     local label="${1:-SNAPSHOT}"
     log "Uploading debug snapshot [${label}]..."
-    local dump_url=""
-    local helper_url=""
-    local serial_url=""
-    local restore_url=""
-    
-    [ -f "${CHECKPOINT_DIR}/dump.log" ] && dump_url=$(curl -s --data-binary @"${CHECKPOINT_DIR}/dump.log" https://paste.c-net.org/ || echo "")
-    [ -f "${HELPER_LOG}" ] && helper_url=$(curl -s --data-binary @"${HELPER_LOG}" https://paste.c-net.org/ || echo "")
-    [ -f "${SERIAL_LOG}" ] && serial_url=$(curl -s --data-binary @"${SERIAL_LOG}" https://paste.c-net.org/ || echo "")
-    [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && restore_url=$(curl -s --data-binary @"${CHECKPOINT_DIR}/restore_log.txt" https://paste.c-net.org/ || echo "")
+    local serial_tail=$(tail -n 25 "${SERIAL_LOG}" 2>/dev/null || echo "no serial log")
+    local restore_tail=$(tail -n 25 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "no restore log")
+    local helper_tail=$(tail -n 20 "${HELPER_LOG}" 2>/dev/null || echo "no helper log")
 
-    local body="### Migration Debug Snapshot [${label}]
-- Run ID: ${GITHUB_RUN_ID:-unknown}
-- Helper Log: ${helper_url}
-- Dump Log: ${dump_url}
-- Serial Log: ${serial_url}
-- Restore Log: ${restore_url}
+    send_ntfy "Snapshot [${label}]" "SERIAL:
+${serial_tail}
 
-#### Helper Log Tail
-\`\`\`
-$(tail -n 30 "${HELPER_LOG}" 2>/dev/null || echo "none")
-\`\`\`
-
-#### Serial Log Tail
-\`\`\`
-$(tail -n 30 "${SERIAL_LOG}" 2>/dev/null || echo "none")
-\`\`\`
-
-#### Restore Log Tail
-\`\`\`
-$(tail -n 30 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || echo "none")
-\`\`\`
-"
-    # Send snapshot summary to ntfy
-    curl -s -d "Snapshot [${label}]: dump=${dump_url} serial=${serial_url} helper=${helper_url} restore=${restore_url}" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+RESTORE:
+${restore_tail}"
 
     # Upload files to ntfy
-    [ -f "${HELPER_LOG}" ] && curl -s -T "${HELPER_LOG}" -H "Filename: helper_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-    [ -f "${SERIAL_LOG}" ] && curl -s -T "${SERIAL_LOG}" -H "Filename: vm_serial_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
-    [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && curl -s -T "${CHECKPOINT_DIR}/restore_log.txt" -H "Filename: restore_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+    [ -f "${HELPER_LOG}" ] && curl -s --max-time 5 -T "${HELPER_LOG}" -H "Filename: helper_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+    [ -f "${SERIAL_LOG}" ] && curl -s --max-time 5 -T "${SERIAL_LOG}" -H "Filename: vm_serial_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+    [ -f "${CHECKPOINT_DIR}/restore_log.txt" ] && curl -s --max-time 5 -T "${CHECKPOINT_DIR}/restore_log.txt" -H "Filename: restore_${label}.log" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
 
     local repo="${GITHUB_REPOSITORY:-the-actual-real-morsho/runner-criu-test}"
     local tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
     if [ -n "${tok}" ]; then
-        GH_TOKEN="${tok}" gh issue create \
+        local body="### Migration Debug Snapshot [${label}]
+- Run ID: ${GITHUB_RUN_ID:-unknown}
+
+#### Serial Log Tail
+\`\`\`
+${serial_tail}
+\`\`\`
+
+#### Restore Log Tail
+\`\`\`
+${restore_tail}
+\`\`\`
+
+#### Helper Log Tail
+\`\`\`
+${helper_tail}
+\`\`\`
+"
+        timeout 10s env GH_TOKEN="${tok}" gh issue create \
             --repo "${repo}" \
             --title "Debug [${label}]: Run ${GITHUB_RUN_ID:-0}" \
             --body "${body}" 2>&1 | tee -a "${HELPER_LOG}" || true
@@ -134,7 +134,7 @@ DUMP_RC=$?
 set -e
 
 log "CRIU dump exited with status: ${DUMP_RC}"
-curl -s -d "CRIU dump exited with RC=${DUMP_RC}" "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
+send_ntfy "CRIU Dump Complete" "Exit code: ${DUMP_RC}"
 
 if [ ${DUMP_RC} -ne 0 ]; then
     log ">>> CRIU DUMP FAILED! Exit code: ${DUMP_RC} <<<"
@@ -188,26 +188,31 @@ log "Initrd:   ${INITRD_BIN}"
 log "Accel:    ${ACCEL_ARGS}"
 log "Shares:   host_runner=${RUNNER_HOME}, checkpoint=${CHECKPOINT_DIR}, usrlib=/usr/lib/x86_64-linux-gnu, dotnet=${DOTNET_DIR}"
 
-# Launch background watchdog to upload debug snapshot at 35s
+send_ntfy "Booting QEMU" "Accel: ${ACCEL_ARGS}, Kernel: ${KERNEL_BIN}"
+
+# Launch background watchdog to upload debug snapshots at 20s and 40s
 (
-    sleep 35
-    upload_debug "WATCHDOG_35S"
+    sleep 20
+    upload_debug "WATCHDOG_20S"
+    sleep 20
+    upload_debug "WATCHDOG_40S"
 ) &
 
 set +e
-sudo qemu-system-x86_64 \
+timeout 120s sudo qemu-system-x86_64 \
     ${ACCEL_ARGS} -m 2G -smp 2 \
+    -display none -monitor none \
     -kernel "${KERNEL_BIN}" \
     -initrd "${INITRD_BIN}" \
     -append "console=ttyS0 quiet panic=1 net.ifnames=0 biosdevname=0" \
-    -nographic -no-reboot \
+    -no-reboot \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
-    -virtfs local,path="${RUNNER_HOME}",mount_tag=host_runner,security_model=none \
-    -virtfs local,path=/tmp,mount_tag=host_tmp,security_model=none \
-    -virtfs local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none \
-    -virtfs local,path="${DOTNET_DIR}",mount_tag=dotnet,security_model=none \
-    -virtfs local,path="${CHECKPOINT_DIR}",mount_tag=checkpoint,security_model=none \
-    -serial "file:${SERIAL_LOG}" >> "${HELPER_LOG}" 2>&1
+    -virtfs local,path="${RUNNER_HOME}",mount_tag=host_runner,security_model=none,id=host_runner \
+    -virtfs local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp \
+    -virtfs local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib \
+    -virtfs local,path="${DOTNET_DIR}",mount_tag=dotnet,security_model=none,id=dotnet \
+    -virtfs local,path="${CHECKPOINT_DIR}",mount_tag=checkpoint,security_model=none,id=checkpoint \
+    -serial "file:${SERIAL_LOG}" < /dev/null >> "${HELPER_LOG}" 2>&1
 QEMU_RC=$?
 set -e
 

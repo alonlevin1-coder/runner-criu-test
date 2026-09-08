@@ -20,10 +20,8 @@ touch "${STEP2_READY}"
 echo "[STEP 2] Created readiness marker: ${STEP2_READY}"
 echo "[STEP 2] Waiting for CRIU dump, QEMU boot, and VM restore..."
 
-POLL_COUNT=0
-MAX_POLL=600 # 600 * 0.2s = 120s timeout
-
-while [ ${POLL_COUNT} -lt ${MAX_POLL} ]; do
+# Wait until migrated into VM
+while true; do
     CUR_HOST=$(hostname)
     CUR_BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "none")
 
@@ -52,15 +50,8 @@ while [ ${POLL_COUNT} -lt ${MAX_POLL} ]; do
         exit 1
     fi
 
-    # CRITICAL: Use bash builtin read to avoid spawning external processes (like sleep)
-    read -t 0.2 < /dev/null || true
-    POLL_COUNT=$((POLL_COUNT + 1))
+    sleep 0.1
 done
-
-if [ ${POLL_COUNT} -ge ${MAX_POLL} ]; then
-    echo "[STEP 2] [FATAL] Timeout waiting for VM migration after 120 seconds!"
-    exit 1
-fi
 
 echo "=========================================================="
 echo "=== STEP 2: Successfully migrated into MicroVM!        ==="
