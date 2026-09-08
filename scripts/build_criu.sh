@@ -13,7 +13,11 @@ BUILD_DIR="${CRIU_BUILD_DIR:-/tmp/criu-build}"
 
 echo "=== Building CRIU ${CRIU_TAG} from source ==="
 
-sudo apt-get install -y \
+# Listener was started before this job. Replacing libc/libssl turns those
+# mappings into CRIU ghost files and dump fails at the default 1MB cap.
+sudo apt-mark hold libc6 libc6-dev libssl3 libssl-dev 2>/dev/null || true
+
+sudo apt-get install -y --no-upgrade \
     build-essential pkg-config \
     libprotobuf-dev libprotobuf-c-dev protobuf-c-compiler \
     libcap-dev libnl-3-dev libnet-dev \

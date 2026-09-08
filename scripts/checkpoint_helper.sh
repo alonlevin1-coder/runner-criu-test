@@ -140,6 +140,7 @@ while [ ${DUMP_ATTEMPTS} -lt 3 ] && [ ${DUMP_RC} -ne 0 ]; do
         -t "${LISTENER_PID}" \
         -D "${CHECKPOINT_DIR}" \
         --shell-job --file-locks --ext-unix-sk --tcp-close \
+        --ghost-limit 32M \
         -v4 -o dump.log
     DUMP_RC=$?
     set -e
