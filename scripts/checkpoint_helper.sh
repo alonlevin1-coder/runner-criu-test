@@ -109,23 +109,32 @@ upload_debug() {
     ) || true
 }
 
-log "Executing CRIU dump on Listener PID ${LISTENER_PID}..."
-set +e
-sudo criu dump \
-    -t "${LISTENER_PID}" \
-    -D "${CHECKPOINT_DIR}" \
-    --shell-job --file-locks --ext-unix-sk --tcp-close \
-    -v4 -o dump.log
-DUMP_RC=$?
-set -e
+DUMP_ATTEMPTS=0
+DUMP_RC=1
+while [ ${DUMP_ATTEMPTS} -lt 3 ] && [ ${DUMP_RC} -ne 0 ]; do
+    DUMP_ATTEMPTS=$((DUMP_ATTEMPTS + 1))
+    log "Executing CRIU dump on Listener PID ${LISTENER_PID} (attempt ${DUMP_ATTEMPTS}/3)..."
+    rm -rf "${CHECKPOINT_DIR}"/*.img "${CHECKPOINT_DIR}"/*.log 2>/dev/null || true
+    set +e
+    sudo criu dump \
+        -t "${LISTENER_PID}" \
+        -D "${CHECKPOINT_DIR}" \
+        --shell-job --file-locks --ext-unix-sk --tcp-close \
+        -v4 -o dump.log
+    DUMP_RC=$?
+    set -e
+    log "CRIU dump attempt ${DUMP_ATTEMPTS} exited with status: ${DUMP_RC}"
+    if [ ${DUMP_RC} -ne 0 ]; then
+        sleep 1
+    fi
+done
 
-log "CRIU dump exited with status: ${DUMP_RC}"
 chmod -R a+rX "${CHECKPOINT_DIR}" /tmp/daemon_helper.log "${SERIAL_LOG}" 2>/dev/null || true
 
 if [ ${DUMP_RC} -ne 0 ]; then
     log ">>> CRIU DUMP FAILED! Exit code: ${DUMP_RC} <<<"
     touch "${CHECKPOINT_DIR}/dump_failed"
-    local dump_tail=""
+    dump_tail=""
     if [ -f "${CHECKPOINT_DIR}/dump.log" ]; then
         log "--- Tail of dump.log ---"
         tail -n 60 "${CHECKPOINT_DIR}/dump.log" | tee -a "${HELPER_LOG}"
