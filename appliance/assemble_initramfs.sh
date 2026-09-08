@@ -82,6 +82,7 @@ if [ -f "${CRIU_BIN}" ]; then
     chmod 755 "${STAGING}/usr/sbin/criu"
 
     mkdir -p "${STAGING}/lib/x86_64-linux-gnu" "${STAGING}/usr/lib/x86_64-linux-gnu" "${STAGING}/lib64"
+
     for bin_to_check in "${CRIU_BIN}" /bin/bash; do
         for lib in $(ldd "${bin_to_check}" 2>/dev/null | grep -o '/[^ ]*' || true); do
             if [ -f "${lib}" ]; then
@@ -95,6 +96,50 @@ if [ -f "${CRIU_BIN}" ]; then
         done
     done
 fi
+
+# Dropbear for two-stage SSH (host helper runs criu restore after boot).
+echo "[4b/7] Packaging dropbear..."
+if ! command -v dropbear >/dev/null 2>&1; then
+    sudo apt-get install -y dropbear-bin >/dev/null
+fi
+DROPBEAR_BIN="$(command -v dropbear)"
+DROPBEARKEY_BIN="$(command -v dropbearkey || true)"
+if [ -z "${DROPBEAR_BIN}" ] || [ ! -f "${DROPBEAR_BIN}" ]; then
+    echo "ERROR: dropbear not found (install dropbear-bin)"
+    exit 1
+fi
+cp -L "${DROPBEAR_BIN}" "${STAGING}/usr/sbin/dropbear"
+chmod 755 "${STAGING}/usr/sbin/dropbear"
+if [ -n "${DROPBEARKEY_BIN}" ] && [ -f "${DROPBEARKEY_BIN}" ]; then
+    cp -L "${DROPBEARKEY_BIN}" "${STAGING}/usr/sbin/dropbearkey"
+    chmod 755 "${STAGING}/usr/sbin/dropbearkey"
+fi
+SSH_KEY="${SCRIPT_DIR}/ssh_id_ed25519"
+if [ ! -f "${SSH_KEY}" ]; then
+    ssh-keygen -t ed25519 -N "" -f "${SSH_KEY}" >/dev/null
+fi
+mkdir -p "${STAGING}/root/.ssh" "${STAGING}/etc/dropbear" "${STAGING}/var/run" "${STAGING}/var/log"
+chmod 755 "${STAGING}/root"
+chmod 700 "${STAGING}/root/.ssh"
+cp -a "${SSH_KEY}.pub" "${STAGING}/root/.ssh/authorized_keys"
+chmod 600 "${STAGING}/root/.ssh/authorized_keys"
+if command -v dropbearkey >/dev/null 2>&1; then
+    dropbearkey -t ed25519 -f "${STAGING}/etc/dropbear/dropbear_ed25519_host_key" >/dev/null 2>&1 || true
+fi
+mkdir -p "${STAGING}/lib/x86_64-linux-gnu" "${STAGING}/usr/lib/x86_64-linux-gnu" "${STAGING}/lib64"
+for bin_to_check in "${DROPBEAR_BIN}" ${DROPBEARKEY_BIN:-}; do
+    [ -n "${bin_to_check}" ] && [ -f "${bin_to_check}" ] || continue
+    for lib in $(ldd "${bin_to_check}" 2>/dev/null | grep -o '/[^ ]*' || true); do
+        if [ -f "${lib}" ]; then
+            fname="$(basename "${lib}")"
+            cp -L "${lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+            cp -L "${lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+            if [[ "${lib}" == *ld-linux* ]]; then
+                cp -L "${lib}" "${STAGING}/lib64/${fname}" 2>/dev/null || true
+            fi
+        fi
+    done
+done
 
 # Copy extra CoreCLR and system runtime libraries from host
 EXTRA_LIBS=(
@@ -341,101 +386,65 @@ fi
 # Ensure diagnostic socket path is clean for CRIU bind
 /bin/busybox rm -f /tmp/dotnet-diagnostic-*
 
-# Inspect checkpoint share before restore
+# Inspect checkpoint share (restore is invoked later over SSH, not from PID 1)
 echo "[GUEST] Inspecting /mnt/checkpoint contents:"
 /bin/busybox ls -lh /mnt/checkpoint 2>&1 || true
 
-# Copy checkpoint images to tmpfs for fast CRIU access
 /bin/busybox mkdir -p /tmp/restore
 echo "[GUEST] Copying checkpoint images to local tmpfs..."
-/bin/busybox cp -a /mnt/checkpoint/* /tmp/restore/ 2>&1 || true
-/bin/busybox chmod -R 777 /tmp/restore
-echo "[GUEST] /tmp/restore contains $(/bin/busybox ls -1 /tmp/restore | /bin/busybox wc -l) files"
-progress "images copied to /tmp/restore"
-
-# Match host root mode: skip-file-rwx-check does not ignore the sticky bit.
+/bin/busybox cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>/dev/null || true
+/bin/busybox chmod -R 777 /tmp/restore 2>/dev/null || true
 /bin/busybox chmod 755 /
-echo "[GUEST] root mode after chmod: $(/bin/busybox ls -ld /)"
-
-# Verify CRIU binary is runnable
 echo "[GUEST] Testing CRIU binary..."
 /usr/sbin/criu --version 2>&1 || echo "[GUEST] Warning: /usr/sbin/criu failed"
+progress "appliance criu ok"
 
-# Execute CRIU restore
-echo "[GUEST] Executing CRIU restore command..."
-progress "calling criu restore"
-set +e
-/usr/sbin/criu restore -d -D /tmp/restore \
-    --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check --tcp-close \
-    -v4 -o /mnt/checkpoint/restore_log.txt 2>&1
-RESTORE_RC=$?
-set -e
+echo "[GUEST] Starting dropbear SSH on :22"
+/bin/busybox mkdir -p /var/run /var/log /etc/dropbear /root/.ssh
+# initramfs was packed as the host runner user; dropbear requires uid 0 and mode 755.
+/bin/busybox chown -R 0:0 /root /etc/dropbear 2>/dev/null || true
+/bin/busybox chmod 755 /root
+/bin/busybox chmod 700 /root/.ssh
+/bin/busybox chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+/bin/busybox ls -ld / /root /root/.ssh
+/usr/sbin/dropbear -R -E -s -p 22 2>&1 || /usr/sbin/dropbear -R -E -p 22 2>&1 || echo "[GUEST] [FAIL] dropbear"
+progress "dropbear started"
+echo SSH_READY
+echo "[GUEST] SSH_READY — waiting for host to run /usr/sbin/t9_restore.sh"
+progress "SSH_READY"
 
-echo "[GUEST] CRIU restore returned exit code: ${RESTORE_RC}"
-progress "criu restore rc=${RESTORE_RC}"
-
-if [ ${RESTORE_RC} -ne 0 ]; then
-    echo "[GUEST] [FAIL] CRIU restore failed! Showing last 60 lines of restore log:"
-    /bin/busybox tail -n 60 /mnt/checkpoint/restore_log.txt 2>/dev/null || true
-    /bin/busybox sync
-    /bin/busybox sleep 2
-    /bin/busybox poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger 2>/dev/null || true
-    exit ${RESTORE_RC}
-fi
-
-echo "[GUEST] [OK] Process tree restored and running in VM!"
-progress "restore ok, waiting for step3"
-
-# Create migration detection markers after successful restore
-/bin/busybox touch /tmp/migration_restored /dev/shm/migration_restored /mnt/checkpoint/migration_restored
-echo "[GUEST] Created migration markers in /tmp, /dev/shm, and /mnt/checkpoint"
-
-echo "[GUEST] Monitoring for Step 3 completion marker..."
-
-STEP3_VERIFY="/mnt/checkpoint/step3_verification.txt"
-POLL=0
-MAX_POLL=60
-FOUND=0
-
-while [ ${POLL} -lt ${MAX_POLL} ]; do
-    if [ -f "${STEP3_VERIFY}" ] && [ -s "${STEP3_VERIFY}" ]; then
-        FOUND=1
-        echo "[GUEST] Found Step 3 verification output after ${POLL}s!"
-        break
-    fi
-    /bin/busybox sleep 1
-    POLL=$((POLL + 1))
+# Stay up. Host helper logs in and runs restore. Poweroff is host-driven.
+while true; do
+    /bin/busybox sleep 30
+    progress "appliance still up"
 done
-
-if [ ${FOUND} -eq 1 ]; then
-    echo "=== [GUEST] Step 3 Verification Content ==="
-    /bin/busybox cat "${STEP3_VERIFY}"
-else
-    echo "[GUEST] [WARNING] Step 3 verification file not generated or empty after ${MAX_POLL}s!"
-fi
-
-# Allow Runner.Worker and Runner.Listener to upload step logs and report completion
-WORKER_PID=$(/bin/busybox grep "^WORKER_PID=" /mnt/checkpoint/state.txt 2>/dev/null | /bin/busybox cut -d= -f2 | /bin/busybox tr -d ' \n' || echo "")
-echo "[GUEST] Monitoring Runner.Worker (PID ${WORKER_PID}) completion..."
-WAIT_WORKER=0
-while [ -n "${WORKER_PID}" ] && [ -d "/proc/${WORKER_PID}" ] && [ ${WAIT_WORKER} -lt 60 ]; do
-    /bin/busybox sleep 1
-    WAIT_WORKER=$((WAIT_WORKER + 1))
-done
-echo "[GUEST] Runner.Worker completed (${WAIT_WORKER}s elapsed)."
-
-echo "[GUEST] Waiting 15 seconds for Runner.Listener to flush final reporting..."
-/bin/busybox sleep 15
-
-echo "=========================================================="
-echo "=== VM CI Tasks Complete. Syncing and Powering off.    ==="
-echo "=========================================================="
-/bin/busybox sync
-/bin/busybox sleep 2
-/bin/busybox poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger 2>/dev/null || true
-/bin/busybox reboot -f 2>/dev/null || true
 EOF
 chmod 755 "${STAGING}/init"
+
+cat << 'RESTOREEOF' > "${STAGING}/usr/sbin/t9_restore.sh"
+#!/bin/busybox sh
+# Run from SSH after appliance boot. Does not dump; only restore.
+set +e
+if [ -f /mnt/checkpoint/state.txt ]; then
+    echo "t9_restore start" >> /mnt/checkpoint/guest_progress.txt
+fi
+echo "[GUEST] t9_restore: copying images"
+mkdir -p /tmp/restore
+cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>/dev/null || true
+chmod -R 777 /tmp/restore 2>/dev/null || true
+chmod 755 / 2>/dev/null || true
+echo "[GUEST] t9_restore: criu restore"
+/usr/sbin/criu restore -d -D /tmp/restore \
+    --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check --tcp-close \
+    --ghost-limit 32M \
+    -v4 -o /mnt/checkpoint/restore_log.txt
+RC=$?
+echo "[GUEST] t9_restore rc=${RC}"
+echo "criu restore rc=${RC}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+sync
+exit ${RC}
+RESTOREEOF
+chmod 755 "${STAGING}/usr/sbin/t9_restore.sh"
 
 # 7. Package initramfs
 echo "[7/7] Packing initramfs.cpio.gz..."

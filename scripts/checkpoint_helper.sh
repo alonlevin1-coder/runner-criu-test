@@ -212,10 +212,14 @@ else
     ACCEL_ARGS="-accel tcg -cpu max"
 fi
 
-log "Booting QEMU MicroVM with direct kernel boot..."
+SSH_PORT="${SSH_PORT:-2222}"
+SSH_KEY="${REPO_DIR}/appliance/ssh_id_ed25519"
+
+log "Booting QEMU MicroVM (two-stage: SSH then criu restore)..."
 log "Kernel:   ${KERNEL_BIN}"
 log "Initrd:   ${INITRD_BIN}"
 log "Accel:    ${ACCEL_ARGS}"
+log "SSH:      127.0.0.1:${SSH_PORT} key=${SSH_KEY}"
 log "Shares:   host_runner=${RUNNER_HOME}, checkpoint=${CHECKPOINT_DIR}, usrlib=/usr/lib/x86_64-linux-gnu, dotnet=${DOTNET_DIR}"
 log "KVM node: $(ls -l /dev/kvm 2>&1 || true)"
 command -v qemu-system-x86_64 | tee -a "${HELPER_LOG}" || true
@@ -233,7 +237,8 @@ qemu-system-x86_64 \
     -initrd "${INITRD_BIN}" \
     -append "earlyprintk=ttyS0 console=ttyS0 panic=1 loglevel=7 net.ifnames=0 biosdevname=0 rdinit=/init" \
     -no-reboot \
-    -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
+    -device virtio-net-pci,netdev=net0 \
     -virtfs local,path="${RUNNER_HOME}",mount_tag=host_runner,security_model=none,id=host_runner \
     -virtfs local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp \
     -virtfs local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib \
@@ -251,6 +256,40 @@ if kill -0 "${QEMU_PID}" 2>/dev/null; then
 fi
 SERIAL_BYTES=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
 log "QEMU launched pid=${QEMU_PID} alive=${QEMU_ALIVE} serial_bytes=${SERIAL_BYTES}"
+
+SSH=(ssh -i "${SSH_KEY}" -p "${SSH_PORT}" -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o BatchMode=yes root@127.0.0.1)
+
+SSH_OK=0
+for i in $(seq 1 60); do
+    if [ -f "${SSH_KEY}" ] && "${SSH[@]}" 'echo SSH_PROBE_OK' >/dev/null 2>> "${HELPER_LOG}"; then
+        SSH_OK=1
+        log "SSH into appliance at ${i}s"
+        break
+    fi
+    if ! kill -0 "${QEMU_PID}" 2>/dev/null; then
+        log "QEMU died before SSH"
+        break
+    fi
+    sleep 1
+done
+
+if [ "${SSH_OK}" -eq 1 ]; then
+    send_ntfy "SSH Ready" "appliance ssh up; running t9_restore.sh"
+    log "Running /usr/sbin/t9_restore.sh over SSH"
+    set +e
+    "${SSH[@]}" '/usr/sbin/t9_restore.sh' | tee "${CHECKPOINT_DIR}/ssh_restore.txt" | tee -a "${HELPER_LOG}"
+    RESTORE_RC=${PIPESTATUS[0]}
+    set -e
+    echo "${RESTORE_RC}" > "${CHECKPOINT_DIR}/restore.rc"
+    log "t9_restore.sh rc=${RESTORE_RC}"
+    send_ntfy "CRIU Restore SSH" "rc=${RESTORE_RC}
+$(tail -n 20 "${CHECKPOINT_DIR}/ssh_restore.txt" 2>/dev/null || true)"
+else
+    log "SSH never came up; restore not invoked from host"
+    touch "${CHECKPOINT_DIR}/ssh_failed"
+    send_ntfy "SSH Failed" "could not reach dropbear on :${SSH_PORT}"
+fi
 
 # First sample after /init has had time to mount 9p. Then every 10s.
 # Always append host_watchdog.txt so GHA artifacts work even if ntfy drops.

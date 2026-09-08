@@ -22,7 +22,7 @@ jobs:
           # Runner.Listener already maps libc/libssl; replacing them makes CRIU dump ghost files.
           sudo apt-mark hold libc6 libc6-dev libssl3 libssl-dev 2>/dev/null || true
           sudo apt-get update -qq
-          sudo apt-get install -y --no-upgrade qemu-system-x86 gdb
+          sudo apt-get install -y --no-upgrade qemu-system-x86 gdb dropbear-bin openssh-client cpio
           sudo chmod 666 /dev/kvm
           echo "--- QEMU Version ---"
           qemu-system-x86_64 --version
