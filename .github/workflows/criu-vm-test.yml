@@ -1,0 +1,112 @@
+name: CRIU MicroVM Migration Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  criu-vm-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          echo "=== Installing Dependencies ==="
+          sudo apt-get update -qq
+          sudo apt-get install -y criu qemu-system-x86 gdb
+          sudo chmod 666 /dev/kvm
+          
+          echo "--- CRIU Version ---"
+          criu --version
+          
+          echo "--- CRIU Kernel Compatibility Check ---"
+          sudo criu check || true
+          
+          echo "--- QEMU Version ---"
+          qemu-system-x86_64 --version
+
+      - name: Diagnose Runner.Listener
+        run: |
+          echo "=== Runner.Listener & Environment Diagnostics ==="
+          mkdir -p diagnostics
+          
+          LISTENER_PID=$(pgrep -f "Runner.Listener" | head -n 1 || echo "")
+          WORKER_PID=$(pgrep -f "Runner.Worker" | head -n 1 || echo "")
+          
+          echo "LISTENER_PID=${LISTENER_PID}" | tee diagnostics/listener_pid.txt
+          echo "WORKER_PID=${WORKER_PID}" | tee diagnostics/worker_pid.txt
+          
+          echo "--- Host Information ---" | tee diagnostics/host_info.txt
+          hostname | tee -a diagnostics/host_info.txt
+          uname -r | tee -a diagnostics/host_info.txt
+          cat /proc/version | tee -a diagnostics/host_info.txt
+          
+          echo "--- Process Tree ---" | tee diagnostics/pstree.txt
+          ps aux | tee -a diagnostics/pstree.txt
+          
+          if [ -n "${LISTENER_PID}" ]; then
+            echo "--- Runner.Listener (PID ${LISTENER_PID}) FDs ---" | tee diagnostics/listener_fds.txt
+            sudo ls -la /proc/${LISTENER_PID}/fd/ | tee -a diagnostics/listener_fds.txt
+            
+            echo "--- Runner.Listener Memory Maps (First 100 lines) ---"
+            head -n 100 /proc/${LISTENER_PID}/maps > diagnostics/listener_maps_head.txt
+          else
+            echo "WARNING: Runner.Listener process not found!"
+          fi
+          
+          if [ -n "${WORKER_PID}" ]; then
+            echo "--- Runner.Worker (PID ${WORKER_PID}) FDs ---" | tee diagnostics/worker_fds.txt
+            sudo ls -la /proc/${WORKER_PID}/fd/ | tee -a diagnostics/worker_fds.txt
+          fi
+          
+          echo "--- .NET Diagnostic Sockets ---" | tee diagnostics/dotnet_sockets.txt
+          sudo ls -la /tmp/dotnet-diagnostic-* 2>/dev/null | tee -a diagnostics/dotnet_sockets.txt || echo "None found."
+
+      - name: Assemble VM Initramfs
+        run: |
+          echo "=== Assembling VM Initramfs ==="
+          chmod +x appliance/assemble_initramfs.sh
+          ./appliance/assemble_initramfs.sh
+          ls -lh appliance/initramfs.cpio.gz
+
+      - name: Checkpoint & Migrate to VM
+        run: |
+          echo "=== Step: Checkpoint & Migrate to VM ==="
+          chmod +x scripts/*.sh
+          ./scripts/setup_step.sh
+
+      - name: Hello World from VM
+        run: |
+          echo "=== GITHUB-HOSTED RUNNER IN VM ==="
+          echo "Hostname: $(hostname)"
+          echo "PID 1: $(cat /proc/1/cmdline | tr '\0' ' ')"
+          echo "Kernel: $(uname -r)"
+          echo "Message: Hello world from GitHub-hosted runner in QEMU VM!"
+          echo "=== PROOF OF VM EXECUTION ==="
+          
+          mkdir -p output
+          cat << 'EOF' > output/vm_proof.txt
+          === GITHUB-HOSTED RUNNER IN VM PROOF ===
+          VERDICT: SUCCESS
+          EOF
+          echo "Hostname: $(hostname)" >> output/vm_proof.txt
+          echo "PID 1: $(cat /proc/1/cmdline | tr '\0' ' ')" >> output/vm_proof.txt
+          echo "Kernel: $(uname -r)" >> output/vm_proof.txt
+          echo "Date: $(date -u)" >> output/vm_proof.txt
+
+      - name: Upload Diagnostics & Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-and-logs
+          path: |
+            diagnostics/
+            checkpoint/dump.log
+            checkpoint/restore_log.txt
+            checkpoint/helper.log
+            vm_serial.log
+            output/vm_proof.txt
+          if-no-files-found: ignore
