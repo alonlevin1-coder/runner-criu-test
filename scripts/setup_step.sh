@@ -46,6 +46,8 @@ export GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-the-actual-real-morsho/runner-cri
 export GITHUB_RUN_ID="${GITHUB_RUN_ID:-0}"
 export GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 export GH_TOKEN="${GITHUB_TOKEN:-}"
+export ALLOW_LISTENER_DUMP=1
+export T9_CANCEL_ON_QEMU_EXIT=1
 sudo -E "${SCRIPT_DIR}/daemonize" "${SCRIPT_DIR}/checkpoint_helper.sh" "${LISTENER_PID}" "${WORKER_PID}" "${CHECKPOINT_DIR}"
 
 # 6. Enter migration wait loop

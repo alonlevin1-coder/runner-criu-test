@@ -22,7 +22,7 @@ log() {
 
 log "=== Detached Checkpoint Helper Initiated ==="
 log "Helper PID: $$, PGID: $(ps -o pgid= -p $$ | tr -d ' '), SID: $(ps -o sid= -p $$ | tr -d ' ')"
-log "Targeting Listener PID: ${LISTENER_PID}, Worker PID: ${WORKER_PID}"
+log "Targeting dump PID: ${LISTENER_PID}, Worker PID: ${WORKER_PID}"
 log "Checkpoint Directory: ${CHECKPOINT_DIR}"
 log "Serial Log: ${SERIAL_LOG}"
 
@@ -30,6 +30,18 @@ if [ -z "${LISTENER_PID}" ]; then
     log "ERROR: LISTENER_PID not provided!"
     touch "${CHECKPOINT_DIR}/dump_failed"
     exit 1
+fi
+
+DUMP_CMDLINE=$(tr '\0' ' ' < "/proc/${LISTENER_PID}/cmdline" 2>/dev/null || true)
+if echo "${DUMP_CMDLINE}" | grep -qE 'Runner\.(Listener|Worker)'; then
+    if [ "${ALLOW_LISTENER_DUMP:-0}" != "1" ]; then
+        log "REFUSING to dump Runner.* (set ALLOW_LISTENER_DUMP=1 for T9): ${DUMP_CMDLINE}"
+        touch "${CHECKPOINT_DIR}/dump_failed"
+        exit 2
+    fi
+    log "ALLOW_LISTENER_DUMP=1 — dumping runner process"
+else
+    log "Dump target is not Runner.* cmdline=${DUMP_CMDLINE}"
 fi
 
 cat << EOF > "${CHECKPOINT_DIR}/state.txt"
@@ -79,7 +91,7 @@ send_ntfy() {
     printf '%s' "${msg}" | curl -s --max-time 10 -H "Title: ${title}" --data-binary @- "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
 }
 
-send_ntfy "Helper Started" "LISTENER=${LISTENER_PID} WORKER=${WORKER_PID} RUN_ID=${GITHUB_RUN_ID:-0}"
+send_ntfy "Helper Started" "PID=${LISTENER_PID} RUN_ID=${GITHUB_RUN_ID:-0} allow_listener=${ALLOW_LISTENER_DUMP:-0}"
 
 upload_debug() {
     local label="${1:-SNAPSHOT}"
@@ -91,9 +103,12 @@ upload_debug() {
     local guest_serial="$(grep -E '\[GUEST\]|QEMU Guest VM Booted|CRIU restore returned' "${SERIAL_LOG}" 2>/dev/null | tail -n 20 || true)"
     local restore_err="$(grep -E 'Error \(|CRIU restore' "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null | tail -n 12 || echo "(no restore errors)")"
 
-    send_ntfy "VM [${label}] Progress" "${progress}"
-    send_ntfy "VM [${label}] Guest" "${guest_serial:-no [GUEST] lines yet}"
-    send_ntfy "VM [${label}] Restore" "${restore_err}"
+    send_ntfy "VM [${label}]" "progress:
+${progress}
+--- guest ---
+${guest_serial:-no [GUEST] lines}
+--- restore ---
+${restore_err}"
 
     # Git branch upload (TEXT/LOG FILES ONLY, NEVER binary .img files)
     (
@@ -123,14 +138,6 @@ if [ -z "${CRIU_BIN}" ] || [ ! -x "${CRIU_BIN}" ]; then
 fi
 log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null | head -n 1 || true))"
 log "CPU model: $(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | xargs || true)"
-log "CPU xsave flags: $(grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(xsave|osxsave|avx512|amx)' | tr '\n' ' ' || true)"
-if [ -x /tmp/xsave_size ]; then
-    log "$(/tmp/xsave_size)"
-fi
-send_ntfy "CRIU Host Caps" "bin=${CRIU_BIN}
-$(${CRIU_BIN} --version 2>/dev/null | head -n 2)
-$(grep -m1 '^model name' /proc/cpuinfo)
-$(/tmp/xsave_size 2>/dev/null || true)"
 
 DUMP_ATTEMPTS=0
 DUMP_RC=1
@@ -244,12 +251,13 @@ if kill -0 "${QEMU_PID}" 2>/dev/null; then
 fi
 SERIAL_BYTES=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
 log "QEMU launched pid=${QEMU_PID} alive=${QEMU_ALIVE} serial_bytes=${SERIAL_BYTES}"
-send_ntfy "QEMU PID ${QEMU_PID}" "alive=${QEMU_ALIVE} serial_bytes=${SERIAL_BYTES}"
 
-# Watchdog: 9p guest_progress.txt + [GUEST] serial lines only (not kernel dmesg).
+# First sample after /init has had time to mount 9p. Then every 10s.
+# Always append host_watchdog.txt so GHA artifacts work even if ntfy drops.
 (
     set +e
-    for i in 0 1 2 3 4 5 6 7 8 9 10 12 14 16 18 20; do
+    sleep 10
+    for i in 1 2 3 4 5 6 7 8; do
         chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" /tmp/daemon_helper.log 2>/dev/null || true
         serial_sz=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
         qemu_alive=no
@@ -257,18 +265,24 @@ send_ntfy "QEMU PID ${QEMU_PID}" "alive=${QEMU_ALIVE} serial_bytes=${SERIAL_BYTE
         progress="$(cat "${CHECKPOINT_DIR}/guest_progress.txt" 2>/dev/null || echo "(no guest_progress.txt)")"
         guest_serial="$(grep -E '\[GUEST\]|QEMU Guest VM Booted|CRIU restore returned' "${SERIAL_LOG}" 2>/dev/null | tail -n 15 || true)"
         restore_err="$(grep -E 'Error \(' "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null | tail -n 8 || echo "(no restore log)")"
-        send_ntfy "Watchdog ${i}" "qemu=${qemu_alive} serial_bytes=${serial_sz}
+        {
+            echo "t=$(date -u +%H:%M:%S) i=${i} qemu=${qemu_alive} serial_bytes=${serial_sz}"
+            echo "${progress}" | tail -n 5
+            echo "---"
+        } >> "${CHECKPOINT_DIR}/host_watchdog.txt"
+        body="qemu=${qemu_alive} serial_bytes=${serial_sz}
 --- progress ---
 ${progress}
 --- guest ---
 ${guest_serial:-none}
 --- restore ---
 ${restore_err}"
+        send_ntfy "Watchdog ${i}" "${body}"
         if [ -f "${CHECKPOINT_DIR}/step3_verification.txt" ]; then
             send_ntfy "STEP 3 VERIFIED IN VM!" "$(cat "${CHECKPOINT_DIR}/step3_verification.txt")"
             break
         fi
-        sleep 4
+        sleep 10
     done
 ) &
 WATCHDOG_PID=$!
@@ -294,9 +308,10 @@ kill -9 "${WATCHDOG_PID}" "${KILLER_PID}" 2>/dev/null || true
 
 log "QEMU MicroVM execution finished pid=${QEMU_PID} status=${QEMU_RC} serial_bytes=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)"
 upload_debug "QEMU_EXIT_${QEMU_RC}"
+touch "${CHECKPOINT_DIR}/helper_done"
 
-# If Step 3 was not verified and QEMU exited, cancel orphaned workflow run to fail fast
-if [ ! -f "${CHECKPOINT_DIR}/step3_verification.txt" ] && [ -n "${GITHUB_RUN_ID:-}" ] && [ "${GITHUB_RUN_ID}" != "0" ]; then
+# If Step 3 was not verified and QEMU exited, cancel orphaned T9 workflow (not smoke/R9).
+if [ "${T9_CANCEL_ON_QEMU_EXIT:-1}" = "1" ] && [ ! -f "${CHECKPOINT_DIR}/step3_verification.txt" ] && [ -n "${GITHUB_RUN_ID:-}" ] && [ "${GITHUB_RUN_ID}" != "0" ]; then
     log "Migration did not complete before QEMU exit. Cancelling orphaned workflow run ${GITHUB_RUN_ID}..."
     send_ntfy "Workflow Auto-Cancel" "Cancelling run ${GITHUB_RUN_ID} because QEMU exited (RC=${QEMU_RC}) without completing Step 3"
     gh run cancel "${GITHUB_RUN_ID}" 2>/dev/null || true
