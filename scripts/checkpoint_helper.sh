@@ -229,6 +229,21 @@ command -v qemu-system-x86_64 | tee -a "${HELPER_LOG}" || true
 chmod 666 "${SERIAL_LOG}"
 QEMU_DEBUG_LOG="${CHECKPOINT_DIR}/qemu.log"
 
+VIRTFS_ARGS=(
+    -virtfs "local,path=${RUNNER_HOME},mount_tag=host_runner,security_model=none,id=host_runner"
+    -virtfs "local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp"
+    -virtfs "local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib"
+    -virtfs "local,path=${DOTNET_DIR},mount_tag=dotnet,security_model=none,id=dotnet"
+    -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
+)
+for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64"; do
+    tag="${spec%%:*}"
+    path="${spec##*:}"
+    if [ -d "${path}" ]; then
+        VIRTFS_ARGS+=(-virtfs "local,path=${path},mount_tag=${tag},security_model=none,id=${tag}")
+    fi
+done
+
 set +e
 qemu-system-x86_64 \
     ${ACCEL_ARGS} -m 2G -smp 2 \
@@ -239,11 +254,7 @@ qemu-system-x86_64 \
     -no-reboot \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
     -device virtio-net-pci,netdev=net0 \
-    -virtfs local,path="${RUNNER_HOME}",mount_tag=host_runner,security_model=none,id=host_runner \
-    -virtfs local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp \
-    -virtfs local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib \
-    -virtfs local,path="${DOTNET_DIR}",mount_tag=dotnet,security_model=none,id=dotnet \
-    -virtfs local,path="${CHECKPOINT_DIR}",mount_tag=checkpoint,security_model=none,id=checkpoint \
+    "${VIRTFS_ARGS[@]}" \
     -D "${QEMU_DEBUG_LOG}" \
     -serial "file:${SERIAL_LOG}" < /dev/null >> "${HELPER_LOG}" 2>&1 &
 QEMU_PID=$!

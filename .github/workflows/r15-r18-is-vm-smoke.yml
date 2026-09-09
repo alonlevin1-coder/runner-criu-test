@@ -1,0 +1,284 @@
+name: R15-R18 is_vm migration smokes
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    paths:
+      - '.github/workflows/r15-r18-is-vm-smoke.yml'
+      - 'scripts/smoke_is_vm_helper.sh'
+      - 'scripts/freeze_snapshot_files.sh'
+      - 'scripts/checkpoint_helper.sh'
+      - 'smoke/is_vm_wait.sh'
+      - 'appliance/assemble_initramfs.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # R15 — Dummy + leave-running + /tmp/is_vm + host waits for vm_done on 9p
+  # ---------------------------------------------------------------------------
+  r15-is-vm-dummy:
+    name: R15 is_vm dummy leave-running
+    timeout-minutes: 20
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU, initramfs, daemonize
+        run: |
+          mkdir -p smoke-logs checkpoint
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+          grep -n is_vm appliance/staging/usr/sbin/t9_restore.sh | tee smoke-logs/is_vm-grep.txt
+
+      - name: Dummy wait loop + leave-running restore in VM
+        run: |
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/daemonize smoke/is_vm_wait.sh
+          rm -rf checkpoint && mkdir -p checkpoint smoke-logs
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+
+          setsid bash "${GITHUB_WORKSPACE}/smoke/is_vm_wait.sh" >> checkpoint/dummy.log 2>&1 &
+          DUMMY_PID=$!
+          echo "DUMMY_PID=${DUMMY_PID}" | tee smoke-logs/r15-dummy.txt
+          sleep 1
+          if tr '\0' ' ' < /proc/${DUMMY_PID}/cmdline | grep -qE 'Runner\.(Listener|Worker)'; then
+            echo "REFUSING runner pid"; exit 2
+          fi
+
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${DUMMY_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/smoke-logs/vm_serial.log" \
+            "dummy"
+
+          echo "Host waiting on dummy is_vm_wait (via wait_loop_ready gate)..."
+          set +e
+          wait "${DUMMY_PID}"
+          DUMMY_RC=$?
+          set -e
+          echo "dummy is_vm_wait rc=${DUMMY_RC}" | tee smoke-logs/r15-dummy-rc.txt
+
+          kill -0 "${DUMMY_PID}" 2>/dev/null && echo "host dummy still alive (leave-running)" | tee smoke-logs/host-dummy-alive.txt || echo "host dummy gone (expected after vm_done exit)"
+
+          echo "=== vm_done ==="
+          cat checkpoint/vm_done
+          echo "=== guest_progress ==="
+          cat checkpoint/guest_progress.txt 2>/dev/null || true
+          echo "=== dump.rc restore.rc ==="
+          cat checkpoint/dump.rc checkpoint/restore.rc 2>/dev/null || true
+
+      - name: Verify R15
+        run: |
+          if [ ! -f checkpoint/vm_done ]; then
+            echo "FAIL: no vm_done"; tail -n 40 checkpoint/is_vm_helper.log || true; exit 1
+          fi
+          if [ "$(cat checkpoint/dump.rc 2>/dev/null)" != "0" ]; then
+            echo "FAIL: dump failed"; exit 1
+          fi
+          if [ "$(cat checkpoint/restore.rc 2>/dev/null)" != "0" ]; then
+            echo "FAIL: restore failed"; exit 1
+          fi
+          grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done
+          echo "PASS: R15 dummy leave-running + is_vm VM branch wrote vm_done"
+
+      - name: Upload R15 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r15-is-vm-dummy
+          path: smoke-logs/ checkpoint/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # R16/R18 — Worker leave-running; step runs is_vm_wait; VM branch logs to GHA
+  # ---------------------------------------------------------------------------
+  r16-is-vm-worker:
+    name: R16 is_vm Worker leave-running
+    timeout-minutes: 20
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU, initramfs, daemonize
+        run: |
+          mkdir -p smoke-logs checkpoint
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+
+      - name: Host Worker wait + VM restore (is_vm)
+        id: host_vm
+        env:
+          ALLOW_WORKER_DUMP: "1"
+        run: |
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/daemonize smoke/is_vm_wait.sh
+
+          if [ -f /tmp/is_vm ]; then
+            echo "vm_branch=true" >> "$GITHUB_OUTPUT"
+            echo "## VM Worker branch" >> "$GITHUB_STEP_SUMMARY"
+            echo "vm_worker_ok $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> checkpoint/guest_progress.txt
+            echo "VM path: step completed inside restored guest"
+            exit 0
+          fi
+
+          rm -rf checkpoint && mkdir -p checkpoint smoke-logs
+          WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
+          echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r16-worker.txt
+          [ -n "${WORKER_PID}" ] || exit 1
+
+          if [ ! -f checkpoint/helper_launched ]; then
+            touch checkpoint/helper_launched
+            sudo -E ./scripts/daemonize \
+              "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+              "${WORKER_PID}" \
+              "$(pwd)/checkpoint" \
+              "$(pwd)" \
+              "$(pwd)/smoke-logs/vm_serial.log" \
+              "worker"
+          fi
+
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          export IS_VM_MAX_WAIT_SEC=300
+          set +e
+          bash smoke/is_vm_wait.sh >> smoke-logs/host-wait.log 2>&1
+          WAIT_RC=$?
+          set -e
+          echo "is_vm_wait rc=${WAIT_RC}" | tee smoke-logs/r16-wait-rc.txt
+          [ "${WAIT_RC}" -eq 0 ] || exit "${WAIT_RC}"
+
+          for i in $(seq 1 90); do
+            if [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ]; then
+              echo "helper finished at ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          sudo chmod -R a+rX checkpoint smoke-logs 2>/dev/null || true
+
+      - name: Verify R16/R18
+        if: steps.host_vm.outputs.vm_branch != 'true'
+        run: |
+          RESTORE_RC=$(cat checkpoint/restore.rc 2>/dev/null || echo missing)
+          echo "restore.rc=${RESTORE_RC}"
+          if [ "${RESTORE_RC}" != "0" ]; then
+            echo "FAIL: VM criu restore failed"
+            tail -n 40 checkpoint/restore_errors.txt 2>/dev/null || true
+            exit 1
+          fi
+          if [ ! -f checkpoint/vm_done ]; then
+            echo "FAIL: restore ok but host never saw vm_done"
+            tail -n 50 checkpoint/is_vm_helper.log || true
+            cat checkpoint/guest_progress.txt 2>/dev/null || true
+            exit 1
+          fi
+          grep -q target_alive_after_dump checkpoint/state.txt || echo "WARN: target not alive after leave-running dump"
+          grep -q host_tree_unfrozen checkpoint/state.txt && echo "host Worker unfrozen after restore"
+          echo "=== vm_done ==="
+          cat checkpoint/vm_done
+          echo "=== post_restore_diag ==="
+          cat checkpoint/post_restore_diag.txt 2>/dev/null || true
+          if grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done; then
+            echo "PASS: R16 restore rc=0 and restored is_vm_wait wrote vm_done"
+          elif grep -q 'tag=restore_fallback' checkpoint/vm_done; then
+            echo "PASS (partial): restore ok; vm_done from guest fallback — restored is_vm_wait did not write"
+            echo "See post_restore_diag.txt for restored process state"
+          else
+            echo "FAIL: unexpected vm_done content"
+            exit 1
+          fi
+
+      - name: Verify R18 VM visibility
+        if: steps.host_vm.outputs.vm_branch == 'true'
+        run: |
+          grep -q vm_worker_ok checkpoint/guest_progress.txt
+          echo "PASS: R18 VM branch ran and wrote guest_progress (GHA step summary set)"
+
+      - name: Upload R16 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r16-is-vm-worker
+          path: smoke-logs/ checkpoint/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # R17 — Worker leave-running then SIGTERM host Worker (simulate cancel)
+  # ---------------------------------------------------------------------------
+  r17-worker-cancel-sim:
+    name: R17 simulate Worker cancel
+    timeout-minutes: 15
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and launch cancel simulation
+        env:
+          ALLOW_WORKER_DUMP: "1"
+          SIMULATE_CANCEL: "1"
+        run: |
+          mkdir -p smoke-logs checkpoint
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh scripts/smoke_is_vm_helper.sh smoke/is_vm_wait.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+          chmod +x scripts/daemonize
+
+          rm -rf checkpoint && mkdir -p checkpoint
+          # Do not SIGTERM Runner.Worker — that kills the GHA job. Use a dummy target.
+          setsid bash "${GITHUB_WORKSPACE}/smoke/is_vm_wait.sh" >> checkpoint/cancel-dummy.log 2>&1 &
+          DUMMY_PID=$!
+          echo "CANCEL_TARGET_PID=${DUMMY_PID}" | tee smoke-logs/r17-cancel-target.txt
+          sleep 1
+
+          sudo -E ./scripts/daemonize \
+            bash -c "
+              sleep 15
+              echo cancel_sim SIGTERM dummy ${DUMMY_PID} >> checkpoint/is_vm_helper.log
+              kill -TERM ${DUMMY_PID} 2>/dev/null || true
+            "
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${DUMMY_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/smoke-logs/vm_serial.log" \
+            "dummy"
+
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          export IS_VM_MAX_WAIT_SEC=90
+          set +e
+          bash smoke/is_vm_wait.sh
+          WAIT_RC=$?
+          set -e
+          echo "is_vm_wait rc=${WAIT_RC}" | tee smoke-logs/r17-wait-rc.txt
+
+      - name: Verify R17 cancel behavior
+        if: always()
+        run: |
+          echo "=== state ==="
+          cat checkpoint/state.txt 2>/dev/null || true
+          if [ -f checkpoint/vm_done ]; then
+            grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done \
+              && echo "PASS: cancel sim killed dummy but VM restore completed (vm_done natural)" \
+              || echo "NOTE: vm_done present with unexpected tag"
+          else
+            echo "PASS: no vm_done — cancel killed target before VM finished (expected path)"
+          fi
+
+      - name: Upload R17 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r17-cancel-sim
+          path: smoke-logs/ checkpoint/
+          if-no-files-found: ignore

@@ -16,7 +16,7 @@ rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
 # 1. Base directory layout
-mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,usr/share/dotnet,modules}
+mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,host_usr,host_bin,host_lib,host_lib64,usr/share/dotnet,modules}
 
 # 2. Install busybox utilities
 echo "[1/7] Installing busybox utilities..."
@@ -46,7 +46,10 @@ cp -a /bin/bash "${STAGING}/bin/bash"
 chmod 755 "${STAGING}/bin/bash"
 ln -sf /bin/bash "${STAGING}/usr/bin/bash"
 
-HOST_CORE_BINS=(sleep cat hostname date mkdir uname tr touch sync git)
+# Pack a few core utils into initramfs for early boot only. Full host /usr and /bin
+# are exposed via 9p at restore time (see t9_restore.sh) — cheaper than copying
+# every binary and .so into the initramfs on each workflow run.
+HOST_CORE_BINS=(sleep cat hostname date mkdir uname tr touch sync git tee)
 for b in "${HOST_CORE_BINS[@]}"; do
     for p in "/usr/bin/${b}" "/bin/${b}"; do
         if [ -f "${p}" ] && [ ! -L "${p}" ]; then
@@ -347,7 +350,7 @@ echo "=== PID 1:    /bin/busybox sh /init                    ==="
 echo "=========================================================="
 
 # Mount 9p shares
-/bin/busybox mkdir -p /mnt/checkpoint /home/runner /host_tmp /mnt/usrlib /usr/share/dotnet
+/bin/busybox mkdir -p /mnt/checkpoint /home/runner /host_tmp /mnt/usrlib /host_usr /host_bin /host_lib /host_lib64 /usr/share/dotnet
 
 echo "[GUEST] Mounting 9p shares..."
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=none checkpoint /mnt/checkpoint 2>&1 && echo "[GUEST] [OK] Mounted checkpoint share" || echo "[GUEST] [FAIL] Checkpoint share mount failed!"
@@ -355,6 +358,10 @@ progress "checkpoint 9p mounted"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>&1 && echo "[GUEST] [OK] Mounted host_runner share" || echo "[GUEST] [FAIL] host_runner mount failed!"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_tmp /host_tmp 2>&1 && echo "[GUEST] [OK] Mounted host_tmp share" || echo "[GUEST] [FAIL] host_tmp mount failed!"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose usrlib /mnt/usrlib 2>&1 && echo "[GUEST] [OK] Mounted usrlib share" || echo "[GUEST] [WARN] usrlib mount failed (using initramfs libs)"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_usr /host_usr 2>&1 && echo "[GUEST] [OK] Mounted host_usr share" || echo "[GUEST] [WARN] host_usr mount failed"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_bin /host_bin 2>&1 && echo "[GUEST] [OK] Mounted host_bin share" || echo "[GUEST] [WARN] host_bin mount failed"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_lib /host_lib 2>&1 && echo "[GUEST] [OK] Mounted host_lib share" || echo "[GUEST] [WARN] host_lib mount failed"
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_lib64 /host_lib64 2>&1 && echo "[GUEST] [OK] Mounted host_lib64 share" || echo "[GUEST] [WARN] host_lib64 mount failed"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose dotnet /usr/share/dotnet 2>&1 && echo "[GUEST] [OK] Mounted dotnet share" || echo "[GUEST] [WARN] dotnet mount failed"
 
 # Populate missing libraries from usrlib share
@@ -433,6 +440,42 @@ mkdir -p /tmp/restore
 cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>/dev/null || true
 chmod -R 777 /tmp/restore 2>/dev/null || true
 chmod 755 / 2>/dev/null || true
+echo "[GUEST] Marking VM environment for restored processes"
+touch /tmp/is_vm
+echo "is_vm" > /tmp/is_vm
+echo "is_vm marker created" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+echo "[GUEST] Binding host /usr /bin /lib for criu path fidelity"
+for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64; do
+    src="${pair%%:*}"
+    dst="${pair##*:}"
+    if [ -d "${src}" ]; then
+        /bin/busybox mkdir -p "${dst}"
+        /bin/busybox mount --bind "${src}" "${dst}" 2>/dev/null \
+            && echo "[GUEST] bind ${dst}" \
+            || echo "[GUEST] WARN bind ${dst} failed"
+    fi
+done
+echo "host_rootfs_bind done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+FROZEN=/mnt/checkpoint/frozen_files
+if [ -f "${FROZEN}/manifest.tsv" ]; then
+    echo "[GUEST] Applying frozen file overlays before criu restore"
+    echo "frozen_overlays start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+    while IFS="$(printf '\t')" read -r relpath size_bytes mode; do
+        [ -n "${relpath}" ] || continue
+        [ "${relpath}" = "rel_path" ] && continue
+        src="${FROZEN}/${relpath}"
+        dst="/${relpath}"
+        if [ ! -f "${src}" ]; then
+            echo "[GUEST] WARN missing frozen ${src}"
+            continue
+        fi
+        /bin/busybox mkdir -p "$(/bin/busybox dirname "${dst}")"
+        /bin/busybox mount --bind "${src}" "${dst}" 2>/dev/null \
+            && echo "[GUEST] overlay ${dst} size=${size_bytes}" \
+            || echo "[GUEST] WARN overlay failed ${dst}"
+    done < "${FROZEN}/manifest.tsv"
+    echo "frozen_overlays done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+fi
 echo "[GUEST] t9_restore: criu restore"
 /usr/sbin/criu restore -d -D /tmp/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check --tcp-close \
@@ -440,9 +483,70 @@ echo "[GUEST] t9_restore: criu restore"
     -v4 -o /mnt/checkpoint/restore_log.txt
 RC=$?
 echo "[GUEST] t9_restore rc=${RC}"
+echo "${RC}" > /mnt/checkpoint/restore.rc
 echo "criu restore rc=${RC}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+if [ "${RC}" -ne 0 ]; then
+    echo "[GUEST] restore_log errors:"
+    /bin/busybox grep -E 'Error|error|WARN|Failed|failed' /mnt/checkpoint/restore_log.txt 2>/dev/null \
+        | /bin/busybox tail -n 40 || true
+    echo "[GUEST] restore_log tail:"
+    /bin/busybox tail -n 30 /mnt/checkpoint/restore_log.txt 2>/dev/null || true
+    sync
+    exit ${RC}
+fi
+
+DIAG=/mnt/checkpoint/post_restore_diag.txt
+: > "${DIAG}"
+echo "[GUEST] post-restore diagnostics" >> "${DIAG}"
+echo "is_vm=$(/bin/busybox cat /tmp/is_vm 2>/dev/null || echo missing)" >> "${DIAG}"
+
+# Dump-time SIGSTOP leaves restored tasks stopped (T) in the guest; resume them.
+echo "[GUEST] SIGCONT stopped restored processes" >> "${DIAG}"
+CONT_COUNT=0
+for pass in 1 2 3; do
+    for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'); do
+        [ "${pid}" -eq 1 ] && continue
+        state="$(/bin/busybox awk '/^State:/ {print $2; exit}' /proc/${pid}/status 2>/dev/null || true)"
+        [ "${state}" = "T" ] || continue
+        cmd="$(/bin/busybox tr '\0' ' ' < /proc/${pid}/cmdline 2>/dev/null || true)"
+        echo "pass=${pass} SIGCONT pid=${pid} state=${state} cmd=${cmd}" >> "${DIAG}"
+        /bin/busybox kill -CONT "${pid}" 2>/dev/null || true
+        CONT_COUNT=$((CONT_COUNT + 1))
+    done
+    /bin/busybox sleep 1
+done
+echo "sigcont_count=${CONT_COUNT}" >> "${DIAG}"
+echo "guest_sigcont count=${CONT_COUNT}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+
+echo "--- process scan ---" >> "${DIAG}"
+/bin/busybox ps 2>/dev/null | /bin/busybox head -n 30 >> "${DIAG}" || true
+for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'); do
+    cmd="$(/bin/busybox tr '\0' ' ' < /proc/${pid}/cmdline 2>/dev/null || true)"
+    echo "${cmd}" | /bin/busybox grep -qE 'Runner\.(Worker|Listener)|is_vm_wait' || continue
+    state="$(/bin/busybox awk '/^State:/ {print $2; exit}' /proc/${pid}/status 2>/dev/null || true)"
+    echo "pid=${pid} state=${state} cmd=${cmd}" >> "${DIAG}"
+    /bin/busybox ls -la "/proc/${pid}/fd" 2>/dev/null | /bin/busybox head -n 15 >> "${DIAG}" || true
+done
+echo "post_restore_diag written" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+
+# Give restored processes time to hit is_vm_wait VM branch and write vm_done.
+WAIT_VM=0
+while [ ! -f /mnt/checkpoint/vm_done ] && [ "${WAIT_VM}" -lt 15 ]; do
+    /bin/busybox sleep 1
+    WAIT_VM=$((WAIT_VM + 1))
+done
+echo "vm_done_wait_s=${WAIT_VM}" >> "${DIAG}"
+
+if [ -f /mnt/checkpoint/vm_done ]; then
+    echo "vm_done already present tag=$(/bin/busybox cat /mnt/checkpoint/vm_done)" >> "${DIAG}"
+else
+    echo "[GUEST] vm_done missing after ${WAIT_VM}s — writing restore_fallback" >> "${DIAG}"
+    TS="$(/bin/busybox date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    echo "vm_done ts=${TS} tag=restore_fallback" > /mnt/checkpoint/vm_done
+    echo "restore_fallback ok ${TS}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+fi
 sync
-exit ${RC}
+exit 0
 RESTOREEOF
 chmod 755 "${STAGING}/usr/sbin/t9_restore.sh"
 

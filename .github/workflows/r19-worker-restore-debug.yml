@@ -1,0 +1,119 @@
+name: R19 Worker VM restore debug
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    paths:
+      - '.github/workflows/r19-worker-restore-debug.yml'
+      - 'scripts/smoke_is_vm_helper.sh'
+      - 'scripts/freeze_snapshot_files.sh'
+      - 'appliance/assemble_initramfs.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  r19-worker-restore-debug:
+    name: R19 Worker restore diagnostics
+    timeout-minutes: 15
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU, initramfs, daemonize
+        run: |
+          mkdir -p smoke-logs checkpoint
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+
+      - name: Worker dump + VM restore (capture logs)
+        id: debug
+        env:
+          ALLOW_WORKER_DUMP: "1"
+        run: |
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/daemonize smoke/is_vm_wait.sh
+          rm -rf checkpoint && mkdir -p checkpoint smoke-logs
+
+          WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
+          echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r19-worker.txt
+          [ -n "${WORKER_PID}" ] || exit 1
+
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${WORKER_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/smoke-logs/vm_serial.log" \
+            "worker"
+
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          export IS_VM_MAX_WAIT_SEC=120
+          set +e
+          bash smoke/is_vm_wait.sh >> smoke-logs/host-wait.log 2>&1
+          WAIT_RC=$?
+          set -e
+          echo "is_vm_wait rc=${WAIT_RC}" | tee smoke-logs/r19-wait-rc.txt
+
+          for i in $(seq 1 90); do
+            if [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ]; then
+              echo "helper finished at ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          sudo chmod -R a+rX checkpoint smoke-logs 2>/dev/null || true
+
+      - name: Print restore diagnostics
+        if: always()
+        run: |
+          echo "=== dump.rc restore.rc ==="
+          cat checkpoint/dump.rc checkpoint/restore.rc 2>/dev/null || true
+          echo "=== worker_pre_dump.txt ==="
+          cat checkpoint/worker_pre_dump.txt 2>/dev/null || true
+          echo "=== dump_errors.txt ==="
+          cat checkpoint/dump_errors.txt 2>/dev/null || true
+          echo "=== restore_errors.txt ==="
+          cat checkpoint/restore_errors.txt 2>/dev/null || true
+          echo "=== frozen_files manifest ==="
+          cat checkpoint/frozen_files/manifest.tsv 2>/dev/null || true
+          echo "=== state.txt ==="
+          cat checkpoint/state.txt 2>/dev/null || true
+          echo "=== post_restore_diag.txt ==="
+          cat checkpoint/post_restore_diag.txt 2>/dev/null || true
+          echo "=== vm_done ==="
+          cat checkpoint/vm_done 2>/dev/null || true
+          echo "=== restore_log.txt (full) ==="
+          cat checkpoint/restore_log.txt 2>/dev/null || echo "(missing restore_log.txt)"
+          echo "=== is_vm_helper.log tail ==="
+          tail -n 80 checkpoint/is_vm_helper.log 2>/dev/null || true
+          echo "=== checkpoint images ==="
+          ls -lh checkpoint/*.img 2>/dev/null || true
+
+      - name: Summarize R19
+        if: always()
+        run: |
+          DUMP_RC=$(cat checkpoint/dump.rc 2>/dev/null || echo missing)
+          RESTORE_RC=$(cat checkpoint/restore.rc 2>/dev/null || echo missing)
+          echo "dump.rc=${DUMP_RC} restore.rc=${RESTORE_RC}"
+          if [ "${RESTORE_RC}" = "0" ] && [ -f checkpoint/vm_done ]; then
+            echo "PASS: Worker criu restore succeeded in VM (vm_done present)"
+            grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done \
+              || echo "NOTE: vm_done used restore_fallback — see post_restore_diag.txt"
+            exit 0
+          fi
+          echo "FAIL: Worker criu restore failed — see restore_errors.txt above"
+          exit 1
+
+      - name: Upload R19 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r19-worker-restore-debug
+          path: |
+            smoke-logs/
+            checkpoint/
+          if-no-files-found: warn

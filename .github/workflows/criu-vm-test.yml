@@ -22,7 +22,7 @@ jobs:
           # Runner.Listener already maps libc/libssl; replacing them makes CRIU dump ghost files.
           sudo apt-mark hold libc6 libc6-dev libssl3 libssl-dev 2>/dev/null || true
           sudo apt-get update -qq
-          sudo apt-get install -y --no-upgrade qemu-system-x86 gdb dropbear-bin openssh-client cpio
+          sudo apt-get install -y --no-upgrade qemu-system-x86 gdb dropbear-bin openssh-client cpio gcc
           sudo chmod 666 /dev/kvm
           echo "--- QEMU Version ---"
           qemu-system-x86_64 --version
@@ -93,14 +93,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          MIGRATION_TARGET: worker
+          ALLOW_WORKER_DUMP: "1"
         run: |
-          echo "=== Step: Checkpoint & Migrate to VM ==="
-          chmod +x scripts/*.sh
+          echo "=== Step: Checkpoint & Migrate to VM (Worker leave-running) ==="
+          chmod +x scripts/*.sh smoke/*.sh 2>/dev/null || chmod +x scripts/*.sh
           ./scripts/setup_step.sh
+          echo "=== vm_done ==="
+          cat checkpoint/vm_done
+          echo "=== post_restore_diag (tail) ==="
+          tail -n 25 checkpoint/post_restore_diag.txt 2>/dev/null || true
 
       - name: Hello World from VM
         run: |
-          echo "=== GITHUB-HOSTED RUNNER IN VM ==="
+          if [ ! -f /tmp/is_vm ]; then
+            echo "ERROR: Step 3 reached host without /tmp/is_vm — migration did not restore this step into VM"
+            exit 1
+          fi
+          echo "=== GITHUB-HOSTED RUNNER IN VM (/tmp/is_vm present) ==="
           echo "Hostname: $(hostname)"
           echo "PID 1: $(cat /proc/1/cmdline | tr '\0' ' ')"
           echo "Kernel: $(uname -r)"
