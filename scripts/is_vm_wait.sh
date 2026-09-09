@@ -93,5 +93,5 @@ if [ -f /tmp/is_vm ]; then
 fi
 
 log "host branch — blocking forever (host Worker stays on step 2)"
-echo "host_blocked ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${CP}/state.txt"
+echo "host_blocked ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${CP}/state.txt" 2>/dev/null || true
 exec sleep "${HOST_BLOCK_SLEEP_SEC:-10000000}"

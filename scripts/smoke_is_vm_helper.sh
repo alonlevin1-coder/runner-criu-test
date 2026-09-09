@@ -249,7 +249,9 @@ ls -lh "${CHECKPOINT_DIR}"/*.img 2>/dev/null | tee -a "${HELPER_LOG}" || true
 
 if [ "${RESTORE_RC}" -eq 0 ]; then
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    chmod -R a+rwX "${CHECKPOINT_DIR}" 2>/dev/null || true
     echo "migrator_ok ts=${TS} restore_rc=0" > "${CHECKPOINT_DIR}/migrator_ok"
+    chmod a+rw "${CHECKPOINT_DIR}/migrator_ok" 2>/dev/null || true
     log "wrote migrator_ok — unfreezing host tree for host/VM branch"
     if [ -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
         unfreeze_tree "${CHECKPOINT_DIR}"
