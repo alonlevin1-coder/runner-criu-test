@@ -1,0 +1,118 @@
+name: R21 VM multi-step smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    paths:
+      - '.github/workflows/r21-vm-multi-step.yml'
+      - 'scripts/post_migration/**'
+      - 'scripts/replay_vm_step.sh'
+      - 'scripts/is_vm_wait.sh'
+      - 'scripts/smoke_is_vm_helper.sh'
+      - 'scripts/freeze_snapshot_files.sh'
+      - 'appliance/assemble_initramfs.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  r21-vm-multi-step:
+    name: R21 migrate then network + filesystem steps
+    timeout-minutes: 20
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU, initramfs, daemonize
+        run: |
+          mkdir -p smoke-logs checkpoint
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client curl
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/is_vm_wait.sh scripts/replay_vm_step.sh
+          chmod +x scripts/post_migration/*.sh
+
+      - name: Migrate Worker
+        env:
+          ALLOW_WORKER_DUMP: "1"
+        run: |
+          if [ -f /tmp/is_vm ]; then
+            echo "already in VM — migration skipped"
+            exit 0
+          fi
+
+          rm -rf checkpoint && mkdir -p checkpoint smoke-logs
+          WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
+          echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r21-worker.txt
+          [ -n "${WORKER_PID}" ] || exit 1
+
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${WORKER_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/smoke-logs/vm_serial.log" \
+            "worker"
+
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          export IS_VM_MAX_WAIT_SEC=420
+          export POST_MIGRATION_SCRIPT="${GITHUB_WORKSPACE}/scripts/post_migration/run_all.sh"
+          set +e
+          ./scripts/is_vm_wait.sh >> smoke-logs/host-wait.log 2>&1
+          WAIT_RC=$?
+          set -e
+          echo "is_vm_wait rc=${WAIT_RC}" | tee smoke-logs/r21-wait-rc.txt
+          [ "${WAIT_RC}" -eq 0 ] || exit "${WAIT_RC}"
+
+          for i in $(seq 1 120); do
+            if [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ]; then
+              echo "helper finished at ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          sudo chmod -R a+rX checkpoint smoke-logs 2>/dev/null || true
+          [ -f checkpoint/vm_post_migration_complete ] || { echo "post-migration incomplete"; exit 1; }
+
+      - name: Hello World
+        run: ./scripts/replay_vm_step.sh 3 scripts/post_migration/hello.sh
+
+      - name: Network connectivity
+        run: ./scripts/replay_vm_step.sh network scripts/post_migration/network.sh
+
+      - name: Filesystem operations
+        run: ./scripts/replay_vm_step.sh filesystem scripts/post_migration/filesystem.sh
+
+      - name: Download and verify
+        run: ./scripts/replay_vm_step.sh download scripts/post_migration/download_verify.sh
+
+      - name: Git workspace
+        run: ./scripts/replay_vm_step.sh git scripts/post_migration/git_workspace.sh
+
+      - name: Verify R21
+        run: |
+          grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done
+          for key in 3 network filesystem download git; do
+            if [[ "${key}" =~ ^[0-9]+$ ]]; then
+              [ -f "checkpoint/vm_step${key}_done" ]
+            else
+              [ -f "checkpoint/vm_step_${key}_done" ]
+            fi
+          done
+          grep -q 'Network checks completed' checkpoint/vm_step_network_output.txt
+          grep -q 'Filesystem checks completed' checkpoint/vm_step_filesystem_output.txt
+          grep -q 'Download verify completed' checkpoint/vm_step_download_output.txt
+          grep -q 'Git workspace checks completed' checkpoint/vm_step_git_output.txt
+          [ -f checkpoint/r21_fs_marker.txt ]
+          echo "PASS: Worker migrated; network + filesystem steps ran in VM"
+
+      - name: Upload R21 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r21-vm-multi-step
+          path: smoke-logs/ checkpoint/ output/
+          if-no-files-found: ignore
