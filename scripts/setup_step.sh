@@ -35,10 +35,12 @@ WORKER_PID=$(pgrep -f "Runner.Worker" | head -n 1 || echo "")
 echo "[STEP 2] Identified Runner.Listener PID: ${LISTENER_PID}"
 echo "[STEP 2] Identified Runner.Worker   PID: ${WORKER_PID}"
 
-# 3. Pre-process and sanitize listener file descriptors (closing /dev/pts leakage)
-echo "[STEP 2] Sanitizing Runner.Listener file descriptors..."
-chmod +x "${SCRIPT_DIR}/fix_listener_fds.sh"
-sudo "${SCRIPT_DIR}/fix_listener_fds.sh" "${LISTENER_PID}"
+# 3. Listener FD fix (Listener dump path only; Worker leave-running keeps Listener as-is)
+if [ "${MIGRATION_TARGET}" != "worker" ]; then
+    echo "[STEP 2] Sanitizing Runner.Listener file descriptors..."
+    chmod +x "${SCRIPT_DIR}/fix_listener_fds.sh"
+    sudo "${SCRIPT_DIR}/fix_listener_fds.sh" "${LISTENER_PID}"
+fi
 
 # 4. Prepare checkpoint directory
 rm -rf "${CHECKPOINT_DIR}"

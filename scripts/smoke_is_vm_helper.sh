@@ -22,13 +22,25 @@ source "${SCRIPT_DIR}/freeze_snapshot_files.sh"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [is_vm] $*" | tee -a "${HELPER_LOG}"; }
 
-unfreeze_host_if_needed() {
-    if [ -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
-        log "SIGCONT host tree after VM restore window"
-        unfreeze_tree "${CHECKPOINT_DIR}"
+finalize_host_tree() {
+    if [ ! -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
+        return 0
     fi
+    if [ -f "${CHECKPOINT_DIR}/vm_done" ] \
+        && grep -qE 'tag=vm_(entry|loop)' "${CHECKPOINT_DIR}/vm_done" 2>/dev/null \
+        && [ "${KILL_HOST_WORKER_AFTER_MIGRATE:-0}" = "1" ]; then
+        log "natural vm_done — stopping host Worker tree (VM owns continuation)"
+        while read -r pid; do
+            [ -n "${pid}" ] || continue
+            kill -9 "${pid}" 2>/dev/null || sudo kill -9 "${pid}" 2>/dev/null || true
+        done < "${CHECKPOINT_DIR}/sigstopped_pids.txt"
+        echo "host_worker_stopped=yes" >> "${CHECKPOINT_DIR}/state.txt"
+        return 0
+    fi
+    log "SIGCONT host tree after VM restore window"
+    unfreeze_tree "${CHECKPOINT_DIR}"
 }
-trap unfreeze_host_if_needed EXIT
+trap finalize_host_tree EXIT
 
 send_ntfy() {
     local title="${1:-is_vm}"

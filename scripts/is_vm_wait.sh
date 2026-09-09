@@ -16,9 +16,18 @@ write_vm_done() {
     log "wrote ${CP}/vm_done tag=${tag}"
 }
 
+run_post_migration() {
+    local script="${POST_MIGRATION_SCRIPT:-}"
+    [ -n "${script}" ] || return 0
+    [ -f "${script}" ] || { log "POST_MIGRATION_SCRIPT missing: ${script}"; return 1; }
+    log "running post-migration script ${script}"
+    bash "${script}"
+}
+
 if [ -f /tmp/is_vm ]; then
     log "VM branch (/tmp/is_vm present at entry)"
     write_vm_done "vm_entry"
+    run_post_migration
     exit 0
 fi
 
@@ -26,19 +35,20 @@ log "Host branch waiting (pid=$$ cp=${CP})"
 touch "${CP}/wait_loop_ready"
 log "signaled wait_loop_ready"
 MAX_WAIT="${IS_VM_MAX_WAIT_SEC:-600}"
-ELAPSED=0
+START=$(date +%s)
 while [ ! -f "${CP}/vm_done" ]; do
-    if [ "${ELAPSED}" -ge "${MAX_WAIT}" ]; then
+    NOW=$(date +%s)
+    if [ $((NOW - START)) -ge "${MAX_WAIT}" ]; then
         log "timeout after ${MAX_WAIT}s waiting for vm_done"
         exit 124
     fi
     if [ -f /tmp/is_vm ]; then
         log "VM branch detected inside wait loop"
         write_vm_done "vm_loop"
+        run_post_migration
         exit 0
     fi
     sleep 2
-    ELAPSED=$((ELAPSED + 2))
 done
 log "host saw vm_done"
 exit 0
