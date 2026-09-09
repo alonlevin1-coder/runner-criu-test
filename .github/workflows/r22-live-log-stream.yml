@@ -1,0 +1,94 @@
+name: R22 live log stream smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      sleep_sec:
+        description: Seconds to sleep after echo (use large value to verify live UI)
+        required: false
+        default: "30"
+  push:
+    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    paths:
+      - '.github/workflows/r22-live-log-stream.yml'
+      - 'scripts/live_log_*.sh'
+      - 'scripts/post_migration/live_echo_test.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  r22-live-log:
+    name: R22 live VM log streaming
+    timeout-minutes: 15
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU, initramfs, daemonize
+        run: |
+          mkdir -p smoke-logs checkpoint
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/is_vm_wait.sh
+          chmod +x scripts/live_log_setup.sh scripts/live_log_forwarder.sh
+          chmod +x scripts/post_migration/live_echo_test.sh
+
+      - name: Checkpoint & Migrate with live log pipe
+        env:
+          ALLOW_WORKER_DUMP: "1"
+          LIVE_ECHO_SLEEP_SEC: ${{ inputs.sleep_sec || '30' }}
+        run: |
+          if [ -f /tmp/is_vm ]; then
+            ./scripts/post_migration/live_echo_test.sh
+            exit 0
+          fi
+
+          rm -rf checkpoint && mkdir -p checkpoint smoke-logs
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          ./scripts/live_log_setup.sh
+
+          WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
+          echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r22-worker.txt
+          [ -n "${WORKER_PID}" ] || exit 1
+
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${WORKER_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/smoke-logs/vm_serial.log" \
+            "worker"
+
+          export POST_MIGRATION_SCRIPT="${GITHUB_WORKSPACE}/scripts/post_migration/live_echo_test.sh"
+          export IS_VM_MAX_WAIT_SEC=420
+          set +e
+          ./scripts/is_vm_wait.sh
+          WAIT_RC=$?
+          set -e
+          echo "is_vm_wait rc=${WAIT_RC}"
+          [ "${WAIT_RC}" -eq 0 ] || exit "${WAIT_RC}"
+
+          for i in $(seq 1 120); do
+            if [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ]; then
+              echo "helper finished at ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Verify live echo ran in VM
+        run: |
+          grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done
+          echo "PASS: migration ok; check step log — lalala should appear before step completed"
+
+      - name: Upload R22 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r22-live-log
+          path: smoke-logs/ checkpoint/
+          if-no-files-found: ignore
