@@ -83,7 +83,6 @@ jobs:
             exit 0
           fi
           if [ -f checkpoint/vm_step3_done ]; then
-            echo "=== step output (executed in VM during migration) ==="
             cat checkpoint/vm_step3_output.txt
             exit 0
           fi

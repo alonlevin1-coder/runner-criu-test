@@ -85,25 +85,49 @@ jobs:
       - name: Assemble VM Initramfs
         run: |
           echo "=== Assembling VM Initramfs ==="
-          chmod +x appliance/assemble_initramfs.sh
+          chmod +x appliance/assemble_initramfs.sh scripts/*.sh
           ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
           ls -lh appliance/initramfs.cpio.gz
 
       - name: Checkpoint & Migrate to VM
-        timeout-minutes: 12
+        timeout-minutes: 15
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          MIGRATION_TARGET: worker
           ALLOW_WORKER_DUMP: "1"
         run: |
           echo "=== Checkpoint & Migrate to VM (Worker leave-running) ==="
-          chmod +x scripts/*.sh smoke/*.sh 2>/dev/null || chmod +x scripts/*.sh
-          ./scripts/setup_step.sh
+          if [ -f /tmp/is_vm ]; then
+            echo "already in VM — migration skipped"
+            exit 0
+          fi
+
+          rm -rf checkpoint && mkdir -p checkpoint
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/is_vm_wait.sh scripts/post_migration_hello.sh
+
+          WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
+          echo "WORKER_PID=${WORKER_PID}"
+          [ -n "${WORKER_PID}" ] || exit 1
+
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${WORKER_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/vm_serial.log" \
+            "worker"
+
           export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
           export IS_VM_MAX_WAIT_SEC=300
           export POST_MIGRATION_SCRIPT="${GITHUB_WORKSPACE}/scripts/post_migration_hello.sh"
+
+          set +e
           ./scripts/is_vm_wait.sh
+          WAIT_RC=$?
+          set -e
+          [ "${WAIT_RC}" -eq 0 ] || exit "${WAIT_RC}"
+
           for i in $(seq 1 90); do
             if [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ]; then
               echo "helper finished at ${i}s"
