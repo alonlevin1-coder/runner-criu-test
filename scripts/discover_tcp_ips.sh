@@ -35,13 +35,33 @@ if [ ! -s "${OUT_SS}" ]; then
     exit 0
 fi
 
+parse_ss_local_ip() {
+    local line="${1:?ss line}"
+    local raw="${2:?local addr field}"
+    local ip=""
+
+    if [[ "${raw}" =~ ^\[([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\]:[0-9]+$ ]]; then
+        ip="${BASH_REMATCH[1]}"
+    elif [[ "${raw}" =~ ^\[::ffff:([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\]:[0-9]+$ ]]; then
+        ip="${BASH_REMATCH[1]}"
+    elif [[ "${raw}" =~ ^([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+):[0-9]+$ ]]; then
+        ip="${BASH_REMATCH[1]}"
+    else
+        echo "discover_tcp_ips: could not parse local addr '${raw}' from: ${line}" >> "${PREFLIGHT}"
+        return 1
+    fi
+    printf '%s' "${ip}"
+}
+
 declare -A seen=()
 while read -r line; do
     [ -n "${line}" ] || continue
-    local_ip_port="$(echo "${line}" | awk '{print $4}')"
-    local_ip="${local_ip_port%%:*}"
+    local_ip_port="$(awk '{print $4}' <<< "${line}")"
+    [ -n "${local_ip_port}" ] || continue
+    local_ip="$(parse_ss_local_ip "${line}" "${local_ip_port}" || true)"
+    [ -n "${local_ip}" ] || continue
     case "${local_ip}" in
-        ""|0.0.0.0|127.0.0.1|::1) continue ;;
+        0.0.0.0|127.0.0.1) continue ;;
     esac
     seen["${local_ip}"]=1
 done < "${OUT_SS}"
@@ -56,6 +76,10 @@ if [ ! -s "${OUT_IPS}" ]; then
 fi
 
 LOCAL_IP="$(head -n1 "${OUT_IPS}")"
+if ! [[ "${LOCAL_IP}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "discover_tcp_ips: invalid LOCAL_IP after parse: '${LOCAL_IP}'" >> "${PREFLIGHT}"
+    exit 1
+fi
 CIDR="$(ip -o addr show to "${LOCAL_IP}" 2>/dev/null | awk '{print $4}' | head -n1 || true)"
 if [ -z "${CIDR}" ]; then
     CIDR="$(ip -o addr show dev eth0 2>/dev/null | awk '/inet / {print $4; exit}')"

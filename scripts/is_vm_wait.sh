@@ -6,7 +6,7 @@ CP="${RUNNER_VM_CHECKPOINT:-checkpoint}"
 CP="$(cd "${CP}" 2>/dev/null && pwd || echo "${CP}")"
 MIGRATOR_OK="${CP}/migrator_ok"
 MARKER="${CP}/guest_progress.txt"
-NTFY_TOPIC="runner-criu-debug-morsho-test"
+NTFY_TOPIC="${NTFY_TOPIC:-runner-criu-r30-tap-morsho}"
 HOST_WATCH_PID=""
 
 log() { echo "[is_vm_wait] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }

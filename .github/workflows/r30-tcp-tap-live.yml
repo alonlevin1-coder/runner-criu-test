@@ -57,6 +57,7 @@ jobs:
           ALLOW_WORKER_DUMP: "1"
           KEEP_QEMU_ALIVE: "1"
           CRIU_TCP_MODE: established
+          NTFY_TOPIC: runner-criu-r30-tap-morsho
         run: |
           if [ -f /tmp/is_vm ]; then
             echo "VM branch — finishing migrate step"
@@ -96,6 +97,7 @@ jobs:
 
       - name: Sleep then echo lalala (native StepsRunner)
         env:
+          NTFY_TOPIC: runner-criu-r30-tap-morsho
           SLEEP_SEC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sleep_sec || '90' }}
         run: |
           if [ ! -f /tmp/is_vm ]; then

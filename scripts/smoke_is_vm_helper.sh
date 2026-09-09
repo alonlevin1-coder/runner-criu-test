@@ -15,7 +15,7 @@ SSH_PORT="${SSH_PORT:-2222}"
 SSH_KEY="${REPO_DIR}/appliance/ssh_id_ed25519"
 KERNEL_BIN="${REPO_DIR}/appliance/bzImage"
 INITRD_BIN="${REPO_DIR}/appliance/initramfs.cpio.gz"
-NTFY_TOPIC="runner-criu-debug-morsho-test"
+NTFY_TOPIC="${NTFY_TOPIC:-runner-criu-r30-tap-morsho}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=freeze_snapshot_files.sh
 source "${SCRIPT_DIR}/freeze_snapshot_files.sh"
