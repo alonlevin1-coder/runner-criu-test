@@ -49,7 +49,7 @@ jobs:
 
           rm -rf checkpoint && mkdir -p checkpoint smoke-logs
           export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
-          ./scripts/live_log_setup.sh
+          ./scripts/live_log_setup.sh $$
 
           WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
           echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r22-worker.txt
