@@ -50,6 +50,39 @@ unfreeze_tree() {
     echo "host_tree_unfrozen=yes" >> "${checkpoint_dir}/state.txt"
 }
 
+# After a --tcp-established dump the checkpoint image owns the live socket
+# state. Kill host-side TCP sockets while the tree is still SIGSTOP'd so the
+# restored VM copy does not race the host Worker on the same connections.
+close_tree_tcp_sockets() {
+    local checkpoint_dir="${1:?checkpoint dir}"
+    local pidfile="${checkpoint_dir}/sigstopped_pids.txt"
+    local log="${checkpoint_dir}/host_tcp_close.log"
+    local closed=0
+    local pid line sport
+
+    [ -f "${pidfile}" ] || return 0
+    if ! command -v ss >/dev/null 2>&1; then
+        echo "host_tcp_sockets_closed=skipped reason=no_ss" >> "${checkpoint_dir}/state.txt"
+        return 0
+    fi
+
+    : > "${log}"
+    while read -r pid; do
+        [ -n "${pid}" ] || continue
+        while read -r line; do
+            [ -n "${line}" ] || continue
+            sport="$(echo "${line}" | awk '{print $4}' | sed 's/.*://')"
+            [ -n "${sport}" ] || continue
+            echo "closing pid=${pid} sport=:${sport} ${line}" >> "${log}"
+            if sudo ss -H -K "sport = :${sport}" >> "${log}" 2>&1; then
+                closed=$((closed + 1))
+            fi
+        done < <(sudo ss -H -antp 2>/dev/null | grep -F "pid=${pid}," || true)
+    done < "${pidfile}"
+
+    echo "host_tcp_sockets_closed=yes count=${closed}" >> "${checkpoint_dir}/state.txt"
+}
+
 snapshot_open_files() {
     local checkpoint_dir="${1:?checkpoint dir}"
     local root_pid="${2:?root pid}"

@@ -147,6 +147,13 @@ if [ "${DUMP_RC}" -ne 0 ]; then
     exit "${DUMP_RC}"
 fi
 
+if [ "${TARGET_KIND}" = "worker" ] \
+    && [ "${CRIU_TCP_MODE}" = "established" ] \
+    && [ "${ISOLATE_HOST_TCP_AFTER_DUMP:-1}" = "1" ]; then
+    log "killing host TCP sockets after tcp-established dump (tree still frozen)"
+    close_tree_tcp_sockets "${CHECKPOINT_DIR}"
+fi
+
 if ! kill -0 "${TARGET_PID}" 2>/dev/null; then
     log "WARN: target died despite --leave-running"
     echo "target_dead_after_dump=yes" >> "${CHECKPOINT_DIR}/state.txt"
@@ -258,7 +265,7 @@ if [ "${RESTORE_RC}" -eq 0 ]; then
     chmod -R a+rwX "${CHECKPOINT_DIR}" 2>/dev/null || true
     echo "migrator_ok ts=${TS} restore_rc=0" > "${CHECKPOINT_DIR}/migrator_ok"
     chmod a+rw "${CHECKPOINT_DIR}/migrator_ok" 2>/dev/null || true
-    log "wrote migrator_ok — unfreezing host tree for host/VM branch"
+    log "wrote migrator_ok — unfreezing host tree (host TCP already isolated after dump)"
     if [ -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
         unfreeze_tree "${CHECKPOINT_DIR}"
     fi
