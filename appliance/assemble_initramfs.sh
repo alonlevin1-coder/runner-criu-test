@@ -81,8 +81,9 @@ echo "[4/7] Packaging CRIU binary and libraries..."
 CRIU_BIN="$(which criu 2>/dev/null || echo "/usr/sbin/criu")"
 if [ -f "${CRIU_BIN}" ]; then
     cp -L "${CRIU_BIN}" "${STAGING}/usr/sbin/criu"
-    ln -sf /usr/sbin/criu "${STAGING}/bin/criu"
-    chmod 755 "${STAGING}/usr/sbin/criu"
+    cp -L "${CRIU_BIN}" "${STAGING}/sbin/criu"
+    ln -sf /sbin/criu "${STAGING}/bin/criu"
+    chmod 755 "${STAGING}/usr/sbin/criu" "${STAGING}/sbin/criu"
 
     mkdir -p "${STAGING}/lib/x86_64-linux-gnu" "${STAGING}/usr/lib/x86_64-linux-gnu" "${STAGING}/lib64"
 
@@ -113,6 +114,16 @@ if [ -z "${DROPBEAR_BIN}" ] || [ ! -f "${DROPBEAR_BIN}" ]; then
 fi
 cp -L "${DROPBEAR_BIN}" "${STAGING}/usr/sbin/dropbear"
 chmod 755 "${STAGING}/usr/sbin/dropbear"
+for lib in $(ldd "${DROPBEAR_BIN}" 2>/dev/null | grep -o '/[^ ]*' || true); do
+    if [ -f "${lib}" ]; then
+        fname="$(basename "${lib}")"
+        cp -L "${lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+        cp -L "${lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
+        if [[ "${lib}" == *ld-linux* ]]; then
+            cp -L "${lib}" "${STAGING}/lib64/${fname}" 2>/dev/null || true
+        fi
+    fi
+done
 if [ -n "${DROPBEARKEY_BIN}" ] && [ -f "${DROPBEARKEY_BIN}" ]; then
     cp -L "${DROPBEARKEY_BIN}" "${STAGING}/usr/sbin/dropbearkey"
     chmod 755 "${STAGING}/usr/sbin/dropbearkey"
@@ -333,13 +344,36 @@ for mod in netfs 9pnet 9pnet_virtio 9p; do
     fi
 done
 
-# Configure networking (QEMU user-mode NAT network)
+# Mount checkpoint first to read net_mode (Porter TAP vs user NAT).
+/bin/busybox mkdir -p /mnt/checkpoint
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=none checkpoint /mnt/checkpoint 2>&1 \
+    && echo "[GUEST] [OK] Mounted checkpoint share (early)" \
+    || echo "[GUEST] [FAIL] Checkpoint share mount failed!"
+progress "checkpoint 9p mounted"
+
+NET_MODE="user"
+if [ -f /mnt/checkpoint/net_mode.txt ]; then
+    NET_MODE="$(/bin/busybox cat /mnt/checkpoint/net_mode.txt)"
+fi
+echo "[GUEST] net_mode=${NET_MODE}"
+
+# Configure networking: TAP mode uses eth0 for workload (IP applied at restore) + eth1 user NAT for SSH.
 /bin/busybox ifconfig lo up 2>/dev/null || true
-if /bin/busybox ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null; then
-    /bin/busybox route add default gw 10.0.2.2 dev eth0 2>/dev/null || true
-    echo "[GUEST] [OK] eth0 configured: IP 10.0.2.15, Gateway 10.0.2.2"
+if [ "${NET_MODE}" = "tap" ]; then
+    /bin/busybox ifconfig eth0 up 2>/dev/null || true
+    if /bin/busybox ifconfig eth1 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null; then
+        /bin/busybox route add default gw 10.0.2.2 dev eth1 2>/dev/null || true
+        echo "[GUEST] [OK] tap mode: eth0 up (workload IP at restore), eth1=10.0.2.15 SSH"
+    else
+        echo "[GUEST] WARNING: eth1 (SSH) not found in tap mode!"
+    fi
 else
-    echo "[GUEST] WARNING: eth0 interface not found!"
+    if /bin/busybox ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null; then
+        /bin/busybox route add default gw 10.0.2.2 dev eth0 2>/dev/null || true
+        echo "[GUEST] [OK] eth0 configured: IP 10.0.2.15, Gateway 10.0.2.2"
+    else
+        echo "[GUEST] WARNING: eth0 interface not found!"
+    fi
 fi
 
 echo "=========================================================="
@@ -349,12 +383,10 @@ echo "=== Kernel:   $(/bin/busybox uname -r)                 ==="
 echo "=== PID 1:    /bin/busybox sh /init                    ==="
 echo "=========================================================="
 
-# Mount 9p shares
-/bin/busybox mkdir -p /mnt/checkpoint /home/runner /host_tmp /mnt/usrlib /host_usr /host_bin /host_lib /host_lib64 /usr/share/dotnet
+# Mount remaining 9p shares
+/bin/busybox mkdir -p /home/runner /host_tmp /mnt/usrlib /host_usr /host_bin /host_lib /host_lib64 /usr/share/dotnet
 
 echo "[GUEST] Mounting 9p shares..."
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=none checkpoint /mnt/checkpoint 2>&1 && echo "[GUEST] [OK] Mounted checkpoint share" || echo "[GUEST] [FAIL] Checkpoint share mount failed!"
-progress "checkpoint 9p mounted"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>&1 && echo "[GUEST] [OK] Mounted host_runner share" || echo "[GUEST] [FAIL] host_runner mount failed!"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_tmp /host_tmp 2>&1 && echo "[GUEST] [OK] Mounted host_tmp share" || echo "[GUEST] [FAIL] host_tmp mount failed!"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose usrlib /mnt/usrlib 2>&1 && echo "[GUEST] [OK] Mounted usrlib share" || echo "[GUEST] [WARN] usrlib mount failed (using initramfs libs)"
@@ -403,6 +435,7 @@ echo "[GUEST] Copying checkpoint images to local tmpfs..."
 /bin/busybox chmod -R 777 /tmp/restore 2>/dev/null || true
 /bin/busybox chmod 755 /
 echo "[GUEST] Testing CRIU binary..."
+/bin/busybox ls -la /usr/sbin/criu /usr/sbin/dropbear /lib64/ld-linux-x86-64.so.2 2>&1 || true
 /usr/sbin/criu --version 2>&1 || echo "[GUEST] Warning: /usr/sbin/criu failed"
 progress "appliance criu ok"
 
@@ -476,6 +509,22 @@ if [ -f "${FROZEN}/manifest.tsv" ]; then
     done < "${FROZEN}/manifest.tsv"
     echo "frozen_overlays done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 fi
+if [ -f /mnt/checkpoint/network_spec.env ]; then
+    echo "[GUEST] Reconstructing network from network_spec.env (before criu restore)"
+    # shellcheck disable=SC1091
+    . /mnt/checkpoint/network_spec.env
+    /bin/busybox ifconfig lo up 2>/dev/null || true
+    /bin/busybox ifconfig eth0 up 2>/dev/null || true
+    /bin/busybox ifconfig eth0 "${LOCAL_IP}" netmask "${NETMASK}" up 2>/dev/null \
+        && echo "[GUEST] eth0 ${LOCAL_IP}/${PREFIX}" \
+        || echo "[GUEST] WARN eth0 addr failed"
+    /bin/busybox route del default 2>/dev/null || true
+    /bin/busybox route add default gw "${HOST_GW}" dev eth0 2>/dev/null \
+        && echo "[GUEST] default via ${HOST_GW} dev eth0" \
+        || echo "[GUEST] WARN default route failed"
+    /bin/busybox ip addr show dev eth0 2>/dev/null >> /mnt/checkpoint/post_restore_diag.txt 2>/dev/null || true
+    echo "network_reconstruct ok LOCAL_IP=${LOCAL_IP}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+fi
 TCP_FLAG="--tcp-close"
 if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
     case "$(/bin/busybox cat /mnt/checkpoint/criu_tcp_mode.txt)" in
@@ -484,7 +533,7 @@ if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
     esac
 fi
 echo "[GUEST] t9_restore: criu restore ${TCP_FLAG}"
-/usr/sbin/criu restore -d -D /tmp/restore \
+/sbin/criu restore -d -D /tmp/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check "${TCP_FLAG}" \
     --ghost-limit 32M \
     -v4 -o /mnt/checkpoint/restore_log.txt
@@ -560,6 +609,7 @@ chmod 755 "${STAGING}/usr/sbin/t9_restore.sh"
 
 # 7. Package initramfs
 echo "[7/7] Packing initramfs.cpio.gz..."
+chmod -R a+rX "${STAGING}" 2>/dev/null || sudo chmod -R a+rX "${STAGING}"
 (
     cd "${STAGING}"
     find . -mindepth 1 | cpio -H newc -o 2>/dev/null | gzip -1 > "${INITRAMFS_OUT}"

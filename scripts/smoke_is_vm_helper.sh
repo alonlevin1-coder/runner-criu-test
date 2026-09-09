@@ -33,6 +33,12 @@ finalize_host_tree() {
     if [ ! -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
         return 0
     fi
+    if [ -f "${CHECKPOINT_DIR}/state.txt" ] \
+        && grep -qE 'host_tree_frozen_forever=yes|host_tree_killed=yes|host_worker_killed=yes' \
+            "${CHECKPOINT_DIR}/state.txt" 2>/dev/null; then
+        log "host tree must stay frozen (GHA tcp-established) — skip unfreeze"
+        return 0
+    fi
     if [ -f "${CHECKPOINT_DIR}/vm_done" ] \
         && grep -qE 'tag=vm_(entry|loop|branch)' "${CHECKPOINT_DIR}/vm_done" 2>/dev/null \
         && [ "${KILL_HOST_WORKER_AFTER_MIGRATE:-0}" = "1" ]; then
@@ -46,6 +52,10 @@ finalize_host_tree() {
     fi
     if host_tree_already_unfrozen; then
         log "host tree already unfrozen (migrator_ok branch path)"
+        return 0
+    fi
+    if [ "${CRIU_TCP_MODE}" = "established" ]; then
+        log "tcp-established mode — never unfreeze host tree"
         return 0
     fi
     log "SIGCONT host tree after VM restore window"
@@ -112,6 +122,17 @@ echo "TARGET_KIND=${TARGET_KIND} TARGET_PID=${TARGET_PID}" >> "${CHECKPOINT_DIR}
 CRIU_BIN="$(command -v criu || true)"
 [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
 
+if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; then
+    log "discover Worker established TCP local IPs (Porter F09)"
+    chmod +x "${SCRIPT_DIR}/discover_tcp_ips.sh"
+    "${SCRIPT_DIR}/discover_tcp_ips.sh" "${TARGET_PID}" "${CHECKPOINT_DIR}"
+    if [ ! -s "${CHECKPOINT_DIR}/tcp_local_ips.txt" ]; then
+        log "ERROR: established mode requires non-loopback ESTAB socket local IP"
+        touch "${CHECKPOINT_DIR}/helper_failed"
+        exit 1
+    fi
+fi
+
 if [ "${TARGET_KIND}" = "worker" ]; then
     log "SIGSTOP worker tree before snapshot+dump"
     freeze_tree "${CHECKPOINT_DIR}" "${TARGET_PID}"
@@ -126,35 +147,48 @@ fi
 echo "criu_tcp_mode=${CRIU_TCP_MODE}" >> "${CHECKPOINT_DIR}/state.txt"
 echo "${CRIU_TCP_MODE}" > "${CHECKPOINT_DIR}/criu_tcp_mode.txt"
 chmod a+rw "${CHECKPOINT_DIR}/criu_tcp_mode.txt" 2>/dev/null || true
-log "criu dump --leave-running pid=${TARGET_PID} tcp=${CRIU_TCP_FLAG}"
+LEAVE_FLAG="--leave-running"
+if [ "${CRIU_TCP_MODE}" = "established" ] && [ "${TARGET_KIND}" = "worker" ]; then
+    LEAVE_FLAG="--leave-stopped"
+fi
+log "criu dump ${LEAVE_FLAG} pid=${TARGET_PID} tcp=${CRIU_TCP_FLAG}"
 "${SCRIPT_DIR}/load_criu_tcp_modules.sh"
 set +e
 sudo "${CRIU_BIN}" dump \
     -t "${TARGET_PID}" \
     -D "${CHECKPOINT_DIR}" \
-    --leave-running \
+    "${LEAVE_FLAG}" \
     --shell-job --file-locks --ext-unix-sk "${CRIU_TCP_FLAG}" \
     --ghost-limit 32M \
     -v4 -o dump.log
 DUMP_RC=$?
 set -e
 echo "${DUMP_RC}" > "${CHECKPOINT_DIR}/dump.rc"
-log "dump rc=${DUMP_RC} leave_running=yes"
-send_ntfy "is_vm dump" "kind=${TARGET_KIND} rc=${DUMP_RC} leave_running=1"
+log "dump rc=${DUMP_RC} ${LEAVE_FLAG}"
+send_ntfy "is_vm dump" "kind=${TARGET_KIND} rc=${DUMP_RC} ${LEAVE_FLAG}=1"
 
 if [ "${DUMP_RC}" -ne 0 ]; then
     touch "${CHECKPOINT_DIR}/helper_failed"
     exit "${DUMP_RC}"
 fi
 
-if [ "${TARGET_KIND}" = "worker" ] \
-    && [ "${CRIU_TCP_MODE}" = "established" ] \
-    && [ "${ISOLATE_HOST_TCP_AFTER_DUMP:-1}" = "1" ]; then
-    log "killing host TCP sockets after tcp-established dump (tree still frozen)"
-    close_tree_tcp_sockets "${CHECKPOINT_DIR}"
-fi
-
-if ! kill -0 "${TARGET_PID}" 2>/dev/null; then
+if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; then
+    # GHA constraint (R13): killing Worker tears down the hosted VM immediately.
+    # Porter F09 step 13 (SIGKILL source tree) does NOT apply here — keep host
+    # Worker alive but frozen (R14: suspend keeps Listener + VM up).
+    log "tcp-established: host Worker stays frozen (no SIGKILL on GHA)"
+    echo "host_tree_frozen_forever=yes" >> "${CHECKPOINT_DIR}/state.txt"
+    if [ "${ISOLATE_HOST_TCP_AFTER_DUMP:-1}" = "1" ]; then
+        log "closing host TCP sockets while tree frozen (ss -K)"
+        close_tree_tcp_sockets "${CHECKPOINT_DIR}"
+    fi
+    chmod +x "${SCRIPT_DIR}/host_tap_cutover.sh"
+    if ! "${SCRIPT_DIR}/host_tap_cutover.sh" "${CHECKPOINT_DIR}"; then
+        log "ERROR: host TAP cutover failed"
+        touch "${CHECKPOINT_DIR}/helper_failed"
+        exit 1
+    fi
+elif ! kill -0 "${TARGET_PID}" 2>/dev/null; then
     log "WARN: target died despite --leave-running"
     echo "target_dead_after_dump=yes" >> "${CHECKPOINT_DIR}/state.txt"
 else
@@ -191,6 +225,26 @@ for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64";
     fi
 done
 
+NETDEV_ARGS=()
+if [ -f "${CHECKPOINT_DIR}/net_mode.txt" ] \
+    && [ "$(cat "${CHECKPOINT_DIR}/net_mode.txt")" = "tap" ] \
+    && [ -f "${CHECKPOINT_DIR}/network_spec.env" ]; then
+    # shellcheck disable=SC1091
+    source "${CHECKPOINT_DIR}/network_spec.env"
+    log "QEMU dual-NIC: net0=tap(${TAP_DEV}) workload IP ${LOCAL_IP}, net1=user SSH"
+    NETDEV_ARGS=(
+        -netdev "tap,id=net0,ifname=${TAP_DEV},script=no,downscript=no"
+        -device "virtio-net-pci,netdev=net0"
+        -netdev "user,id=net1,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
+        -device "virtio-net-pci,netdev=net1"
+    )
+else
+    NETDEV_ARGS=(
+        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
+        -device "virtio-net-pci,netdev=net0"
+    )
+fi
+
 set +e
 qemu-system-x86_64 \
     ${ACCEL_ARGS} -m 2G -smp 2 \
@@ -199,8 +253,7 @@ qemu-system-x86_64 \
     -initrd "${INITRD_BIN}" \
     -append "earlyprintk=ttyS0 console=ttyS0 panic=1 loglevel=7 net.ifnames=0 biosdevname=0 rdinit=/init" \
     -no-reboot \
-    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
-    -device virtio-net-pci,netdev=net0 \
+    "${NETDEV_ARGS[@]}" \
     "${VIRTFS_ARGS[@]}" \
     -serial "file:${SERIAL_LOG}" >> "${HELPER_LOG}" 2>&1 &
 QEMU_PID=$!
@@ -265,9 +318,13 @@ if [ "${RESTORE_RC}" -eq 0 ]; then
     chmod -R a+rwX "${CHECKPOINT_DIR}" 2>/dev/null || true
     echo "migrator_ok ts=${TS} restore_rc=0" > "${CHECKPOINT_DIR}/migrator_ok"
     chmod a+rw "${CHECKPOINT_DIR}/migrator_ok" 2>/dev/null || true
-    log "wrote migrator_ok — unfreezing host tree (host TCP already isolated after dump)"
-    if [ -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
-        unfreeze_tree "${CHECKPOINT_DIR}"
+    if [ "${CRIU_TCP_MODE}" = "established" ]; then
+        log "wrote migrator_ok — host Worker stays frozen (GHA: never kill/unfreeze)"
+    else
+        log "wrote migrator_ok — unfreezing host tree"
+        if [ -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
+            unfreeze_tree "${CHECKPOINT_DIR}"
+        fi
     fi
 else
     log "restore failed (rc=${RESTORE_RC}) — not writing migrator_ok"

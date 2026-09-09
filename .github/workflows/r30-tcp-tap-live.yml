@@ -1,0 +1,150 @@
+# Porter F09: TAP cutover + --tcp-established for live WebSocket logs in VM.
+name: R30 TAP tcp-established live log test
+
+on:
+  workflow_dispatch:
+    inputs:
+      sleep_sec:
+        description: Seconds to sleep after echo lalala
+        required: false
+        default: "90"
+  push:
+    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    paths:
+      - '.github/workflows/r30-tcp-tap-live.yml'
+      - 'scripts/discover_tcp_ips.sh'
+      - 'scripts/host_tap_cutover.sh'
+      - 'scripts/criu_tcp_flags.sh'
+      - 'scripts/load_criu_tcp_modules.sh'
+      - 'scripts/is_vm_wait.sh'
+      - 'scripts/smoke_is_vm_helper.sh'
+      - 'scripts/freeze_snapshot_files.sh'
+      - 'appliance/assemble_initramfs.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  r30-tcp-tap-live:
+    name: R30 Porter TAP migrate then live lalala
+    timeout-minutes: 90
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU, initramfs, daemonize
+        run: |
+          mkdir -p smoke-logs checkpoint output
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh \
+            scripts/criu_tcp_flags.sh scripts/load_criu_tcp_modules.sh \
+            scripts/discover_tcp_ips.sh scripts/host_tap_cutover.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/is_vm_wait.sh
+          echo "CRIU_TCP_MODE=established" | tee smoke-logs/r30-tcp-mode.txt
+          ./scripts/criu_tcp_flags.sh | tee smoke-logs/r30-tcp-flag.txt
+
+      - name: Step 1 — host marker
+        run: |
+          echo "=== STEP 1: Running on host ==="
+          echo "step1_host_ok" > checkpoint/step1_host.txt
+
+      - name: Checkpoint & Migrate to VM (Porter TAP)
+        continue-on-error: true
+        env:
+          ALLOW_WORKER_DUMP: "1"
+          KEEP_QEMU_ALIVE: "1"
+          CRIU_TCP_MODE: established
+        run: |
+          if [ -f /tmp/is_vm ]; then
+            echo "VM branch — finishing migrate step"
+            export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+            ./scripts/is_vm_wait.sh
+            for i in $(seq 1 180); do
+              [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ] && break
+              sleep 1
+            done
+            [ -f checkpoint/migrator_ok ] || exit 1
+            [ "$(cat checkpoint/restore.rc 2>/dev/null)" = "0" ] || exit 1
+            exit 0
+          fi
+
+          mkdir -p checkpoint smoke-logs output
+
+          WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
+          echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r30-worker.txt
+          [ -n "${WORKER_PID}" ] || exit 1
+
+          echo "=== Pre-migration TCP state ===" | tee checkpoint/r30_preflight.txt
+          ss -tanp 2>/dev/null | grep -F "pid=${WORKER_PID}," | tee -a checkpoint/r30_preflight.txt || true
+          ip -o addr show dev eth0 | tee -a checkpoint/r30_preflight.txt
+          ip route | tee -a checkpoint/r30_preflight.txt
+
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${WORKER_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/smoke-logs/vm_serial.log" \
+            "worker"
+
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          export IS_VM_MAX_WAIT_SEC=900
+          ./scripts/is_vm_wait.sh >> smoke-logs/host-wait.log 2>&1
+
+      - name: Sleep then echo lalala (native StepsRunner)
+        env:
+          SLEEP_SEC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sleep_sec || '90' }}
+        run: |
+          if [ ! -f /tmp/is_vm ]; then
+            echo "FAIL: this step must run inside the VM (/tmp/is_vm missing)"
+            exit 1
+          fi
+          echo "=== R30 TAP tcp-established live step in VM ==="
+          echo "lalala"
+          echo "pid=$$ kernel=$(uname -r) hostname=$(hostname)"
+          echo "criu_tcp_mode=$(cat checkpoint/criu_tcp_mode.txt 2>/dev/null || echo unknown)"
+          echo "sleeping ${SLEEP_SEC}s — watch GHA UI for live lalala"
+          mkdir -p checkpoint
+          date -u +%Y-%m-%dT%H:%M:%SZ | tee checkpoint/r30_echo_started.txt
+          sleep "${SLEEP_SEC}"
+          echo "r30_live_echo done"
+          date -u +%Y-%m-%dT%H:%M:%SZ > checkpoint/r30_echo_finished.txt
+
+      - name: Collect _diag after live step
+        if: always()
+        run: |
+          if [ -f /tmp/is_vm ] && [ -x scripts/collect_runner_diag.sh ]; then
+            chmod +x scripts/collect_runner_diag.sh
+            ./scripts/collect_runner_diag.sh checkpoint/vm_diag/r30_after_step || true
+          fi
+
+      - name: Verify R30 Porter TAP path
+        if: always()
+        run: |
+          grep -q established checkpoint/criu_tcp_mode.txt
+          grep -q host_tap_cutover checkpoint/state.txt
+          grep -q host_tree_frozen_forever checkpoint/state.txt
+          ! grep -q host_tree_killed checkpoint/state.txt
+          grep -q network_reconstruct checkpoint/guest_progress.txt
+          ! grep -q host_tree_unfrozen checkpoint/state.txt
+          [ -f checkpoint/migrator_ok ]
+          [ "$(cat checkpoint/restore.rc 2>/dev/null)" = "0" ]
+          [ -f checkpoint/r30_echo_started.txt ]
+          [ -f checkpoint/r30_echo_finished.txt ]
+          if [ -d checkpoint/vm_diag/r30_after_step ]; then
+            grep -rq 'Successfully started websocket client' checkpoint/vm_diag/r30_after_step \
+              && echo "WebSocket client OK in _diag" \
+              || echo "WARN: WebSocket success string not found in _diag (check UI manually)"
+          fi
+          echo "PASS: R30 Porter TAP path completed (check GHA UI for live lalala during sleep)"
+
+      - name: Upload R30 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r30-tcp-tap-live
+          path: smoke-logs/ checkpoint/ output/
+          if-no-files-found: ignore

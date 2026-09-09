@@ -50,6 +50,18 @@ unfreeze_tree() {
     echo "host_tree_unfrozen=yes" >> "${checkpoint_dir}/state.txt"
 }
 
+kill_tree() {
+    local checkpoint_dir="${1:?checkpoint dir}"
+    local pidfile="${checkpoint_dir}/sigstopped_pids.txt"
+
+    [ -f "${pidfile}" ] || return 0
+    while read -r pid; do
+        [ -n "${pid}" ] || continue
+        kill -9 "${pid}" 2>/dev/null || sudo kill -9 "${pid}" 2>/dev/null || true
+    done < "${pidfile}"
+    echo "host_tree_killed=yes" >> "${checkpoint_dir}/state.txt"
+}
+
 # After a --tcp-established dump the checkpoint image owns the live socket
 # state. Kill host-side TCP sockets while the tree is still SIGSTOP'd so the
 # restored VM copy does not race the host Worker on the same connections.
