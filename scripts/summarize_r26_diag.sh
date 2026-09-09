@@ -5,6 +5,14 @@ set -euo pipefail
 CP="${RUNNER_VM_CHECKPOINT:-checkpoint}"
 CP="$(cd "${CP}" 2>/dev/null && pwd || echo "${CP}")"
 
+echo "=== diag path probe ==="
+if [ -f "${CP}/diag_probe.txt" ]; then
+    tail -n 80 "${CP}/diag_probe.txt"
+else
+    echo "missing ${CP}/diag_probe.txt"
+fi
+
+echo ""
 echo "=== R26 diag timeline (JobServerQueue / websocket grep) ==="
 if [ -f "${CP}/r26_diag_timeline.txt" ]; then
     cat "${CP}/r26_diag_timeline.txt"
