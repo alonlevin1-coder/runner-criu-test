@@ -13,8 +13,10 @@ jobs:
     steps:
       - name: Checkout Repository
         run: |
-          echo "=== Cloning repository ==="
-          git clone --depth 1 "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" .
+          echo "=== Cloning repository (ref=${{ github.ref_name }} sha=${{ github.sha }}) ==="
+          git clone --depth 1 --branch "${{ github.ref_name }}" \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" .
+          git checkout "${{ github.sha }}"
 
       - name: Install Dependencies
         run: |
