@@ -1,0 +1,41 @@
+name: R25 normal live log sanity
+
+on:
+  workflow_dispatch:
+    inputs:
+      sleep_sec:
+        description: Seconds to sleep after echo lalala
+        required: false
+        default: "120"
+  push:
+    branches: [port/is-vm-worker-migration]
+    paths:
+      - '.github/workflows/r25-normal-live-log-sanity.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sanity:
+    name: R25 baseline live log (no QEMU)
+    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Sleep then echo lalala (normal runner)
+        env:
+          SLEEP_SEC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sleep_sec || '120' }}
+        run: |
+          echo "=== R25 sanity: normal hosted runner, no migration ==="
+          echo "lalala"
+          echo "pid=$$ kernel=$(uname -r) hostname=$(hostname)"
+          echo "sleeping ${SLEEP_SEC}s — lalala above should appear BEFORE this step finishes"
+          date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/r25_echo_started.txt
+          sleep "${SLEEP_SEC}"
+          echo "r25 done"
+          date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/r25_echo_finished.txt
+
+      - name: Verify timestamps
+        run: |
+          echo "started:  $(cat /tmp/r25_echo_started.txt)"
+          echo "finished: $(cat /tmp/r25_echo_finished.txt)"
+          echo "PASS: step completed after sleep"
