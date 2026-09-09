@@ -20,9 +20,11 @@ step_paths() {
     fi
 }
 
+FAILURES=()
+
 run_step() {
     local key="$1" script="$2"
-    local out done
+    local out done rc=0
     mapfile -t paths < <(step_paths "${key}")
     out="${paths[0]}"
     done="${paths[1]}"
@@ -35,10 +37,11 @@ run_step() {
     else
         rc=$?
         echo "STEP ${key} FAILED rc=${rc}" >> "${out}"
+        FAILURES+=("${key}")
         log "fail step=${key} rc=${rc}"
-        return "${rc}"
     fi
     sync
+    return 0
 }
 
 STEPS=(
@@ -50,12 +53,25 @@ STEPS=(
 )
 
 : > "${CP}/vm_post_migration_manifest.txt"
+: > "${CP}/vm_post_migration_failures.txt"
 for spec in "${STEPS[@]}"; do
     key="${spec%%:*}"
     script="${spec#*:}"
     run_step "${key}" "${script}"
-    echo "${key}" >> "${CP}/vm_post_migration_manifest.txt"
+    mapfile -t paths < <(step_paths "${key}")
+    if [ -f "${paths[1]}" ]; then
+        echo "${key}" >> "${CP}/vm_post_migration_manifest.txt"
+    fi
 done
+
+for key in "${FAILURES[@]}"; do
+    echo "${key}" >> "${CP}/vm_post_migration_failures.txt"
+done
+
+if [ "${#FAILURES[@]}" -gt 0 ]; then
+    log "post-migration failures: ${FAILURES[*]}"
+    exit 1
+fi
 
 touch "${CP}/vm_post_migration_complete"
 sync
