@@ -61,14 +61,68 @@ finalize_host_tree() {
     log "SIGCONT host tree after VM restore window"
     unfreeze_tree "${CHECKPOINT_DIR}"
 }
-trap finalize_host_tree EXIT
-
 send_ntfy() {
     local title="${1:-is_vm}"
     local msg="${2:-}"
+    if [ "${#msg}" -gt 1800 ]; then
+        msg="$(printf '%s' "${msg}" | tail -c 1800)"
+    fi
     printf '%s' "${msg}" | curl -s --max-time 10 -H "Title: ${title}" --data-binary @- \
         "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
 }
+
+watchdog_sample() {
+    local label="${1:-sample}"
+    chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" 2>/dev/null || true
+    local serial_sz qemu_alive progress guest_serial restore_err state_snip
+    serial_sz=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
+    qemu_alive=no
+    [ -n "${QEMU_PID:-}" ] && kill -0 "${QEMU_PID}" 2>/dev/null && qemu_alive=yes
+    progress="$(cat "${CHECKPOINT_DIR}/guest_progress.txt" 2>/dev/null || echo "(no guest_progress.txt)")"
+    guest_serial="$(grep -E '\[GUEST\]|QEMU Guest VM Booted|CRIU restore returned|network_reconstruct' \
+        "${SERIAL_LOG}" 2>/dev/null | tail -n 12 || true)"
+    restore_err="$(grep -E 'Error \(|error|Failed|failed|tcp|ghost|FPU' \
+        "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null | tail -n 8 || echo "(no restore log)")"
+    state_snip="$(grep -E 'host_tap|host_tree|migrator|target_|criu_tcp|host_blocked' \
+        "${CHECKPOINT_DIR}/state.txt" 2>/dev/null | tail -n 8 || true)"
+    {
+        echo "t=$(date -u +%H:%M:%S) label=${label} qemu=${qemu_alive} serial_bytes=${serial_sz} run=${GITHUB_RUN_ID:-0}"
+        echo "${progress}" | tail -n 6
+        echo "--- state ---"
+        echo "${state_snip:-none}"
+        echo "---"
+    } >> "${CHECKPOINT_DIR}/host_watchdog.txt"
+    send_ntfy "is_vm [${label}]" "run=${GITHUB_RUN_ID:-0} qemu=${qemu_alive} serial_bytes=${serial_sz}
+--- progress ---
+$(printf '%s' "${progress}" | tail -n 8)
+--- guest ---
+${guest_serial:-none}
+--- restore ---
+${restore_err}
+--- state ---
+${state_snip:-none}"
+}
+
+start_watchdog() {
+    local max_iter="${1:-12}"
+    (
+        set +e
+        sleep 8
+        for i in $(seq 1 "${max_iter}"); do
+            watchdog_sample "wd${i}"
+            [ -f "${CHECKPOINT_DIR}/helper_done" ] || [ -f "${CHECKPOINT_DIR}/helper_failed" ] && break
+            [ -f "${CHECKPOINT_DIR}/migrator_ok" ] \
+                && [ -f "${CHECKPOINT_DIR}/vm_migrate_step_done" ] && break
+            sleep 10
+        done
+    ) &
+    WATCHDOG_PID=$!
+}
+
+stop_watchdog() {
+    [ -n "${WATCHDOG_PID:-}" ] && kill "${WATCHDOG_PID}" 2>/dev/null || true
+}
+trap 'stop_watchdog; finalize_host_tree' EXIT
 
 CMDLINE=$(tr '\0' ' ' < "/proc/${TARGET_PID}/cmdline" 2>/dev/null || true)
 log "target kind=${TARGET_KIND} pid=${TARGET_PID} cmd=${CMDLINE}"
@@ -101,6 +155,7 @@ while [ ! -f "${STEP2_READY}" ] && [ ! -f "${WAIT_LOOP_READY}" ]; do
     [ "${WAIT}" -le 300 ] || exit 1
 done
 log "dump gate open (step2_ready=$([ -f "${STEP2_READY}" ] && echo yes || echo no) wait_loop_ready=$([ -f "${WAIT_LOOP_READY}" ] && echo yes || echo no))"
+send_ntfy "is_vm Started" "run=${GITHUB_RUN_ID:-0} kind=${TARGET_KIND} pid=${TARGET_PID} tcp_mode=${CRIU_TCP_MODE} tcp_flag=${CRIU_TCP_FLAG}"
 
 mkdir -p "${CHECKPOINT_DIR}/dev_shm" "${CHECKPOINT_DIR}/host_tmp"
 cp -a /dev/shm/* "${CHECKPOINT_DIR}/dev_shm/" 2>/dev/null || true
@@ -128,9 +183,12 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
     "${SCRIPT_DIR}/discover_tcp_ips.sh" "${TARGET_PID}" "${CHECKPOINT_DIR}"
     if [ ! -s "${CHECKPOINT_DIR}/tcp_local_ips.txt" ]; then
         log "ERROR: established mode requires non-loopback ESTAB socket local IP"
+        send_ntfy "is_vm FAIL" "tcp discover: no local IP in tcp_local_ips.txt"
         touch "${CHECKPOINT_DIR}/helper_failed"
         exit 1
     fi
+    send_ntfy "is_vm TCP discover" "$(head -n 5 "${CHECKPOINT_DIR}/tcp_local_ips.txt" 2>/dev/null || true)
+$(cat "${CHECKPOINT_DIR}/network_spec.env" 2>/dev/null || true)"
 fi
 
 if [ "${TARGET_KIND}" = "worker" ]; then
@@ -165,9 +223,12 @@ DUMP_RC=$?
 set -e
 echo "${DUMP_RC}" > "${CHECKPOINT_DIR}/dump.rc"
 log "dump rc=${DUMP_RC} ${LEAVE_FLAG}"
-send_ntfy "is_vm dump" "kind=${TARGET_KIND} rc=${DUMP_RC} ${LEAVE_FLAG}=1"
+send_ntfy "is_vm dump" "kind=${TARGET_KIND} rc=${DUMP_RC} ${LEAVE_FLAG}=1 run=${GITHUB_RUN_ID:-0}"
 
 if [ "${DUMP_RC}" -ne 0 ]; then
+    dump_tail="$(tail -n 25 "${CHECKPOINT_DIR}/dump.log" 2>/dev/null || true)"
+    send_ntfy "is_vm dump FAIL" "rc=${DUMP_RC}
+${dump_tail}"
     touch "${CHECKPOINT_DIR}/helper_failed"
     exit "${DUMP_RC}"
 fi
@@ -181,13 +242,17 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
     if [ "${ISOLATE_HOST_TCP_AFTER_DUMP:-1}" = "1" ]; then
         log "closing host TCP sockets while tree frozen (ss -K)"
         close_tree_tcp_sockets "${CHECKPOINT_DIR}"
+        send_ntfy "is_vm TCP close" "$(tail -n 15 "${CHECKPOINT_DIR}/host_tcp_close.log" 2>/dev/null || echo done)"
     fi
     chmod +x "${SCRIPT_DIR}/host_tap_cutover.sh"
     if ! "${SCRIPT_DIR}/host_tap_cutover.sh" "${CHECKPOINT_DIR}"; then
         log "ERROR: host TAP cutover failed"
+        send_ntfy "is_vm TAP FAIL" "$(tail -n 20 "${CHECKPOINT_DIR}/host_tap_cutover.log" 2>/dev/null || true)"
         touch "${CHECKPOINT_DIR}/helper_failed"
         exit 1
     fi
+    send_ntfy "is_vm TAP OK" "$(tail -n 15 "${CHECKPOINT_DIR}/host_tap_cutover.log" 2>/dev/null || true)
+net_mode=$(cat "${CHECKPOINT_DIR}/net_mode.txt" 2>/dev/null || echo unknown)"
 elif ! kill -0 "${TARGET_PID}" 2>/dev/null; then
     log "WARN: target died despite --leave-running"
     echo "target_dead_after_dump=yes" >> "${CHECKPOINT_DIR}/state.txt"
@@ -208,7 +273,10 @@ fi
 
 : > "${SERIAL_LOG}"
 chmod 666 "${SERIAL_LOG}" 2>/dev/null || true
-log "booting QEMU for SSH restore"
+NET_MODE="user"
+[ -f "${CHECKPOINT_DIR}/net_mode.txt" ] && NET_MODE="$(cat "${CHECKPOINT_DIR}/net_mode.txt")"
+log "booting QEMU for SSH restore net_mode=${NET_MODE}"
+send_ntfy "is_vm Booting QEMU" "run=${GITHUB_RUN_ID:-0} accel=${ACCEL_ARGS} net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
 
 VIRTFS_ARGS=(
     -virtfs "local,path=${RUNNER_HOME},mount_tag=host_runner,security_model=none,id=host_runner"
@@ -259,6 +327,10 @@ qemu-system-x86_64 \
 QEMU_PID=$!
 set -e
 echo "${QEMU_PID}" > "${CHECKPOINT_DIR}/qemu.pid"
+WATCHDOG_ITERS=12
+[ "${KEEP_QEMU_ALIVE:-0}" = "1" ] && WATCHDOG_ITERS=36
+start_watchdog "${WATCHDOG_ITERS}"
+send_ntfy "is_vm QEMU pid" "pid=${QEMU_PID} serial_bytes=0 run=${GITHUB_RUN_ID:-0}"
 
 SSH=(ssh -i "${SSH_KEY}" -p "${SSH_PORT}" -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o BatchMode=yes root@127.0.0.1)
@@ -275,12 +347,16 @@ done
 
 if [ "${SSH_OK}" -ne 1 ]; then
     log "ssh failed"
+    serial_sz=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
+    send_ntfy "is_vm SSH FAIL" "port=${SSH_PORT} serial_bytes=${serial_sz} qemu_alive=$(kill -0 "${QEMU_PID}" 2>/dev/null && echo yes || echo no)
+$(tail -n 15 "${HELPER_LOG}" 2>/dev/null || true)"
     touch "${CHECKPOINT_DIR}/ssh_failed"
     kill -9 "${QEMU_PID}" 2>/dev/null || true
     touch "${CHECKPOINT_DIR}/helper_failed"
     exit 1
 fi
 
+send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} running t9_restore.sh"
 log "running t9_restore.sh"
 set +e
 "${SSH[@]}" '/usr/sbin/t9_restore.sh' >> "${HELPER_LOG}" 2>&1
@@ -288,6 +364,8 @@ RESTORE_RC=$?
 set -e
 echo "${RESTORE_RC}" > "${CHECKPOINT_DIR}/restore.rc"
 log "restore rc=${RESTORE_RC}"
+send_ntfy "is_vm Restore" "rc=${RESTORE_RC}
+$(tail -n 20 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || tail -n 20 "${HELPER_LOG}" 2>/dev/null || true)"
 
 if [ -f "${CHECKPOINT_DIR}/post_restore_diag.txt" ]; then
     log "post-restore diag:"
@@ -359,7 +437,9 @@ elif [ -f "${CHECKPOINT_DIR}/vm_done" ] && [ "${RESTORE_RC}" -eq 0 ]; then
     send_ntfy "is_vm OK" "$(cat "${CHECKPOINT_DIR}/vm_done")"
     touch "${CHECKPOINT_DIR}/helper_done"
 else
-    send_ntfy "is_vm FAIL" "no migrator_ok restore_rc=${RESTORE_RC}"
+    send_ntfy "is_vm FAIL" "no migrator_ok restore_rc=${RESTORE_RC} run=${GITHUB_RUN_ID:-0}
+$(tail -n 12 "${CHECKPOINT_DIR}/restore_errors.txt" 2>/dev/null || true)
+$(tail -n 8 "${CHECKPOINT_DIR}/guest_progress.txt" 2>/dev/null || true)"
     touch "${CHECKPOINT_DIR}/helper_failed"
     exit 1
 fi
