@@ -3,11 +3,11 @@
 set -euo pipefail
 
 STEP_PID="${1:?step pid}"
-PIPE="${2:?fifo path}"
-LOG="${PIPE%.pipe}/live_forwarder.log"
+STREAM="${2:?log file path}"
+LOG="${STREAM%/*}/live_forwarder.log"
 
-if [ ! -p "${PIPE}" ]; then
-    echo "[live_log_forwarder] missing fifo: ${PIPE}" >> "${LOG}"
+if [ ! -f "${STREAM}" ]; then
+    echo "[live_log_forwarder] missing log file: ${STREAM}" >> "${LOG}"
     exit 1
 fi
 
@@ -21,4 +21,4 @@ if ! { echo "[live_log_forwarder] attached pid=${STEP_PID}" >> "${LOG}"; } 2>/de
     : > "${LOG}" 2>/dev/null || true
 fi
 
-exec stdbuf -oL tail -f "${PIPE}" > "${OUT}" 2>> "${LOG}"
+exec stdbuf -oL tail -F -n +0 "${STREAM}" > "${OUT}" 2>> "${LOG}"
