@@ -1,0 +1,116 @@
+name: R24 live native step in VM
+
+on:
+  workflow_dispatch:
+    inputs:
+      sleep_sec:
+        description: Seconds to sleep after echo lalala (use 10000 to watch live UI)
+        required: false
+        default: "10000"
+  push:
+    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    paths:
+      - '.github/workflows/r24-live-native-step.yml'
+      - 'scripts/is_vm_wait.sh'
+      - 'scripts/smoke_is_vm_helper.sh'
+      - 'scripts/freeze_snapshot_files.sh'
+      - 'appliance/assemble_initramfs.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  r24-live-native:
+    name: R24 migrate then live lalala step in VM
+    timeout-minutes: 200
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU, initramfs, daemonize
+        run: |
+          mkdir -p smoke-logs checkpoint output
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/is_vm_wait.sh
+
+      - name: Step 1 — host marker
+        run: |
+          echo "=== STEP 1: Running on host ==="
+          echo "Hostname: $(hostname)"
+          echo "Kernel: $(uname -r)"
+          echo "step1_host_ok" > checkpoint/step1_host.txt
+
+      - name: Checkpoint & Migrate to VM
+        continue-on-error: true
+        env:
+          ALLOW_WORKER_DUMP: "1"
+          KEEP_QEMU_ALIVE: "1"
+        run: |
+          if [ -f /tmp/is_vm ]; then
+            echo "VM branch — finishing migrate step"
+            export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+            ./scripts/is_vm_wait.sh
+            for i in $(seq 1 120); do
+              [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ] && break
+              sleep 1
+            done
+            [ -f checkpoint/migrator_ok ] || exit 1
+            [ "$(cat checkpoint/restore.rc 2>/dev/null)" = "0" ] || exit 1
+            exit 0
+          fi
+
+          mkdir -p checkpoint smoke-logs output
+
+          WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
+          echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r24-worker.txt
+          [ -n "${WORKER_PID}" ] || exit 1
+
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${WORKER_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/smoke-logs/vm_serial.log" \
+            "worker"
+
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          export IS_VM_MAX_WAIT_SEC=600
+          ./scripts/is_vm_wait.sh >> smoke-logs/host-wait.log 2>&1
+
+      - name: Sleep then echo lalala (native StepsRunner)
+        env:
+          SLEEP_SEC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sleep_sec || '90' }}
+        run: |
+          if [ ! -f /tmp/is_vm ]; then
+            echo "FAIL: this step must run inside the VM (/tmp/is_vm missing)"
+            exit 1
+          fi
+          echo "=== R24 native live step in VM ==="
+          echo "lalala"
+          echo "pid=$$ kernel=$(uname -r) hostname=$(hostname)"
+          echo "sleeping ${SLEEP_SEC}s — lalala above should appear immediately in the GHA UI"
+          mkdir -p checkpoint
+          date -u +%Y-%m-%dT%H:%M:%SZ | tee checkpoint/r24_echo_started.txt
+          sleep "${SLEEP_SEC}"
+          echo "r24_live_echo done"
+          date -u +%Y-%m-%dT%H:%M:%SZ > checkpoint/r24_echo_finished.txt
+
+      - name: Verify R24
+        if: always()
+        run: |
+          [ -f checkpoint/r24_echo_started.txt ]
+          [ -f checkpoint/r24_echo_finished.txt ]
+          grep -q vm_branch checkpoint/vm_done 2>/dev/null || grep -q vm_ checkpoint/vm_done
+          echo "PASS: lalala step ran natively in VM (check step log for early lalala + qemu-restore-vm hostname)"
+
+      - name: Upload R24 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r24-live-native
+          path: smoke-logs/ checkpoint/ output/
+          if-no-files-found: ignore
