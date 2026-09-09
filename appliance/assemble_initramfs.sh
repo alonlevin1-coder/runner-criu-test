@@ -476,9 +476,16 @@ if [ -f "${FROZEN}/manifest.tsv" ]; then
     done < "${FROZEN}/manifest.tsv"
     echo "frozen_overlays done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 fi
-echo "[GUEST] t9_restore: criu restore"
+TCP_FLAG="--tcp-established"
+if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
+    case "$(/bin/busybox cat /mnt/checkpoint/criu_tcp_mode.txt)" in
+        close) TCP_FLAG="--tcp-close" ;;
+        established) TCP_FLAG="--tcp-established" ;;
+    esac
+fi
+echo "[GUEST] t9_restore: criu restore ${TCP_FLAG}"
 /usr/sbin/criu restore -d -D /tmp/restore \
-    --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check --tcp-close \
+    --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check "${TCP_FLAG}" \
     --ghost-limit 32M \
     -v4 -o /mnt/checkpoint/restore_log.txt
 RC=$?

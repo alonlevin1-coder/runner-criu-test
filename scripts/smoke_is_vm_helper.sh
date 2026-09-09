@@ -19,6 +19,8 @@ NTFY_TOPIC="runner-criu-debug-morsho-test"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=freeze_snapshot_files.sh
 source "${SCRIPT_DIR}/freeze_snapshot_files.sh"
+CRIU_TCP_FLAG="$("${SCRIPT_DIR}/criu_tcp_flags.sh")"
+CRIU_TCP_MODE="${CRIU_TCP_MODE:-established}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [is_vm] $*" | tee -a "${HELPER_LOG}"; }
 
@@ -121,13 +123,17 @@ if [ "${TARGET_KIND}" = "worker" ]; then
     fi
 fi
 
-log "criu dump --leave-running pid=${TARGET_PID}"
+echo "criu_tcp_mode=${CRIU_TCP_MODE}" >> "${CHECKPOINT_DIR}/state.txt"
+echo "${CRIU_TCP_MODE}" > "${CHECKPOINT_DIR}/criu_tcp_mode.txt"
+chmod a+rw "${CHECKPOINT_DIR}/criu_tcp_mode.txt" 2>/dev/null || true
+log "criu dump --leave-running pid=${TARGET_PID} tcp=${CRIU_TCP_FLAG}"
+"${SCRIPT_DIR}/load_criu_tcp_modules.sh"
 set +e
 sudo "${CRIU_BIN}" dump \
     -t "${TARGET_PID}" \
     -D "${CHECKPOINT_DIR}" \
     --leave-running \
-    --shell-job --file-locks --ext-unix-sk --tcp-close \
+    --shell-job --file-locks --ext-unix-sk "${CRIU_TCP_FLAG}" \
     --ghost-limit 32M \
     -v4 -o dump.log
 DUMP_RC=$?

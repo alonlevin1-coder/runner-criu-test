@@ -11,6 +11,8 @@ CHECKPOINT_DIR="${3:-./checkpoint}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CRIU_TCP_FLAG="$("${SCRIPT_DIR}/criu_tcp_flags.sh")"
+CRIU_TCP_MODE="${CRIU_TCP_MODE:-established}"
 mkdir -p "${CHECKPOINT_DIR}"
 CHECKPOINT_DIR="$(cd "${CHECKPOINT_DIR}" && pwd)"
 HELPER_LOG="${CHECKPOINT_DIR}/helper.log"
@@ -143,13 +145,16 @@ DUMP_ATTEMPTS=0
 DUMP_RC=1
 while [ ${DUMP_ATTEMPTS} -lt 3 ] && [ ${DUMP_RC} -ne 0 ]; do
     DUMP_ATTEMPTS=$((DUMP_ATTEMPTS + 1))
-    log "Executing CRIU dump on Listener PID ${LISTENER_PID} (attempt ${DUMP_ATTEMPTS}/3)..."
+    log "Executing CRIU dump on Listener PID ${LISTENER_PID} (attempt ${DUMP_ATTEMPTS}/3) tcp=${CRIU_TCP_FLAG}..."
     find "${CHECKPOINT_DIR}" -maxdepth 1 \( -name '*.img' -o -name 'dump.log' \) -delete 2>/dev/null || true
+    echo "criu_tcp_mode=${CRIU_TCP_MODE}" >> "${CHECKPOINT_DIR}/state.txt"
+    echo "${CRIU_TCP_MODE}" > "${CHECKPOINT_DIR}/criu_tcp_mode.txt"
+    "${SCRIPT_DIR}/load_criu_tcp_modules.sh"
     set +e
     sudo "${CRIU_BIN}" dump \
         -t "${LISTENER_PID}" \
         -D "${CHECKPOINT_DIR}" \
-        --shell-job --file-locks --ext-unix-sk --tcp-close \
+        --shell-job --file-locks --ext-unix-sk "${CRIU_TCP_FLAG}" \
         --ghost-limit 32M \
         -v4 -o dump.log
     DUMP_RC=$?
