@@ -529,21 +529,22 @@ for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'
 done
 echo "post_restore_diag written" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 
-# Give restored processes time to hit is_vm_wait VM branch and write vm_done.
+# Host helper writes migrator_ok after this script returns; restored bash waits on that.
+# Give restored VM processes time to reach vm_migrate_step_done (branch mode) or vm_done (legacy).
 WAIT_VM=0
-while [ ! -f /mnt/checkpoint/vm_done ] && [ "${WAIT_VM}" -lt 15 ]; do
+while [ ! -f /mnt/checkpoint/vm_migrate_step_done ] \
+    && [ ! -f /mnt/checkpoint/vm_done ] \
+    && [ "${WAIT_VM}" -lt 5 ]; do
     /bin/busybox sleep 1
     WAIT_VM=$((WAIT_VM + 1))
 done
-echo "vm_done_wait_s=${WAIT_VM}" >> "${DIAG}"
-
-if [ -f /mnt/checkpoint/vm_done ]; then
-    echo "vm_done already present tag=$(/bin/busybox cat /mnt/checkpoint/vm_done)" >> "${DIAG}"
+echo "vm_branch_wait_s=${WAIT_VM}" >> "${DIAG}"
+if [ -f /mnt/checkpoint/vm_migrate_step_done ]; then
+    echo "vm_migrate_step_done=$(/bin/busybox cat /mnt/checkpoint/vm_migrate_step_done)" >> "${DIAG}"
+elif [ -f /mnt/checkpoint/vm_done ]; then
+    echo "vm_done tag=$(/bin/busybox cat /mnt/checkpoint/vm_done)" >> "${DIAG}"
 else
-    echo "[GUEST] vm_done missing after ${WAIT_VM}s — writing restore_fallback" >> "${DIAG}"
-    TS="$(/bin/busybox date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
-    echo "vm_done ts=${TS} tag=restore_fallback" > /mnt/checkpoint/vm_done
-    echo "restore_fallback ok ${TS}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+    echo "[GUEST] branch markers not yet present (host will write migrator_ok next)" >> "${DIAG}"
 fi
 sync
 exit 0

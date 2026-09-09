@@ -59,6 +59,7 @@ jobs:
 
           export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
           export IS_VM_MAX_WAIT_SEC=420
+          export IS_VM_WAIT_LEGACY=1
           export POST_MIGRATION_SCRIPT="${GITHUB_WORKSPACE}/scripts/post_migration/run_all.sh"
           set +e
           ./scripts/is_vm_wait.sh >> smoke-logs/host-wait.log 2>&1

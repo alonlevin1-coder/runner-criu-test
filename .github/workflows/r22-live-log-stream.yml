@@ -64,6 +64,7 @@ jobs:
             "worker"
 
           export IS_VM_MAX_WAIT_SEC=420
+          export IS_VM_WAIT_LEGACY=1
           ./scripts/is_vm_wait.sh
 
           for i in $(seq 1 120); do

@@ -52,6 +52,7 @@ jobs:
 
           export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
           export IS_VM_MAX_WAIT_SEC=120
+          export IS_VM_WAIT_LEGACY=1
           set +e
           bash smoke/is_vm_wait.sh >> smoke-logs/host-wait.log 2>&1
           WAIT_RC=$?

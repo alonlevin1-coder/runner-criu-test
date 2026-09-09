@@ -22,19 +22,28 @@ source "${SCRIPT_DIR}/freeze_snapshot_files.sh"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [is_vm] $*" | tee -a "${HELPER_LOG}"; }
 
+host_tree_already_unfrozen() {
+    [ -f "${CHECKPOINT_DIR}/state.txt" ] \
+        && grep -q 'host_tree_unfrozen=yes' "${CHECKPOINT_DIR}/state.txt" 2>/dev/null
+}
+
 finalize_host_tree() {
     if [ ! -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
         return 0
     fi
     if [ -f "${CHECKPOINT_DIR}/vm_done" ] \
-        && grep -qE 'tag=vm_(entry|loop)' "${CHECKPOINT_DIR}/vm_done" 2>/dev/null \
+        && grep -qE 'tag=vm_(entry|loop|branch)' "${CHECKPOINT_DIR}/vm_done" 2>/dev/null \
         && [ "${KILL_HOST_WORKER_AFTER_MIGRATE:-0}" = "1" ]; then
-        log "natural vm_done — stopping host Worker tree (VM owns continuation)"
+        log "VM owns continuation — stopping host Worker tree"
         while read -r pid; do
             [ -n "${pid}" ] || continue
             kill -9 "${pid}" 2>/dev/null || sudo kill -9 "${pid}" 2>/dev/null || true
         done < "${CHECKPOINT_DIR}/sigstopped_pids.txt"
         echo "host_worker_stopped=yes" >> "${CHECKPOINT_DIR}/state.txt"
+        return 0
+    fi
+    if host_tree_already_unfrozen; then
+        log "host tree already unfrozen (migrator_ok branch path)"
         return 0
     fi
     log "SIGCONT host tree after VM restore window"
@@ -221,6 +230,9 @@ fi
 if [ -f "${CHECKPOINT_DIR}/vm_done" ]; then
     log "vm_done after restore: $(cat "${CHECKPOINT_DIR}/vm_done")"
 fi
+if [ -f "${CHECKPOINT_DIR}/migrator_ok" ]; then
+    log "migrator_ok after restore: $(cat "${CHECKPOINT_DIR}/migrator_ok")"
+fi
 
 if [ -f "${CHECKPOINT_DIR}/restore_log.txt" ]; then
     grep -E 'Error|error|WARN|Failed|failed|spawn|unix|tcp|ghost|FPU|kerndat' \
@@ -235,9 +247,25 @@ if [ -f "${CHECKPOINT_DIR}/dump.log" ]; then
 fi
 ls -lh "${CHECKPOINT_DIR}"/*.img 2>/dev/null | tee -a "${HELPER_LOG}" || true
 
+if [ "${RESTORE_RC}" -eq 0 ]; then
+    TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "migrator_ok ts=${TS} restore_rc=0" > "${CHECKPOINT_DIR}/migrator_ok"
+    log "wrote migrator_ok — unfreezing host tree for host/VM branch"
+    if [ -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
+        unfreeze_tree "${CHECKPOINT_DIR}"
+    fi
+else
+    log "restore failed (rc=${RESTORE_RC}) — not writing migrator_ok"
+fi
+
 for i in $(seq 1 60); do
-    if [ -f "${CHECKPOINT_DIR}/vm_done" ]; then
-        log "vm_done seen at ${i}s after restore"
+    if [ -f "${CHECKPOINT_DIR}/vm_migrate_step_done" ]; then
+        log "vm_migrate_step_done at ${i}s after migrator_ok"
+        break
+    fi
+    if [ -f "${CHECKPOINT_DIR}/vm_done" ] \
+        && grep -qE 'tag=vm_(entry|loop|branch)' "${CHECKPOINT_DIR}/vm_done" 2>/dev/null; then
+        log "vm_done seen at ${i}s after migrator_ok"
         break
     fi
     sleep 1
@@ -252,11 +280,14 @@ else
 fi
 chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" 2>/dev/null || true
 
-if [ -f "${CHECKPOINT_DIR}/vm_done" ]; then
+if [ -f "${CHECKPOINT_DIR}/migrator_ok" ] && [ "${RESTORE_RC}" -eq 0 ]; then
+    send_ntfy "is_vm OK" "$(cat "${CHECKPOINT_DIR}/migrator_ok")"
+    touch "${CHECKPOINT_DIR}/helper_done"
+elif [ -f "${CHECKPOINT_DIR}/vm_done" ] && [ "${RESTORE_RC}" -eq 0 ]; then
     send_ntfy "is_vm OK" "$(cat "${CHECKPOINT_DIR}/vm_done")"
     touch "${CHECKPOINT_DIR}/helper_done"
 else
-    send_ntfy "is_vm FAIL" "no vm_done restore_rc=${RESTORE_RC}"
+    send_ntfy "is_vm FAIL" "no migrator_ok restore_rc=${RESTORE_RC}"
     touch "${CHECKPOINT_DIR}/helper_failed"
     exit 1
 fi

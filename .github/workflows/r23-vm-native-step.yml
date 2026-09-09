@@ -1,0 +1,100 @@
+name: R23 VM native step 3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    paths:
+      - '.github/workflows/r23-vm-native-step.yml'
+      - 'scripts/is_vm_wait.sh'
+      - 'scripts/r23_native_step3.sh'
+      - 'scripts/smoke_is_vm_helper.sh'
+      - 'scripts/freeze_snapshot_files.sh'
+      - 'appliance/assemble_initramfs.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  r23-vm-native:
+    name: R23 Worker migrate then native step 3 in VM
+    timeout-minutes: 20
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU, initramfs, daemonize
+        run: |
+          mkdir -p smoke-logs checkpoint output
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/is_vm_wait.sh scripts/r23_native_step3.sh
+
+      - name: Step 1 — host marker
+        run: |
+          echo "=== STEP 1: Running on host ==="
+          echo "Hostname: $(hostname)"
+          echo "Kernel: $(uname -r)"
+          echo "step1_host_ok" > checkpoint/step1_host.txt
+
+      - name: Checkpoint & Migrate to VM
+        id: migrate
+        env:
+          ALLOW_WORKER_DUMP: "1"
+          KEEP_QEMU_ALIVE: "1"
+        run: |
+          if [ -f /tmp/is_vm ]; then
+            echo "VM branch — finishing migrate step"
+            export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+            ./scripts/is_vm_wait.sh
+            for i in $(seq 1 120); do
+              [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ] && break
+              sleep 1
+            done
+            [ -f checkpoint/migrator_ok ] || exit 1
+            [ "$(cat checkpoint/restore.rc 2>/dev/null)" = "0" ] || exit 1
+            exit 0
+          fi
+
+          mkdir -p checkpoint smoke-logs output
+
+          WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
+          echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r23-worker.txt
+          [ -n "${WORKER_PID}" ] || exit 1
+
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${WORKER_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/smoke-logs/vm_serial.log" \
+            "worker"
+
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          export IS_VM_MAX_WAIT_SEC=600
+
+          # Host: blocks forever after migrator_ok (host Worker stays on step 2).
+          # VM restored copy exits and runs verification below, then StepsRunner → step 3.
+          ./scripts/is_vm_wait.sh >> smoke-logs/host-wait.log 2>&1
+
+      - name: Step 3 — Hello World (native StepsRunner)
+        run: ./scripts/r23_native_step3.sh
+
+      - name: Verify R23
+        run: |
+          [ -f checkpoint/r23_native_step3_done ]
+          grep -q 'Hello World from VM native StepsRunner step 3' checkpoint/r23_native_step3.txt
+          grep -q vm_branch checkpoint/vm_done
+          [ -f checkpoint/vm_migrate_step_done ]
+          echo "PASS: VM Worker completed migrate step and ran native step 3"
+
+      - name: Upload R23 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r23-vm-native
+          path: smoke-logs/ checkpoint/ output/
+          if-no-files-found: ignore
