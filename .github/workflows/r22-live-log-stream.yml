@@ -84,8 +84,9 @@ jobs:
       - name: Verify live echo ran in VM
         run: |
           grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done
-          [ -f checkpoint/live_echo_started.txt ]
-          echo "PASS: lalala should have streamed live during migrate step (before sleep finished)"
+          grep -q 'lalala' checkpoint/live.log
+          grep -q 'qemu-restore-vm' checkpoint/live.log
+          echo "PASS: lalala streamed from VM (see migrate step log)"
 
       - name: Upload R22 artifacts
         if: always()
