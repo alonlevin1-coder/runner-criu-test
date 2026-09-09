@@ -2,7 +2,7 @@
 # Load kernel modules CRIU needs for --tcp-established dump/restore.
 set -euo pipefail
 
-if [ "${CRIU_TCP_MODE:-established}" = "close" ]; then
+if [ "${CRIU_TCP_MODE:-close}" = "close" ]; then
     exit 0
 fi
 

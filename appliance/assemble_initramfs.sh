@@ -476,7 +476,7 @@ if [ -f "${FROZEN}/manifest.tsv" ]; then
     done < "${FROZEN}/manifest.tsv"
     echo "frozen_overlays done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 fi
-TCP_FLAG="--tcp-established"
+TCP_FLAG="--tcp-close"
 if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
     case "$(/bin/busybox cat /mnt/checkpoint/criu_tcp_mode.txt)" in
         close) TCP_FLAG="--tcp-close" ;;

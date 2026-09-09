@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=freeze_snapshot_files.sh
 source "${SCRIPT_DIR}/freeze_snapshot_files.sh"
 CRIU_TCP_FLAG="$("${SCRIPT_DIR}/criu_tcp_flags.sh")"
-CRIU_TCP_MODE="${CRIU_TCP_MODE:-established}"
+CRIU_TCP_MODE="${CRIU_TCP_MODE:-close}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [is_vm] $*" | tee -a "${HELPER_LOG}"; }
 

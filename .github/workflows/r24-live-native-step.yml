@@ -49,6 +49,7 @@ jobs:
         env:
           ALLOW_WORKER_DUMP: "1"
           KEEP_QEMU_ALIVE: "1"
+          CRIU_TCP_MODE: close
         run: |
           if [ -f /tmp/is_vm ]; then
             echo "VM branch — finishing migrate step"

@@ -1,3 +1,4 @@
+# Experimental: Porter F09 --tcp-established needs TAP + same IP; not for GHA user NAT.
 name: R27 tcp-established live log test
 
 on:

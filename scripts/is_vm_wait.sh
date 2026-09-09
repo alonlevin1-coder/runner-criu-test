@@ -72,12 +72,29 @@ log "waiting for migrator_ok (pid=$$ cp=${CP})"
 touch "${CP}/wait_loop_ready"
 log "signaled wait_loop_ready"
 
+check_migration_failed() {
+    if [ -f "${CP}/helper_failed" ]; then
+        log "helper_failed — migration aborted"
+        [ -f "${CP}/dump.rc" ] && log "dump.rc=$(cat "${CP}/dump.rc")"
+        [ -f "${CP}/restore.rc" ] && log "restore.rc=$(cat "${CP}/restore.rc")"
+        [ -f "${CP}/dump_errors.txt" ] && tail -n 5 "${CP}/dump_errors.txt" | while read -r line; do log "dump: ${line}"; done
+        [ -f "${CP}/restore_errors.txt" ] && tail -n 5 "${CP}/restore_errors.txt" | while read -r line; do log "restore: ${line}"; done
+        exit 1
+    fi
+    if [ -f "${CP}/dump.rc" ] && [ "$(cat "${CP}/dump.rc")" != "0" ]; then
+        log "dump failed rc=$(cat "${CP}/dump.rc")"
+        exit 1
+    fi
+}
+
 MAX_WAIT="${IS_VM_MAX_WAIT_SEC:-600}"
 START=$(date +%s)
 while [ ! -f "${MIGRATOR_OK}" ]; do
+    check_migration_failed
     NOW=$(date +%s)
     if [ $((NOW - START)) -ge "${MAX_WAIT}" ]; then
         log "timeout after ${MAX_WAIT}s waiting for migrator_ok"
+        check_migration_failed
         exit 124
     fi
     sleep 2
