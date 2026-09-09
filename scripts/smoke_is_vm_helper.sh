@@ -243,8 +243,13 @@ for i in $(seq 1 60); do
     sleep 1
 done
 
-kill -9 "${QEMU_PID}" 2>/dev/null || true
-wait "${QEMU_PID}" 2>/dev/null || true
+if [ "${KEEP_QEMU_ALIVE:-0}" = "1" ]; then
+    log "KEEP_QEMU_ALIVE=1 — leaving QEMU running pid=${QEMU_PID}"
+    echo "qemu_keep_alive=yes" >> "${CHECKPOINT_DIR}/state.txt"
+else
+    kill -9 "${QEMU_PID}" 2>/dev/null || true
+    wait "${QEMU_PID}" 2>/dev/null || true
+fi
 chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" 2>/dev/null || true
 
 if [ -f "${CHECKPOINT_DIR}/vm_done" ]; then

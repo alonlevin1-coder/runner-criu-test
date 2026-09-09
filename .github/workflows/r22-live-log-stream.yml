@@ -4,15 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       sleep_sec:
-        description: Seconds to sleep after echo (use large value to verify live UI)
+        description: Seconds to sleep before echo (try 10000 to watch live UI)
         required: false
         default: "30"
   push:
     branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
     paths:
       - '.github/workflows/r22-live-log-stream.yml'
-      - 'scripts/live_log_*.sh'
-      - 'scripts/post_migration/live_echo_test.sh'
+      - 'scripts/vm_run.sh'
+      - 'scripts/vm_teardown.sh'
+      - 'scripts/smoke_is_vm_helper.sh'
       - 'scripts/is_vm_wait.sh'
 
 permissions:
@@ -21,7 +22,7 @@ permissions:
 jobs:
   r22-live-log:
     name: R22 live VM log streaming
-    timeout-minutes: 15
+    timeout-minutes: 180
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -35,22 +36,20 @@ jobs:
           ./appliance/assemble_initramfs.sh
           gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
           chmod +x scripts/smoke_is_vm_helper.sh scripts/is_vm_wait.sh
-          chmod +x scripts/live_log_setup.sh scripts/live_log_forwarder.sh
-          chmod +x scripts/post_migration/live_echo_test.sh
+          chmod +x scripts/vm_run.sh scripts/vm_teardown.sh
 
-      - name: Checkpoint & Migrate with live log pipe
+      - name: Checkpoint & Migrate to VM
         env:
           ALLOW_WORKER_DUMP: "1"
-          LIVE_ECHO_SLEEP_SEC: ${{ inputs.sleep_sec || '30' }}
+          KEEP_QEMU_ALIVE: "1"
         run: |
           if [ -f /tmp/is_vm ]; then
-            ./scripts/post_migration/live_echo_test.sh
+            echo "already in VM"
             exit 0
           fi
 
           rm -rf checkpoint && mkdir -p checkpoint smoke-logs
           export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
-          ./scripts/live_log_setup.sh $$
 
           WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
           echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r22-worker.txt
@@ -64,14 +63,8 @@ jobs:
             "$(pwd)/smoke-logs/vm_serial.log" \
             "worker"
 
-          export POST_MIGRATION_SCRIPT="${GITHUB_WORKSPACE}/scripts/post_migration/live_echo_test.sh"
           export IS_VM_MAX_WAIT_SEC=420
-          set +e
           ./scripts/is_vm_wait.sh
-          WAIT_RC=$?
-          set -e
-          echo "is_vm_wait rc=${WAIT_RC}"
-          [ "${WAIT_RC}" -eq 0 ] || exit "${WAIT_RC}"
 
           for i in $(seq 1 120); do
             if [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ]; then
@@ -81,12 +74,24 @@ jobs:
             sleep 1
           done
 
-      - name: Verify live echo ran in VM
-        run: |
+          [ "$(cat checkpoint/restore.rc 2>/dev/null)" = "0" ] || exit 1
           grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done
-          grep -q 'lalala' checkpoint/live.log
-          grep -q 'qemu-restore-vm' checkpoint/live.log
-          echo "PASS: lalala streamed from VM (see migrate step log)"
+          grep -q 'qemu_keep_alive=yes' checkpoint/state.txt
+
+      - name: Sleep then echo in VM
+        env:
+          SLEEP_SEC: ${{ inputs.sleep_sec || '30' }}
+        run: |
+          ./scripts/vm_run.sh "sleep ${SLEEP_SEC}; echo lalalal"
+
+      - name: Teardown VM
+        if: always()
+        run: ./scripts/vm_teardown.sh
+
+      - name: Verify R22
+        run: |
+          grep -q 'qemu_teardown=yes' checkpoint/state.txt
+          echo "PASS: independent step ran in VM with live SSH streaming"
 
       - name: Upload R22 artifacts
         if: always()
