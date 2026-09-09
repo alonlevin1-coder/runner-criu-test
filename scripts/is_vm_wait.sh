@@ -11,6 +11,16 @@ HOST_WATCH_PID=""
 
 log() { echo "[is_vm_wait] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 
+wait_stage() {
+    local stage="${1:?}"
+    local detail="${2:-}"
+    local ts
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "${ts} wait_stage=${stage} run=${GITHUB_RUN_ID:-0} pid=$$ ${detail}" >> "${CP}/helper_stage.txt"
+    printf '%s wait_%s %s\n' "${ts}" "${stage}" "${detail}" > "${CP}/wait_stage_latest.txt"
+    chmod a+rw "${CP}/helper_stage.txt" "${CP}/wait_stage_latest.txt" 2>/dev/null || true
+}
+
 send_ntfy() {
     local title="${1:-is_vm_wait}"
     local msg="${2:-}"
@@ -124,6 +134,7 @@ if [ -f /tmp/is_vm ] && [ -f "${MIGRATOR_OK}" ]; then
 fi
 
 log "waiting for migrator_ok (pid=$$ cp=${CP})"
+wait_stage "waiting" "max=${IS_VM_MAX_WAIT_SEC:-600}s"
 send_ntfy "is_vm_wait waiting" "run=${GITHUB_RUN_ID:-0} cp=${CP} max=${IS_VM_MAX_WAIT_SEC:-600}s"
 touch "${CP}/wait_loop_ready"
 log "signaled wait_loop_ready"
@@ -133,6 +144,7 @@ check_migration_failed() {
         log "helper_failed — migration aborted"
         [ -f "${CP}/dump.rc" ] && log "dump.rc=$(cat "${CP}/dump.rc")"
         [ -f "${CP}/restore.rc" ] && log "restore.rc=$(cat "${CP}/restore.rc")"
+        wait_stage "fail" "helper_failed"
         send_ntfy "is_vm_wait FAIL" "helper_failed run=${GITHUB_RUN_ID:-0}
 $(checkpoint_snapshot)
 $(tail -n 8 "${MARKER}" 2>/dev/null || true)"
@@ -153,6 +165,7 @@ while [ ! -f "${MIGRATOR_OK}" ]; do
     NOW=$(date +%s)
     if [ $((NOW - START)) -ge "${MAX_WAIT}" ]; then
         log "timeout after ${MAX_WAIT}s waiting for migrator_ok"
+        wait_stage "timeout" "no migrator_ok after ${MAX_WAIT}s"
         send_ntfy "is_vm_wait TIMEOUT" "no migrator_ok after ${MAX_WAIT}s run=${GITHUB_RUN_ID:-0}
 $(checkpoint_snapshot)
 $(tail -n 8 "${MARKER}" 2>/dev/null || true)"
@@ -172,6 +185,7 @@ $(tail -n 5 "${MARKER}" 2>/dev/null || true)"
     sleep 2
 done
 log "migrator_ok: $(head -n1 "${MIGRATOR_OK}" 2>/dev/null || echo present)"
+wait_stage "migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || echo present)"
 send_ntfy "is_vm_wait migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || echo present) run=${GITHUB_RUN_ID:-0}"
 
 if [ -f /tmp/is_vm ]; then
@@ -184,6 +198,7 @@ if [ -f /tmp/is_vm ]; then
 fi
 
 log "host branch — blocking forever (host Worker stays on step 2)"
+wait_stage "host_blocked" "cp=${CP}"
 echo "host_blocked ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${CP}/state.txt" 2>/dev/null || true
 send_ntfy "is_vm_wait host blocked" "run=${GITHUB_RUN_ID:-0} host sleeping forever; VM should run next steps. cp=${CP}"
 start_host_progress_watch

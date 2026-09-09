@@ -22,7 +22,40 @@ source "${SCRIPT_DIR}/freeze_snapshot_files.sh"
 CRIU_TCP_FLAG="$("${SCRIPT_DIR}/criu_tcp_flags.sh")"
 CRIU_TCP_MODE="${CRIU_TCP_MODE:-close}"
 
+HELPER_STAGE="${CHECKPOINT_DIR}/helper_stage.txt"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [is_vm] $*" | tee -a "${HELPER_LOG}"; }
+
+stage_mark() {
+    local stage="${1:?stage}"
+    local detail="${2:-}"
+    local ts
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "${ts} stage=${stage} run=${GITHUB_RUN_ID:-0} pid=$$ ${detail}" >> "${HELPER_STAGE}"
+    printf '%s %s %s\n' "${ts}" "${stage}" "${detail}" > "${CHECKPOINT_DIR}/helper_stage_latest.txt"
+    chmod a+rw "${HELPER_STAGE}" "${CHECKPOINT_DIR}/helper_stage_latest.txt" "${HELPER_LOG}" 2>/dev/null || true
+}
+
+run_with_timeout() {
+    local sec="${1:?seconds}"
+    shift
+    local rc=0
+    stage_mark "timeout_start" "sec=${sec} cmd=$*"
+    if timeout "${sec}" "$@"; then
+        stage_mark "timeout_ok" "sec=${sec} cmd=$*"
+        return 0
+    fi
+    rc=$?
+    stage_mark "timeout_fail" "sec=${sec} rc=${rc} cmd=$*"
+    return "${rc}"
+}
+
+upload_debug_snapshot() {
+    if [ -x "${SCRIPT_DIR}/upload_checkpoint_debug.sh" ]; then
+        UPLOAD_DEBUG_BRANCH="${UPLOAD_DEBUG_BRANCH:-0}" \
+            "${SCRIPT_DIR}/upload_checkpoint_debug.sh" \
+            "${CHECKPOINT_DIR}" "${REPO_DIR}" "R30" || true
+    fi
+}
 
 host_tree_already_unfrozen() {
     [ -f "${CHECKPOINT_DIR}/state.txt" ] \
@@ -122,7 +155,14 @@ start_watchdog() {
 stop_watchdog() {
     [ -n "${WATCHDOG_PID:-}" ] && kill "${WATCHDOG_PID}" 2>/dev/null || true
 }
-trap 'stop_watchdog; finalize_host_tree' EXIT
+on_exit() {
+    stop_watchdog
+    stage_mark "helper_exit" "rc=${HELPER_EXIT_RC:-0}"
+    upload_debug_snapshot
+    finalize_host_tree
+}
+trap on_exit EXIT
+HELPER_EXIT_RC=0
 
 CMDLINE=$(tr '\0' ' ' < "/proc/${TARGET_PID}/cmdline" 2>/dev/null || true)
 log "target kind=${TARGET_KIND} pid=${TARGET_PID} cmd=${CMDLINE}"
@@ -155,6 +195,7 @@ while [ ! -f "${STEP2_READY}" ] && [ ! -f "${WAIT_LOOP_READY}" ]; do
     [ "${WAIT}" -le 300 ] || exit 1
 done
 log "dump gate open (step2_ready=$([ -f "${STEP2_READY}" ] && echo yes || echo no) wait_loop_ready=$([ -f "${WAIT_LOOP_READY}" ] && echo yes || echo no))"
+stage_mark "started" "kind=${TARGET_KIND} target_pid=${TARGET_PID} tcp_mode=${CRIU_TCP_MODE}"
 send_ntfy "is_vm Started" "run=${GITHUB_RUN_ID:-0} kind=${TARGET_KIND} pid=${TARGET_PID} tcp_mode=${CRIU_TCP_MODE} tcp_flag=${CRIU_TCP_FLAG}"
 
 mkdir -p "${CHECKPOINT_DIR}/dev_shm" "${CHECKPOINT_DIR}/host_tmp"
@@ -179,21 +220,32 @@ CRIU_BIN="$(command -v criu || true)"
 
 if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; then
     log "discover Worker established TCP local IPs (Porter F09)"
+    stage_mark "tcp_discover_start" "pid=${TARGET_PID}"
     chmod +x "${SCRIPT_DIR}/discover_tcp_ips.sh"
-    "${SCRIPT_DIR}/discover_tcp_ips.sh" "${TARGET_PID}" "${CHECKPOINT_DIR}"
+    if ! run_with_timeout 60 "${SCRIPT_DIR}/discover_tcp_ips.sh" "${TARGET_PID}" "${CHECKPOINT_DIR}"; then
+        log "ERROR: tcp discover failed or timed out"
+        send_ntfy "is_vm FAIL" "tcp discover timeout/fail"
+        touch "${CHECKPOINT_DIR}/helper_failed"
+        HELPER_EXIT_RC=1
+        exit 1
+    fi
     if [ ! -s "${CHECKPOINT_DIR}/tcp_local_ips.txt" ]; then
         log "ERROR: established mode requires non-loopback ESTAB socket local IP"
         send_ntfy "is_vm FAIL" "tcp discover: no local IP in tcp_local_ips.txt"
         touch "${CHECKPOINT_DIR}/helper_failed"
+        HELPER_EXIT_RC=1
         exit 1
     fi
+    stage_mark "tcp_discover_ok" "ips=$(head -n1 "${CHECKPOINT_DIR}/tcp_local_ips.txt")"
     send_ntfy "is_vm TCP discover" "$(head -n 5 "${CHECKPOINT_DIR}/tcp_local_ips.txt" 2>/dev/null || true)
 $(cat "${CHECKPOINT_DIR}/network_spec.env" 2>/dev/null || true)"
 fi
 
 if [ "${TARGET_KIND}" = "worker" ]; then
     log "SIGSTOP worker tree before snapshot+dump"
+    stage_mark "freeze_start" "pid=${TARGET_PID}"
     freeze_tree "${CHECKPOINT_DIR}" "${TARGET_PID}"
+    stage_mark "freeze_ok" "count=$(wc -l < "${CHECKPOINT_DIR}/sigstopped_pids.txt" 2>/dev/null || echo 0)"
     log "snapshotting open regular files to frozen_files/"
     snapshot_open_files "${CHECKPOINT_DIR}" "${TARGET_PID}"
     if [ -f "${CHECKPOINT_DIR}/frozen_files/manifest.tsv" ]; then
@@ -210,6 +262,7 @@ if [ "${CRIU_TCP_MODE}" = "established" ] && [ "${TARGET_KIND}" = "worker" ]; th
     LEAVE_FLAG="--leave-stopped"
 fi
 log "criu dump ${LEAVE_FLAG} pid=${TARGET_PID} tcp=${CRIU_TCP_FLAG}"
+stage_mark "dump_start" "leave=${LEAVE_FLAG} tcp=${CRIU_TCP_FLAG}"
 "${SCRIPT_DIR}/load_criu_tcp_modules.sh"
 set +e
 sudo "${CRIU_BIN}" dump \
@@ -223,6 +276,7 @@ DUMP_RC=$?
 set -e
 echo "${DUMP_RC}" > "${CHECKPOINT_DIR}/dump.rc"
 log "dump rc=${DUMP_RC} ${LEAVE_FLAG}"
+stage_mark "dump_done" "rc=${DUMP_RC} ${LEAVE_FLAG}"
 send_ntfy "is_vm dump" "kind=${TARGET_KIND} rc=${DUMP_RC} ${LEAVE_FLAG}=1 run=${GITHUB_RUN_ID:-0}"
 
 if [ "${DUMP_RC}" -ne 0 ]; then
@@ -230,6 +284,7 @@ if [ "${DUMP_RC}" -ne 0 ]; then
     send_ntfy "is_vm dump FAIL" "rc=${DUMP_RC}
 ${dump_tail}"
     touch "${CHECKPOINT_DIR}/helper_failed"
+    HELPER_EXIT_RC="${DUMP_RC}"
     exit "${DUMP_RC}"
 fi
 
@@ -241,16 +296,27 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
     echo "host_tree_frozen_forever=yes" >> "${CHECKPOINT_DIR}/state.txt"
     if [ "${ISOLATE_HOST_TCP_AFTER_DUMP:-1}" = "1" ]; then
         log "closing host TCP sockets while tree frozen (ss -K)"
-        close_tree_tcp_sockets "${CHECKPOINT_DIR}"
+        stage_mark "tcp_close_start" ""
+        if ! run_with_timeout "${TCP_CLOSE_TIMEOUT_SEC:-120}" close_tree_tcp_sockets "${CHECKPOINT_DIR}"; then
+            log "ERROR: tcp close timed out or failed"
+            send_ntfy "is_vm FAIL" "tcp close timeout rc=$?"
+            touch "${CHECKPOINT_DIR}/helper_failed"
+            HELPER_EXIT_RC=1
+            exit 1
+        fi
+        stage_mark "tcp_close_ok" "$(tail -n1 "${CHECKPOINT_DIR}/state.txt" 2>/dev/null || true)"
         send_ntfy "is_vm TCP close" "$(tail -n 15 "${CHECKPOINT_DIR}/host_tcp_close.log" 2>/dev/null || echo done)"
     fi
     chmod +x "${SCRIPT_DIR}/host_tap_cutover.sh"
-    if ! "${SCRIPT_DIR}/host_tap_cutover.sh" "${CHECKPOINT_DIR}"; then
-        log "ERROR: host TAP cutover failed"
+    stage_mark "tap_start" ""
+    if ! run_with_timeout "${TAP_CUTOVER_TIMEOUT_SEC:-120}" "${SCRIPT_DIR}/host_tap_cutover.sh" "${CHECKPOINT_DIR}"; then
+        log "ERROR: host TAP cutover failed or timed out"
         send_ntfy "is_vm TAP FAIL" "$(tail -n 20 "${CHECKPOINT_DIR}/host_tap_cutover.log" 2>/dev/null || true)"
         touch "${CHECKPOINT_DIR}/helper_failed"
+        HELPER_EXIT_RC=1
         exit 1
     fi
+    stage_mark "tap_ok" "net_mode=$(cat "${CHECKPOINT_DIR}/net_mode.txt" 2>/dev/null || echo unknown)"
     send_ntfy "is_vm TAP OK" "$(tail -n 15 "${CHECKPOINT_DIR}/host_tap_cutover.log" 2>/dev/null || true)
 net_mode=$(cat "${CHECKPOINT_DIR}/net_mode.txt" 2>/dev/null || echo unknown)"
 elif ! kill -0 "${TARGET_PID}" 2>/dev/null; then
@@ -276,6 +342,7 @@ chmod 666 "${SERIAL_LOG}" 2>/dev/null || true
 NET_MODE="user"
 [ -f "${CHECKPOINT_DIR}/net_mode.txt" ] && NET_MODE="$(cat "${CHECKPOINT_DIR}/net_mode.txt")"
 log "booting QEMU for SSH restore net_mode=${NET_MODE}"
+stage_mark "qemu_start" "net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
 send_ntfy "is_vm Booting QEMU" "run=${GITHUB_RUN_ID:-0} accel=${ACCEL_ARGS} net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
 
 VIRTFS_ARGS=(
@@ -347,23 +414,28 @@ done
 
 if [ "${SSH_OK}" -ne 1 ]; then
     log "ssh failed"
+    stage_mark "ssh_fail" "port=${SSH_PORT}"
     serial_sz=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
     send_ntfy "is_vm SSH FAIL" "port=${SSH_PORT} serial_bytes=${serial_sz} qemu_alive=$(kill -0 "${QEMU_PID}" 2>/dev/null && echo yes || echo no)
 $(tail -n 15 "${HELPER_LOG}" 2>/dev/null || true)"
     touch "${CHECKPOINT_DIR}/ssh_failed"
     kill -9 "${QEMU_PID}" 2>/dev/null || true
     touch "${CHECKPOINT_DIR}/helper_failed"
+    HELPER_EXIT_RC=1
     exit 1
 fi
 
+stage_mark "ssh_ok" "port=${SSH_PORT}"
 send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} running t9_restore.sh"
 log "running t9_restore.sh"
+stage_mark "restore_start" ""
 set +e
-"${SSH[@]}" '/usr/sbin/t9_restore.sh' >> "${HELPER_LOG}" 2>&1
+run_with_timeout "${RESTORE_TIMEOUT_SEC:-300}" "${SSH[@]}" '/usr/sbin/t9_restore.sh' >> "${HELPER_LOG}" 2>&1
 RESTORE_RC=$?
 set -e
 echo "${RESTORE_RC}" > "${CHECKPOINT_DIR}/restore.rc"
 log "restore rc=${RESTORE_RC}"
+stage_mark "restore_done" "rc=${RESTORE_RC}"
 send_ntfy "is_vm Restore" "rc=${RESTORE_RC}
 $(tail -n 20 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || tail -n 20 "${HELPER_LOG}" 2>/dev/null || true)"
 
@@ -396,6 +468,7 @@ if [ "${RESTORE_RC}" -eq 0 ]; then
     chmod -R a+rwX "${CHECKPOINT_DIR}" 2>/dev/null || true
     echo "migrator_ok ts=${TS} restore_rc=0" > "${CHECKPOINT_DIR}/migrator_ok"
     chmod a+rw "${CHECKPOINT_DIR}/migrator_ok" 2>/dev/null || true
+    stage_mark "migrator_ok" "restore_rc=0"
     if [ "${CRIU_TCP_MODE}" = "established" ]; then
         log "wrote migrator_ok — host Worker stays frozen (GHA: never kill/unfreeze)"
     else
@@ -433,14 +506,18 @@ chmod -R a+rX "${CHECKPOINT_DIR}" "${SERIAL_LOG}" 2>/dev/null || true
 if [ -f "${CHECKPOINT_DIR}/migrator_ok" ] && [ "${RESTORE_RC}" -eq 0 ]; then
     send_ntfy "is_vm OK" "$(cat "${CHECKPOINT_DIR}/migrator_ok")"
     touch "${CHECKPOINT_DIR}/helper_done"
+    stage_mark "helper_done" "migrator_ok"
 elif [ -f "${CHECKPOINT_DIR}/vm_done" ] && [ "${RESTORE_RC}" -eq 0 ]; then
     send_ntfy "is_vm OK" "$(cat "${CHECKPOINT_DIR}/vm_done")"
     touch "${CHECKPOINT_DIR}/helper_done"
+    stage_mark "helper_done" "vm_done"
 else
     send_ntfy "is_vm FAIL" "no migrator_ok restore_rc=${RESTORE_RC} run=${GITHUB_RUN_ID:-0}
 $(tail -n 12 "${CHECKPOINT_DIR}/restore_errors.txt" 2>/dev/null || true)
 $(tail -n 8 "${CHECKPOINT_DIR}/guest_progress.txt" 2>/dev/null || true)"
     touch "${CHECKPOINT_DIR}/helper_failed"
+    stage_mark "helper_fail" "restore_rc=${RESTORE_RC}"
+    HELPER_EXIT_RC=1
     exit 1
 fi
 exit 0

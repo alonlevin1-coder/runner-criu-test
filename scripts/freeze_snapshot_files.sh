@@ -78,18 +78,31 @@ close_tree_tcp_sockets() {
         return 0
     fi
 
+    local raw_addr sport close_sec
+    close_sec="${TCP_CLOSE_TIMEOUT_SEC:-15}"
+
     : > "${log}"
     while read -r pid; do
         [ -n "${pid}" ] || continue
         while read -r line; do
             [ -n "${line}" ] || continue
-            sport="$(echo "${line}" | awk '{print $4}' | sed 's/.*://')"
+            raw_addr="$(awk '{print $4}' <<< "${line}")"
+            sport=""
+            if [[ "${raw_addr}" =~ ^\[([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|[0-9a-fA-F:]+)\]:([0-9]+)$ ]]; then
+                sport="${BASH_REMATCH[2]}"
+            elif [[ "${raw_addr}" =~ ^([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+):([0-9]+)$ ]]; then
+                sport="${BASH_REMATCH[2]}"
+            else
+                sport="$(sed 's/.*://' <<< "${raw_addr}")"
+            fi
             [ -n "${sport}" ] || continue
             echo "closing pid=${pid} sport=:${sport} ${line}" >> "${log}"
-            if sudo ss -H -K "sport = :${sport}" >> "${log}" 2>&1; then
+            if timeout "${close_sec}" sudo ss -H -K "sport = :${sport}" >> "${log}" 2>&1; then
                 closed=$((closed + 1))
+            else
+                echo "WARN: ss -K timed out or failed for sport=:${sport}" >> "${log}"
             fi
-        done < <(sudo ss -H -antp 2>/dev/null | grep -F "pid=${pid}," || true)
+        done < <(timeout 30 sudo ss -H -antp 2>/dev/null | grep -F "pid=${pid}," || true)
     done < "${pidfile}"
 
     echo "host_tcp_sockets_closed=yes count=${closed}" >> "${checkpoint_dir}/state.txt"
