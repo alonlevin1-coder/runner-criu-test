@@ -24,7 +24,8 @@ if [ ! -x "${SCRIPT_DIR}/daemonize" ]; then
     gcc -O2 -Wall "${SCRIPT_DIR}/daemonize.c" -o "${SCRIPT_DIR}/daemonize"
 fi
 
-sudo -E "${SCRIPT_DIR}/daemonize" \
+# Same-user daemonize so we can write to the runner step stdout fd (not root).
+"${SCRIPT_DIR}/daemonize" \
     bash "${SCRIPT_DIR}/live_log_forwarder.sh" "${STEP_PID}" "${PIPE}"
 
 echo "[live_log_setup] forwarder launched (detached from Worker tree)"

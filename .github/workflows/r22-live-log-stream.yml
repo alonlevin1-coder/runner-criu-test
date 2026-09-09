@@ -13,6 +13,7 @@ on:
       - '.github/workflows/r22-live-log-stream.yml'
       - 'scripts/live_log_*.sh'
       - 'scripts/post_migration/live_echo_test.sh'
+      - 'scripts/is_vm_wait.sh'
 
 permissions:
   contents: read
@@ -83,7 +84,8 @@ jobs:
       - name: Verify live echo ran in VM
         run: |
           grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done
-          echo "PASS: migration ok; check step log — lalala should appear before step completed"
+          [ -f checkpoint/live_echo_started.txt ]
+          echo "PASS: lalala should have streamed live during migrate step (before sleep finished)"
 
       - name: Upload R22 artifacts
         if: always()

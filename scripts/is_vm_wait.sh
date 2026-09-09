@@ -26,8 +26,8 @@ run_post_migration() {
 
 if [ -f /tmp/is_vm ]; then
     log "VM branch (/tmp/is_vm present at entry)"
-    write_vm_done "vm_entry"
     run_post_migration
+    write_vm_done "vm_entry"
     exit 0
 fi
 
@@ -44,8 +44,8 @@ while [ ! -f "${CP}/vm_done" ]; do
     fi
     if [ -f /tmp/is_vm ]; then
         log "VM branch detected inside wait loop"
-        write_vm_done "vm_loop"
         run_post_migration
+        write_vm_done "vm_loop"
         exit 0
     fi
     sleep 2
