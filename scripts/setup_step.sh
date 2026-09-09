@@ -9,6 +9,11 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CHECKPOINT_DIR="${REPO_DIR}/checkpoint"
 MIGRATION_TARGET="${MIGRATION_TARGET:-worker}"
 
+if [ -f /tmp/is_vm ]; then
+    echo "=== [STEP 2] Already in VM (/tmp/is_vm present) — skip migration ==="
+    exit 0
+fi
+
 echo "=== [STEP 2] Orchestration Starting (target=${MIGRATION_TARGET}) ==="
 echo "Working directory: ${REPO_DIR}"
 
@@ -54,8 +59,6 @@ if [ "${MIGRATION_TARGET}" = "worker" ]; then
 
     echo "[STEP 2] Launching Worker leave-running migration helper..."
     export ALLOW_WORKER_DUMP=1
-    export RUNNER_VM_CHECKPOINT="${CHECKPOINT_DIR}"
-    export IS_VM_MAX_WAIT_SEC="${IS_VM_MAX_WAIT_SEC:-600}"
     sudo -E "${SCRIPT_DIR}/daemonize" \
         "${SCRIPT_DIR}/smoke_is_vm_helper.sh" \
         "${WORKER_PID}" \
@@ -63,29 +66,7 @@ if [ "${MIGRATION_TARGET}" = "worker" ]; then
         "${REPO_DIR}" \
         "${REPO_DIR}/vm_serial.log" \
         "worker"
-
-    echo "[STEP 2] Waiting for restored step to write vm_done..."
-    "${SCRIPT_DIR}/is_vm_wait.sh"
-
-    for i in $(seq 1 90); do
-        if [ -f "${CHECKPOINT_DIR}/helper_done" ] || [ -f "${CHECKPOINT_DIR}/helper_failed" ]; then
-            echo "[STEP 2] helper finished at ${i}s"
-            break
-        fi
-        sleep 1
-    done
-    sudo chmod -R a+rX "${CHECKPOINT_DIR}" "${REPO_DIR}/vm_serial.log" 2>/dev/null || true
-
-    if [ ! -f "${CHECKPOINT_DIR}/vm_done" ]; then
-        echo "[STEP 2] [ERROR] Worker migration finished without vm_done"
-        exit 1
-    fi
-    if [ "$(cat "${CHECKPOINT_DIR}/restore.rc" 2>/dev/null)" != "0" ]; then
-        echo "[STEP 2] [ERROR] VM criu restore failed (restore.rc != 0)"
-        exit 1
-    fi
-    grep -qE 'tag=vm_(entry|loop)' "${CHECKPOINT_DIR}/vm_done" \
-        || echo "[STEP 2] WARN: vm_done used restore_fallback — see post_restore_diag.txt"
+    echo "[STEP 2] Helper launched — caller must run scripts/is_vm_wait.sh (R16 pattern)"
 else
     echo "[STEP 2] Launching detached Listener checkpoint helper via daemonize..."
     export ALLOW_LISTENER_DUMP=1

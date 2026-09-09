@@ -99,10 +99,23 @@ jobs:
           echo "=== Step: Checkpoint & Migrate to VM (Worker leave-running) ==="
           chmod +x scripts/*.sh smoke/*.sh 2>/dev/null || chmod +x scripts/*.sh
           ./scripts/setup_step.sh
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          export IS_VM_MAX_WAIT_SEC=600
+          ./scripts/is_vm_wait.sh
+          for i in $(seq 1 90); do
+            if [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ]; then
+              echo "helper finished at ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          sudo chmod -R a+rX checkpoint vm_serial.log 2>/dev/null || true
           echo "=== vm_done ==="
           cat checkpoint/vm_done
           echo "=== post_restore_diag (tail) ==="
           tail -n 25 checkpoint/post_restore_diag.txt 2>/dev/null || true
+          [ "$(cat checkpoint/restore.rc 2>/dev/null)" = "0" ] || exit 1
+          grep -qE 'tag=vm_(entry|loop)' checkpoint/vm_done || echo "WARN: restore_fallback vm_done"
 
       - name: Hello World from VM
         run: |
