@@ -477,10 +477,14 @@ set +e
 if [ -f /mnt/checkpoint/state.txt ]; then
     echo "t9_restore start" >> /mnt/checkpoint/guest_progress.txt
 fi
-echo "[GUEST] t9_restore: copying images"
-mkdir -p /tmp/restore
-cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>/dev/null || true
-chmod -R 777 /tmp/restore 2>/dev/null || true
+if [ ! -f /tmp/restore/inventory.img ]; then
+    echo "[GUEST] t9_restore: copying images"
+    mkdir -p /tmp/restore
+    cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>/dev/null || true
+    chmod -R 777 /tmp/restore 2>/dev/null || true
+else
+    echo "[GUEST] t9_restore: images already present in /tmp/restore (skipping redundant copy)"
+fi
 chmod 755 / 2>/dev/null || true
 echo "[GUEST] Marking VM environment for restored processes"
 touch /tmp/is_vm
@@ -583,8 +587,7 @@ if [ "${RC}" -ne 0 ]; then
 fi
 
 DIAG=/mnt/checkpoint/post_restore_diag.txt
-: > "${DIAG}"
-echo "[GUEST] post-restore diagnostics" >> "${DIAG}"
+echo "=== post-restore diagnostics ===" >> "${DIAG}"
 echo "is_vm=$(/bin/busybox cat /tmp/is_vm 2>/dev/null || echo missing)" >> "${DIAG}"
 
 # Dump-time SIGSTOP leaves restored tasks stopped (T) in the guest; resume them.

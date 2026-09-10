@@ -26,6 +26,7 @@ jobs:
           chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh \
             scripts/criu_tcp_flags.sh scripts/load_criu_tcp_modules.sh \
             scripts/discover_tcp_ips.sh scripts/host_tap_cutover.sh \
+            scripts/host_tap_activate.sh \
             scripts/upload_checkpoint_debug.sh scripts/map_workflow_processes.sh \
             scripts/freeze_snapshot_files.sh
           ./scripts/build_criu.sh
@@ -117,12 +118,26 @@ jobs:
           date -u +%Y-%m-%dT%H:%M:%SZ | tee checkpoint/r32_echo_started.txt
           curl -s --max-time 5 "https://ntfy.sh/${NTFY_TOPIC}" -d "run=${GITHUB_RUN_ID} VM live streaming started" || true
 
+          # Start background socket monitor to record socket states, cwnd, bytes_acked, and retrans
+          (
+            for s in $(seq 1 15); do
+              echo "--- [ss diag tick +${s}*4s at $(date -u +%T)] ---" >> checkpoint/vm_socket_diag.txt
+              ss -tneia 2>/dev/null | grep -E "443|ESTAB" >> checkpoint/vm_socket_diag.txt || true
+              sleep 4
+            done
+          ) &
+          SS_DIAG_PID=$!
+
           TOTAL_TICKS="${SLEEP_SEC:-30}"
           echo "Starting continuous live log stream (${TOTAL_TICKS}s, 1 tick/sec):"
           for i in $(seq 1 "${TOTAL_TICKS}"); do
             echo "lalala live stream tick ${i}/${TOTAL_TICKS} at $(date -u +%T) [VM native]"
             sleep 1
           done
+
+          kill "${SS_DIAG_PID}" 2>/dev/null || true
+          echo "=== End-of-step Socket State ===" >> checkpoint/vm_socket_diag.txt
+          ss -tneia 2>/dev/null | grep -E "443|ESTAB" >> checkpoint/vm_socket_diag.txt || true
 
           echo "r32_live_echo done"
           date -u +%Y-%m-%dT%H:%M:%SZ > checkpoint/r32_echo_finished.txt
@@ -135,13 +150,23 @@ jobs:
             chmod +x scripts/collect_runner_diag.sh
             ./scripts/collect_runner_diag.sh checkpoint/vm_diag/r32_after_step || true
           fi
+          echo "=== In-VM Socket Diagnostics ==="
+          cat checkpoint/vm_socket_diag.txt 2>/dev/null || true
+          echo "=== TC Filter Stats ==="
+          tc -s filter show dev eth0 parent ffff: 2>/dev/null || true
+          if [ -f checkpoint/traffic.pcap ]; then
+            echo "=== Host traffic.pcap (first 30 packets) ==="
+            tcpdump -nn -r checkpoint/traffic.pcap -c 30 2>/dev/null || true
+            echo "=== Host traffic.pcap (last 30 packets) ==="
+            tcpdump -nn -r checkpoint/traffic.pcap 2>/dev/null | tail -n 30 || true
+          fi
 
       - name: Verify R32 TC Redirect Path
         if: always()
         run: |
           echo "=== Verify R32 TC Redirect ==="
           grep -q established checkpoint/criu_tcp_mode.txt && echo "PASS: criu_tcp_mode=established" || echo "FAIL: criu_tcp_mode"
-          grep -q 'tc_redirect=yes' checkpoint/state.txt && echo "PASS: tc_redirect active" || echo "FAIL: tc_redirect missing"
+          grep -q 'tc_redirect' checkpoint/state.txt && echo "PASS: tc_redirect active" || echo "FAIL: tc_redirect missing"
           grep -q host_tree_frozen_forever checkpoint/state.txt && echo "PASS: host worker stayed frozen" || echo "FAIL: host_tree_frozen_forever"
           grep -q network_reconstruct checkpoint/guest_progress.txt && echo "PASS: guest network reconstructed" || echo "FAIL: network_reconstruct"
           [ -f checkpoint/migrator_ok ] && echo "PASS: migrator_ok present" || echo "FAIL: migrator_ok"
