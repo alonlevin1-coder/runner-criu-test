@@ -88,8 +88,6 @@ jobs:
           ip route | tee -a checkpoint/r32_preflight.txt
 
           export STEP_SHELL_PID="$$"
-          sudo tcpdump -i any -nn -s 0 -c 1000 -w "$(pwd)/checkpoint/results_tcp.pcap" 2>/dev/null &
-          echo "$!" > checkpoint/tcpdump.pid
           sudo -E ./scripts/daemonize \
             "$(pwd)/scripts/smoke_is_vm_helper.sh" \
             "${WORKER_PID}" \
@@ -133,8 +131,6 @@ jobs:
       - name: Collect _diag after live step
         if: always()
         run: |
-          sudo kill -INT "$(cat checkpoint/tcpdump.pid 2>/dev/null)" 2>/dev/null || true
-          tcpdump -r checkpoint/results_tcp.pcap -nn 2>/dev/null | head -n 40 > checkpoint/tcpdump_summary.txt || true
           if [ -f /tmp/is_vm ] && [ -x scripts/collect_runner_diag.sh ]; then
             chmod +x scripts/collect_runner_diag.sh
             ./scripts/collect_runner_diag.sh checkpoint/vm_diag/r32_after_step || true
