@@ -1,0 +1,41 @@
+# Map GHA runner process tree before migration (no CRIU). Fast diagnostic run.
+name: R31 workflow process map
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  process-map:
+    name: R31 map Worker vs step shell tree
+    timeout-minutes: 10
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Map processes at step shell
+        run: |
+          mkdir -p checkpoint smoke-logs
+          chmod +x scripts/map_workflow_processes.sh
+          echo "step_pid=$$" | tee smoke-logs/r31-step-pid.txt
+          ./scripts/map_workflow_processes.sh checkpoint "$$"
+
+      - name: Simulate post-daemonize map (optional)
+        run: |
+          if [ ! -x scripts/daemonize ]; then
+            gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+          fi
+          # Sleep daemon mimics detached helper — should NOT be under Worker tree.
+          ./scripts/daemonize sleep 300
+          mkdir -p checkpoint/after_daemon
+          ./scripts/map_workflow_processes.sh checkpoint/after_daemon "$$"
+
+      - name: Upload process map
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r31-process-map
+          path: checkpoint/
+          if-no-files-found: ignore

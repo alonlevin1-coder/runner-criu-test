@@ -26,7 +26,7 @@ jobs:
           chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh \
             scripts/criu_tcp_flags.sh scripts/load_criu_tcp_modules.sh \
             scripts/discover_tcp_ips.sh scripts/host_tap_cutover.sh \
-            scripts/upload_checkpoint_debug.sh
+            scripts/upload_checkpoint_debug.sh scripts/map_workflow_processes.sh
           ./scripts/build_criu.sh
           sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client
           ./appliance/assemble_initramfs.sh
@@ -68,11 +68,15 @@ jobs:
 
           mkdir -p checkpoint smoke-logs output
 
+          chmod +x scripts/map_workflow_processes.sh
+          echo "$$" > checkpoint/step_shell.pid
+          ./scripts/map_workflow_processes.sh checkpoint "$$"
+
           WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
           echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r30-worker.txt
           [ -n "${WORKER_PID}" ] || exit 1
 
-          echo "=== Pre-migration TCP state ===" | tee checkpoint/r30_preflight.txt
+          echo "=== Pre-migration TCP state ===" | tee -a checkpoint/r30_preflight.txt
           ss -tanp 2>/dev/null | grep -F "pid=${WORKER_PID}," | tee -a checkpoint/r30_preflight.txt || true
           ip -o addr show dev eth0 | tee -a checkpoint/r30_preflight.txt
           ip route | tee -a checkpoint/r30_preflight.txt
