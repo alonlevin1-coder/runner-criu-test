@@ -7,10 +7,7 @@ on:
         description: Seconds to sleep after echo lalala
         required: false
         default: "120"
-  push:
-    branches: [port/is-vm-worker-migration]
-    paths:
-      - '.github/workflows/r25-normal-live-log-sanity.yml'
+
 
 permissions:
   contents: read

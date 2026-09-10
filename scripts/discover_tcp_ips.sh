@@ -53,7 +53,17 @@ parse_ss_local_ip() {
     printf '%s' "${ip}"
 }
 
+parse_ss_sport() {
+    local raw="${1:?local addr field}"
+    local sport=""
+    if [[ "${raw}" =~ :([0-9]+)$ ]]; then
+        sport="${BASH_REMATCH[1]}"
+    fi
+    printf '%s' "${sport}"
+}
+
 declare -A seen=()
+declare -A seen_sports=()
 while read -r line; do
     [ -n "${line}" ] || continue
     local_ip_port="$(awk '{print $4}' <<< "${line}")"
@@ -64,6 +74,8 @@ while read -r line; do
         0.0.0.0|127.0.0.1) continue ;;
     esac
     seen["${local_ip}"]=1
+    sport="$(parse_ss_sport "${local_ip_port}")"
+    [ -n "${sport}" ] && seen_sports["${sport}"]=1
 done < "${OUT_SS}"
 
 for ip in "${!seen[@]}"; do
@@ -86,13 +98,13 @@ if [ -z "${CIDR}" ]; then
 fi
 PREFIX="${CIDR#*/}"
 HOST_DEV="$(ip -o addr show to "${LOCAL_IP}" 2>/dev/null | awk '{print $2}' | head -n1 || echo eth0)"
-# TAP side address on same prefix (host side of /32 route; guest default gateway).
-IFS=. read -r o1 o2 o3 o4 <<< "${LOCAL_IP}"
-case "${PREFIX:-24}" in
-    8)  TAP_HOST_IP="${o1}.0.0.254" ;;
-    16) TAP_HOST_IP="${o1}.${o2}.0.254" ;;
-    *)  TAP_HOST_IP="${o1}.${o2}.${o3}.254" ;;
-esac
+ETH0_MAC="$(cat "/sys/class/net/${HOST_DEV}/address" 2>/dev/null || ip link show "${HOST_DEV}" 2>/dev/null | awk '/ether/ {print $2; exit}' || echo "52:54:00:12:34:56")"
+
+# TAP side address on dedicated private bridge subnet.
+TAP_HOST_IP="192.168.100.1"
+GUEST_IP="192.168.100.2"
+TAP_PREFIX="24"
+TAP_NETMASK="255.255.255.0"
 HOST_GW="${TAP_HOST_IP}"
 
 TAP_DEV="tap_t9_${ROOT_PID}"
@@ -104,14 +116,23 @@ case "${PREFIX:-24}" in
     *)  NETMASK=255.255.255.0 ;;
 esac
 
+WORKER_SPORTS="${!seen_sports[*]}"
+PRIMARY_SPORT="$(head -n1 <<< "${WORKER_SPORTS// /$'\n'}")"
+
 cat > "${OUT_SPEC}" <<EOF
 LOCAL_IP=${LOCAL_IP}
 PREFIX=${PREFIX:-24}
 NETMASK=${NETMASK}
 HOST_GW=${HOST_GW}
-TAP_HOST_IP=${TAP_HOST_IP}
-TAP_DEV=${TAP_DEV}
 HOST_DEV=${HOST_DEV}
+ETH0_MAC=${ETH0_MAC}
+TAP_DEV=${TAP_DEV}
+TAP_HOST_IP=${TAP_HOST_IP}
+GUEST_IP=${GUEST_IP}
+TAP_PREFIX=${TAP_PREFIX}
+TAP_NETMASK=${TAP_NETMASK}
+WORKER_SPORTS="${WORKER_SPORTS}"
+WORKER_SPORT=${PRIMARY_SPORT}
 EOF
 chmod a+rw "${OUT_IPS}" "${OUT_SS}" "${OUT_SPEC}" 2>/dev/null || true
 
@@ -124,4 +145,4 @@ chmod a+rw "${OUT_IPS}" "${OUT_SS}" "${OUT_SPEC}" 2>/dev/null || true
     head -n 20 "${OUT_SS}"
 } >> "${PREFLIGHT}" 2>/dev/null || true
 
-echo "discover_tcp_ips: primary=${LOCAL_IP} prefix=${PREFIX} tap=${TAP_DEV}"
+echo "discover_tcp_ips: primary=${LOCAL_IP} prefix=${PREFIX} tap=${TAP_DEV} sports=${WORKER_SPORTS} mac=${ETH0_MAC}"

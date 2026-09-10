@@ -3,7 +3,7 @@ name: R23 VM native step 3
 on:
   workflow_dispatch:
   push:
-    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    branches: [debug/qemu-smoke, main]
     paths:
       - '.github/workflows/r23-vm-native-step.yml'
       - 'scripts/is_vm_wait.sh'

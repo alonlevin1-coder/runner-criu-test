@@ -3,7 +3,7 @@ name: R21 VM multi-step smoke
 on:
   workflow_dispatch:
   push:
-    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    branches: [debug/qemu-smoke, main]
     paths:
       - '.github/workflows/r21-vm-multi-step.yml'
       - 'scripts/post_migration/**'

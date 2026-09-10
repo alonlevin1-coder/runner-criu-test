@@ -515,15 +515,33 @@ if [ -f /mnt/checkpoint/network_spec.env ]; then
     . /mnt/checkpoint/network_spec.env
     /bin/busybox ifconfig lo up 2>/dev/null || true
     /bin/busybox ifconfig eth0 up 2>/dev/null || true
-    /bin/busybox ifconfig eth0 "${LOCAL_IP}" netmask "${NETMASK}" up 2>/dev/null \
-        && echo "[GUEST] eth0 ${LOCAL_IP}/${PREFIX}" \
-        || echo "[GUEST] WARN eth0 addr failed"
-    /bin/busybox route del default 2>/dev/null || true
-    /bin/busybox route add default gw "${HOST_GW}" dev eth0 2>/dev/null \
-        && echo "[GUEST] default via ${HOST_GW} dev eth0" \
-        || echo "[GUEST] WARN default route failed"
-    /bin/busybox ip addr show dev eth0 2>/dev/null >> /mnt/checkpoint/post_restore_diag.txt 2>/dev/null || true
-    echo "network_reconstruct ok LOCAL_IP=${LOCAL_IP}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+    if [ -n "${GUEST_IP:-}" ]; then
+        echo "[GUEST] TC redirect topology: eth0 ${GUEST_IP}/${TAP_PREFIX:-24}, lo ${LOCAL_IP}/32, gw ${HOST_GW}"
+        /bin/busybox ifconfig eth0 "${GUEST_IP}" netmask "${TAP_NETMASK:-255.255.255.0}" up 2>/dev/null \
+            && echo "[GUEST] eth0 ${GUEST_IP}" \
+            || echo "[GUEST] WARN eth0 addr failed"
+        /bin/busybox route del default 2>/dev/null || true
+        /bin/busybox route add default gw "${HOST_GW}" dev eth0 2>/dev/null \
+            && echo "[GUEST] default via ${HOST_GW} dev eth0" \
+            || echo "[GUEST] WARN default route failed"
+        /bin/busybox ip addr add "${LOCAL_IP}/32" dev lo 2>/dev/null || true
+        /bin/busybox sysctl -w net.ipv4.ip_nonlocal_bind=1 2>/dev/null || true
+        /bin/busybox sysctl -w net.ipv4.conf.all.rp_filter=0 2>/dev/null || true
+        /bin/busybox sysctl -w net.ipv4.conf.eth0.rp_filter=0 2>/dev/null || true
+        /bin/busybox sysctl -w net.ipv4.conf.lo.rp_filter=0 2>/dev/null || true
+        /bin/busybox ip link set eth0 promisc on 2>/dev/null || true
+    else
+        /bin/busybox ifconfig eth0 "${LOCAL_IP}" netmask "${NETMASK}" up 2>/dev/null \
+            && echo "[GUEST] eth0 ${LOCAL_IP}/${PREFIX}" \
+            || echo "[GUEST] WARN eth0 addr failed"
+        /bin/busybox route del default 2>/dev/null || true
+        /bin/busybox route add default gw "${HOST_GW}" dev eth0 2>/dev/null \
+            && echo "[GUEST] default via ${HOST_GW} dev eth0" \
+            || echo "[GUEST] WARN default route failed"
+    fi
+    /bin/busybox ip addr show 2>/dev/null >> /mnt/checkpoint/post_restore_diag.txt 2>/dev/null || true
+    /bin/busybox ip route show 2>/dev/null >> /mnt/checkpoint/post_restore_diag.txt 2>/dev/null || true
+    echo "network_reconstruct ok LOCAL_IP=${LOCAL_IP} GUEST_IP=${GUEST_IP:-none}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 fi
 TCP_FLAG="--tcp-close"
 if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then

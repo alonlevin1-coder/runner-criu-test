@@ -3,7 +3,7 @@ name: R19 Worker VM restore debug
 on:
   workflow_dispatch:
   push:
-    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    branches: [debug/qemu-smoke, main]
     paths:
       - '.github/workflows/r19-worker-restore-debug.yml'
       - 'scripts/smoke_is_vm_helper.sh'

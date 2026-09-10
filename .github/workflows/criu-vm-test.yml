@@ -3,7 +3,7 @@ name: CRIU MicroVM Migration Test
 on:
   workflow_dispatch:
   push:
-    branches: [main, port/is-vm-worker-migration]
+    branches: [main]
 
 permissions: write-all
 

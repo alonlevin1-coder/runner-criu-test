@@ -381,10 +381,14 @@ if [ -f "${CHECKPOINT_DIR}/net_mode.txt" ] \
     && [ -f "${CHECKPOINT_DIR}/network_spec.env" ]; then
     # shellcheck disable=SC1091
     source "${CHECKPOINT_DIR}/network_spec.env"
-    log "QEMU dual-NIC: net0=tap(${TAP_DEV}) workload IP ${LOCAL_IP}, net1=user SSH"
+    log "QEMU dual-NIC: net0=tap(${TAP_DEV}) workload IP ${LOCAL_IP} mac=${ETH0_MAC:-auto}, net1=user SSH"
+    DEV_NET0_ARG="virtio-net-pci,netdev=net0"
+    if [ -n "${ETH0_MAC:-}" ]; then
+        DEV_NET0_ARG="virtio-net-pci,netdev=net0,mac=${ETH0_MAC}"
+    fi
     NETDEV_ARGS=(
         -netdev "tap,id=net0,ifname=${TAP_DEV},script=no,downscript=no"
-        -device "virtio-net-pci,netdev=net0"
+        -device "${DEV_NET0_ARG}"
         -netdev "user,id=net1,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
         -device "virtio-net-pci,netdev=net1"
     )

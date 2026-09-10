@@ -1,0 +1,157 @@
+# R32: Ingress TC packet redirection + --tcp-established for live WebSocket log streaming in VM
+name: R32 TC Redirect Live Log Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      sleep_sec:
+        description: Seconds to sleep after echo lalala (watch GHA UI for live output)
+        required: false
+        default: "60"
+
+permissions:
+  contents: write
+
+jobs:
+  r32-tc-redirect-live:
+    name: R32 TC Redirect migrate then live lalala
+    timeout-minutes: 25
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU, initramfs, daemonize
+        run: |
+          mkdir -p smoke-logs checkpoint output
+          chmod +x scripts/build_criu.sh appliance/assemble_initramfs.sh \
+            scripts/criu_tcp_flags.sh scripts/load_criu_tcp_modules.sh \
+            scripts/discover_tcp_ips.sh scripts/host_tap_cutover.sh \
+            scripts/upload_checkpoint_debug.sh scripts/map_workflow_processes.sh \
+            scripts/freeze_snapshot_files.sh
+          ./scripts/build_criu.sh
+          sudo apt-get install -y qemu-system-x86 cpio gcc dropbear-bin openssh-client iproute2
+          ./appliance/assemble_initramfs.sh
+          gcc -O2 -Wall scripts/daemonize.c -o scripts/daemonize
+          chmod +x scripts/smoke_is_vm_helper.sh scripts/is_vm_wait.sh
+          echo "CRIU_TCP_MODE=established" | tee smoke-logs/r32-tcp-mode.txt
+          ./scripts/criu_tcp_flags.sh | tee smoke-logs/r32-tcp-flag.txt
+
+      - name: Step 1 — host marker
+        run: |
+          echo "=== STEP 1: Running on host ==="
+          echo "Hostname: $(hostname)"
+          echo "Kernel: $(uname -r)"
+          echo "step1_host_ok" > checkpoint/step1_host.txt
+
+      - name: Checkpoint & Migrate to VM (TC Redirect)
+        id: migrate
+        continue-on-error: true
+        env:
+          ALLOW_WORKER_DUMP: "1"
+          KEEP_QEMU_ALIVE: "1"
+          CRIU_TCP_MODE: established
+          NTFY_TOPIC: runner-criu-r30-tap-morsho
+          UPLOAD_DEBUG_BRANCH: "0"
+          ISOLATE_HOST_TCP_AFTER_DUMP: "0"
+          TCP_CLOSE_TIMEOUT_SEC: "60"
+          TAP_CUTOVER_TIMEOUT_SEC: "60"
+          RESTORE_TIMEOUT_SEC: "180"
+        run: |
+          if [ -f /tmp/is_vm ]; then
+            echo "VM branch — finishing migrate step"
+            export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+            ./scripts/is_vm_wait.sh
+            for i in $(seq 1 120); do
+              [ -f checkpoint/helper_done ] || [ -f checkpoint/helper_failed ] && break
+              sleep 1
+            done
+            [ -f checkpoint/migrator_ok ] || exit 1
+            [ "$(cat checkpoint/restore.rc 2>/dev/null)" = "0" ] || exit 1
+            exit 0
+          fi
+
+          mkdir -p checkpoint smoke-logs output
+
+          chmod +x scripts/map_workflow_processes.sh
+          echo "$$" > checkpoint/step_shell.pid
+          echo "$$" > checkpoint/freeze_exclude_pids.txt
+          chmod a+rw checkpoint/step_shell.pid checkpoint/freeze_exclude_pids.txt
+          ./scripts/map_workflow_processes.sh checkpoint "$$"
+
+          WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
+          echo "WORKER_PID=${WORKER_PID}" | tee smoke-logs/r32-worker.txt
+          [ -n "${WORKER_PID}" ] || exit 1
+
+          echo "=== Pre-migration TCP state ===" | tee -a checkpoint/r32_preflight.txt
+          ss -tanp 2>/dev/null | grep -F "pid=${WORKER_PID}," | tee -a checkpoint/r32_preflight.txt || true
+          ip -o addr show dev eth0 | tee -a checkpoint/r32_preflight.txt
+          ip route | tee -a checkpoint/r32_preflight.txt
+
+          export STEP_SHELL_PID="$$"
+          sudo -E ./scripts/daemonize \
+            "$(pwd)/scripts/smoke_is_vm_helper.sh" \
+            "${WORKER_PID}" \
+            "$(pwd)/checkpoint" \
+            "$(pwd)" \
+            "$(pwd)/smoke-logs/vm_serial.log" \
+            "worker"
+
+          export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
+          export IS_VM_MAX_WAIT_SEC=600
+          export NTFY_TOPIC="runner-criu-r30-tap-morsho"
+          ./scripts/is_vm_wait.sh 2>&1 | tee -a smoke-logs/host-wait.log
+
+      - name: Sleep then echo lalala (native StepsRunner)
+        env:
+          NTFY_TOPIC: runner-criu-r30-tap-morsho
+          SLEEP_SEC: ${{ inputs.sleep_sec || '60' }}
+        run: |
+          if [ ! -f /tmp/is_vm ]; then
+            echo "FAIL: this step must run inside the VM (/tmp/is_vm missing)"
+            exit 1
+          fi
+          echo "=== R32 TC-redirect tcp-established live step in VM ==="
+          echo "lalala"
+          echo "pid=$$ kernel=$(uname -r) hostname=$(hostname)"
+          echo "criu_tcp_mode=$(cat checkpoint/criu_tcp_mode.txt 2>/dev/null || echo unknown)"
+          echo "sleeping ${SLEEP_SEC}s — watch GHA UI for live lalala above"
+          mkdir -p checkpoint
+          date -u +%Y-%m-%dT%H:%M:%SZ | tee checkpoint/r32_echo_started.txt
+          sleep "${SLEEP_SEC}"
+          echo "r32_live_echo done"
+          date -u +%Y-%m-%dT%H:%M:%SZ > checkpoint/r32_echo_finished.txt
+
+      - name: Collect _diag after live step
+        if: always()
+        run: |
+          if [ -f /tmp/is_vm ] && [ -x scripts/collect_runner_diag.sh ]; then
+            chmod +x scripts/collect_runner_diag.sh
+            ./scripts/collect_runner_diag.sh checkpoint/vm_diag/r32_after_step || true
+          fi
+
+      - name: Verify R32 TC Redirect Path
+        if: always()
+        run: |
+          echo "=== Verify R32 TC Redirect ==="
+          grep -q established checkpoint/criu_tcp_mode.txt && echo "PASS: criu_tcp_mode=established" || echo "FAIL: criu_tcp_mode"
+          grep -q 'tc_redirect=yes' checkpoint/state.txt && echo "PASS: tc_redirect active" || echo "FAIL: tc_redirect missing"
+          grep -q host_tree_frozen_forever checkpoint/state.txt && echo "PASS: host worker stayed frozen" || echo "FAIL: host_tree_frozen_forever"
+          grep -q network_reconstruct checkpoint/guest_progress.txt && echo "PASS: guest network reconstructed" || echo "FAIL: network_reconstruct"
+          [ -f checkpoint/migrator_ok ] && echo "PASS: migrator_ok present" || echo "FAIL: migrator_ok"
+          [ "$(cat checkpoint/restore.rc 2>/dev/null)" = "0" ] && echo "PASS: restore.rc=0" || echo "FAIL: restore.rc"
+          [ -f checkpoint/r32_echo_started.txt ] && echo "PASS: echo started in VM" || echo "FAIL: r32_echo_started"
+          [ -f checkpoint/r32_echo_finished.txt ] && echo "PASS: echo finished in VM" || echo "FAIL: r32_echo_finished"
+          echo "=== Checkpoint summary ==="
+          cat checkpoint/state.txt 2>/dev/null || true
+          cat checkpoint/guest_progress.txt 2>/dev/null || true
+
+      - name: Upload R32 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r32-tc-redirect-live-${{ github.run_id }}
+          path: |
+            smoke-logs/
+            checkpoint/
+            output/
+          if-no-files-found: ignore

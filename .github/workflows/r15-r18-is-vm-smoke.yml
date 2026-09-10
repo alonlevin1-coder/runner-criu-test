@@ -3,7 +3,7 @@ name: R15-R18 is_vm migration smokes
 on:
   workflow_dispatch:
   push:
-    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    branches: [debug/qemu-smoke, main]
     paths:
       - '.github/workflows/r15-r18-is-vm-smoke.yml'
       - 'scripts/smoke_is_vm_helper.sh'

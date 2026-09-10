@@ -7,15 +7,7 @@ on:
         description: Seconds to sleep after lalala (diag snapshots every 10s)
         required: false
         default: "120"
-  push:
-    branches: [port/is-vm-worker-migration]
-    paths:
-      - '.github/workflows/r26-live-log-diag.yml'
-      - 'scripts/collect_runner_diag.sh'
-      - 'scripts/r26_live_diag_step.sh'
-      - 'scripts/summarize_r26_diag.sh'
-      - 'scripts/is_vm_wait.sh'
-      - 'scripts/smoke_is_vm_helper.sh'
+
 
 permissions:
   contents: read

@@ -9,7 +9,7 @@ on:
         required: false
         default: "90"
   push:
-    branches: [debug/qemu-smoke, main, port/is-vm-worker-migration]
+    branches: [debug/qemu-smoke, main]
     paths:
       - '.github/workflows/r27-tcp-established-live.yml'
       - 'scripts/criu_tcp_flags.sh'
