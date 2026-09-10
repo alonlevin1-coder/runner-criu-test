@@ -1,0 +1,63 @@
+# F1: Worker checkpoint on GHA — dump only, no QEMU/TAP/infinite wait.
+name: F1 Worker checkpoint dump
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  f1-worker-dump:
+    name: F1 dump Runner.Worker on GHA
+    timeout-minutes: 15
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CRIU
+        run: |
+          mkdir -p checkpoint smoke-logs
+          chmod +x scripts/build_criu.sh scripts/f1_worker_dump.sh \
+            scripts/criu_tcp_flags.sh \
+            scripts/load_criu_tcp_modules.sh scripts/map_workflow_processes.sh \
+            scripts/freeze_snapshot_files.sh
+          ./scripts/build_criu.sh | tee smoke-logs/f1-build-criu.log
+          ./scripts/criu_tcp_flags.sh | tee smoke-logs/f1-tcp-flag.txt
+
+      - name: F1 — dump Worker and verify
+        id: f1_dump
+        env:
+          CRIU_TCP_MODE: close
+          F1_UNFREEZE_AFTER_VERIFY: "1"
+        run: |
+          echo "=== F1: Worker checkpoint (dump only) ==="
+          echo "step_pid=$$ run_id=${GITHUB_RUN_ID}"
+          ./scripts/f1_worker_dump.sh "$(pwd)/checkpoint" "$(pwd)" "$$"
+
+      - name: Summarize F1
+        if: always()
+        run: |
+          echo "=== F1 summary ==="
+          cat checkpoint/f1_pass.txt 2>/dev/null && echo "RESULT=PASS" || true
+          cat checkpoint/f1_fail.txt 2>/dev/null && echo "RESULT=FAIL" || true
+          echo "dump.rc=$(cat checkpoint/dump.rc 2>/dev/null || echo missing)"
+          echo "=== post-dump verify ==="
+          cat checkpoint/f1_post_dump_verify.txt 2>/dev/null || true
+          echo "=== f1 stages ==="
+          cat checkpoint/f1_stage.txt 2>/dev/null || true
+          echo "=== checkpoint images ==="
+          ls -lh checkpoint/*.img 2>/dev/null | head -20 || echo "(no .img files)"
+          echo "=== dump errors ==="
+          tail -n 20 checkpoint/dump.log 2>/dev/null || true
+          test -f checkpoint/f1_pass.txt
+
+      - name: Upload F1 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: f1-worker-dump-${{ github.run_id }}
+          path: |
+            checkpoint/
+            smoke-logs/
+          if-no-files-found: ignore
