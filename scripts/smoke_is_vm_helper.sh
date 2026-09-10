@@ -513,8 +513,8 @@ for i in $(seq 1 60); do
     sleep 1
 done
 
-if [ "${KEEP_QEMU_ALIVE:-0}" = "1" ]; then
-    log "KEEP_QEMU_ALIVE=1 — leaving QEMU running pid=${QEMU_PID}"
+if [ "${KEEP_QEMU_ALIVE:-0}" = "1" ] || [ "${TARGET_KIND}" = "worker" ]; then
+    log "leaving QEMU running pid=${QEMU_PID} (target_kind=${TARGET_KIND})"
     echo "qemu_keep_alive=yes" >> "${CHECKPOINT_DIR}/state.txt"
 else
     kill -9 "${QEMU_PID}" 2>/dev/null || true

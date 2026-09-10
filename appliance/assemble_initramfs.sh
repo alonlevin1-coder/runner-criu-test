@@ -101,6 +101,14 @@ if [ -f "${CRIU_BIN}" ]; then
     done
 fi
 
+# Stub iptables so CRIU post-restore netfilter cleanup does not fail with status 127
+cat << 'IPT_EOF' > "${STAGING}/sbin/iptables"
+#!/bin/sh
+exit 0
+IPT_EOF
+chmod 755 "${STAGING}/sbin/iptables"
+ln -sf /sbin/iptables "${STAGING}/usr/sbin/iptables" 2>/dev/null || true
+
 # Dropbear for two-stage SSH (host helper runs criu restore after boot).
 echo "[4b/7] Packaging dropbear..."
 if ! command -v dropbear >/dev/null 2>&1; then
@@ -270,9 +278,10 @@ cat << 'EOF' > "${STAGING}/etc/hosts"
 EOF
 
 cat << 'EOF' > "${STAGING}/etc/resolv.conf"
-nameserver 10.0.2.3
 nameserver 8.8.8.8
 nameserver 1.1.1.1
+nameserver 168.63.129.16
+nameserver 10.0.2.3
 EOF
 
 cat << 'EOF' > "${STAGING}/etc/nsswitch.conf"
@@ -551,6 +560,7 @@ if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
     esac
 fi
 echo "[GUEST] t9_restore: criu restore ${TCP_FLAG}"
+export PATH="/sbin:/usr/sbin:/bin:/usr/bin:${PATH:-}"
 /sbin/criu restore -d -D /tmp/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check "${TCP_FLAG}" \
     --ghost-limit 32M \

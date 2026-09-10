@@ -104,7 +104,7 @@ jobs:
       - name: Sleep then echo lalala (native StepsRunner)
         env:
           NTFY_TOPIC: runner-criu-r30-tap-morsho
-          SLEEP_SEC: ${{ inputs.sleep_sec || '60' }}
+          SLEEP_SEC: ${{ inputs.sleep_sec || '30' }}
         run: |
           if [ ! -f /tmp/is_vm ]; then
             echo "FAIL: this step must run inside the VM (/tmp/is_vm missing)"
@@ -114,12 +114,17 @@ jobs:
           echo "lalala"
           echo "pid=$$ kernel=$(uname -r) hostname=$(hostname)"
           echo "criu_tcp_mode=$(cat checkpoint/criu_tcp_mode.txt 2>/dev/null || echo unknown)"
+          echo "=== VM network verification ==="
+          ip -o addr show || true
+          ip route || true
+          curl -s --max-time 5 "https://ntfy.sh/${NTFY_TOPIC}" -d "run=${GITHUB_RUN_ID} VM live lalala step started" || echo "WARN: ntfy failed"
           echo "sleeping ${SLEEP_SEC}s — watch GHA UI for live lalala above"
           mkdir -p checkpoint
           date -u +%Y-%m-%dT%H:%M:%SZ | tee checkpoint/r32_echo_started.txt
           sleep "${SLEEP_SEC}"
           echo "r32_live_echo done"
           date -u +%Y-%m-%dT%H:%M:%SZ > checkpoint/r32_echo_finished.txt
+          curl -s --max-time 5 "https://ntfy.sh/${NTFY_TOPIC}" -d "run=${GITHUB_RUN_ID} VM live lalala step finished" || true
 
       - name: Collect _diag after live step
         if: always()

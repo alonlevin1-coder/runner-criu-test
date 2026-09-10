@@ -42,6 +42,9 @@ run sysctl -w net.ipv4.conf."${HOST_DEV}".rp_filter=0 2>/dev/null || true
 run sysctl -w net.ipv4.conf."${TAP_DEV}".rp_filter=0 2>/dev/null || true
 run iptables -I FORWARD 1 -i "${TAP_DEV}" -j ACCEPT 2>/dev/null || true
 run iptables -I FORWARD 1 -o "${TAP_DEV}" -j ACCEPT 2>/dev/null || true
+TAP_SUBNET="${TAP_HOST_IP%.*}.0/${TAP_PREFIX:-24}"
+run iptables -t nat -I POSTROUTING 1 -s "${TAP_SUBNET}" -o "${HOST_DEV}" -j MASQUERADE 2>/dev/null || true
+log "installed iptables MASQUERADE for ${TAP_SUBNET} out ${HOST_DEV}"
 
 # Setup tc ingress redirect on host eth0: intercept inbound packets for worker sport
 # and redirect directly to TAP before host TCP stack sees them.
