@@ -533,8 +533,11 @@ if [ -f /mnt/checkpoint/network_spec.env ]; then
         /bin/busybox route add default gw "${HOST_GW}" dev eth0 2>/dev/null \
             && echo "[GUEST] default via ${HOST_GW} dev eth0" \
             || echo "[GUEST] WARN default route failed"
+        /bin/busybox ip addr add "${LOCAL_IP}/32" dev eth0 2>/dev/null || true
         /bin/busybox ip addr add "${LOCAL_IP}/32" dev lo 2>/dev/null || true
         /bin/busybox sysctl -w net.ipv4.ip_nonlocal_bind=1 2>/dev/null || true
+        /bin/busybox sysctl -w net.ipv4.conf.all.accept_local=1 2>/dev/null || true
+        /bin/busybox sysctl -w net.ipv4.conf.eth0.accept_local=1 2>/dev/null || true
         /bin/busybox sysctl -w net.ipv4.conf.all.rp_filter=0 2>/dev/null || true
         /bin/busybox sysctl -w net.ipv4.conf.eth0.rp_filter=0 2>/dev/null || true
         /bin/busybox sysctl -w net.ipv4.conf.lo.rp_filter=0 2>/dev/null || true

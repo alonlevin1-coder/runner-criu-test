@@ -88,6 +88,8 @@ jobs:
           ip route | tee -a checkpoint/r32_preflight.txt
 
           export STEP_SHELL_PID="$$"
+          sudo tcpdump -i any -nn -s 0 -c 1000 -w "$(pwd)/checkpoint/results_tcp.pcap" 2>/dev/null &
+          echo "$!" > checkpoint/tcpdump.pid
           sudo -E ./scripts/daemonize \
             "$(pwd)/scripts/smoke_is_vm_helper.sh" \
             "${WORKER_PID}" \
@@ -110,25 +112,29 @@ jobs:
             echo "FAIL: this step must run inside the VM (/tmp/is_vm missing)"
             exit 1
           fi
-          echo "=== R32 TC-redirect tcp-established live step in VM ==="
-          echo "lalala"
+          echo "=== R32 TC-redirect tcp-established live streaming in VM ==="
           echo "pid=$$ kernel=$(uname -r) hostname=$(hostname)"
           echo "criu_tcp_mode=$(cat checkpoint/criu_tcp_mode.txt 2>/dev/null || echo unknown)"
-          echo "=== VM network verification ==="
-          ip -o addr show || true
-          ip route || true
-          curl -s --max-time 5 "https://ntfy.sh/${NTFY_TOPIC}" -d "run=${GITHUB_RUN_ID} VM live lalala step started" || echo "WARN: ntfy failed"
-          echo "sleeping ${SLEEP_SEC}s — watch GHA UI for live lalala above"
           mkdir -p checkpoint
           date -u +%Y-%m-%dT%H:%M:%SZ | tee checkpoint/r32_echo_started.txt
-          sleep "${SLEEP_SEC}"
+          curl -s --max-time 5 "https://ntfy.sh/${NTFY_TOPIC}" -d "run=${GITHUB_RUN_ID} VM live streaming started" || true
+
+          TOTAL_TICKS="${SLEEP_SEC:-30}"
+          echo "Starting continuous live log stream (${TOTAL_TICKS}s, 1 tick/sec):"
+          for i in $(seq 1 "${TOTAL_TICKS}"); do
+            echo "lalala live stream tick ${i}/${TOTAL_TICKS} at $(date -u +%T) [VM native]"
+            sleep 1
+          done
+
           echo "r32_live_echo done"
           date -u +%Y-%m-%dT%H:%M:%SZ > checkpoint/r32_echo_finished.txt
-          curl -s --max-time 5 "https://ntfy.sh/${NTFY_TOPIC}" -d "run=${GITHUB_RUN_ID} VM live lalala step finished" || true
+          curl -s --max-time 5 "https://ntfy.sh/${NTFY_TOPIC}" -d "run=${GITHUB_RUN_ID} VM live streaming finished" || true
 
       - name: Collect _diag after live step
         if: always()
         run: |
+          sudo kill -INT "$(cat checkpoint/tcpdump.pid 2>/dev/null)" 2>/dev/null || true
+          tcpdump -r checkpoint/results_tcp.pcap -nn 2>/dev/null | head -n 40 > checkpoint/tcpdump_summary.txt || true
           if [ -f /tmp/is_vm ] && [ -x scripts/collect_runner_diag.sh ]; then
             chmod +x scripts/collect_runner_diag.sh
             ./scripts/collect_runner_diag.sh checkpoint/vm_diag/r32_after_step || true
