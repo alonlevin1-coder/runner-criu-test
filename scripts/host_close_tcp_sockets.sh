@@ -60,6 +60,9 @@ if [ -f "${SPEC}" ]; then
     SPORTS_TO_CLOSE="${WORKER_SPORTS:-${WORKER_SPORT:-}}"
     for sport in ${SPORTS_TO_CLOSE}; do
         [ -n "${sport}" ] || continue
+        # Pre-install DROP rules in INPUT and OUTPUT to prevent host RST packets
+        "${SUDO[@]}" iptables -I INPUT 1 -p tcp --dport "${sport}" -j DROP 2>/dev/null || true
+        "${SUDO[@]}" iptables -I OUTPUT 1 -p tcp --sport "${sport}" -j DROP 2>/dev/null || true
         log "closing explicit WORKER_SPORT=:${sport}"
         if timeout "${CLOSE_SEC}" "${SUDO[@]}" ss -t -H -K "sport = :${sport}" >> "${LOG}" 2>&1; then
             closed=$((closed + 1))

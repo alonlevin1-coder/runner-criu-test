@@ -52,7 +52,18 @@ for dev in ${HOST_DEVS}; do
     done
 done
 
-# Remove CRIU 0xC114 DROP rules so live packets can flow
+# Keep host TCP stack completely isolated from the migrated connections:
+# 1. Inbound packets reaching host stack (INPUT) are dropped so host never generates RSTs.
+# 2. Outbound packets from host kernel (OUTPUT) for these sports (e.g. spurious TCP RSTs) are dropped.
+# Note: MicroVM packets traverse the FORWARD chain and are completely unaffected.
+for sport in ${SPORTS_TO_REDIRECT}; do
+    [ -n "${sport}" ] || continue
+    run iptables -I INPUT 1 -p tcp --dport "${sport}" -j DROP 2>/dev/null || true
+    run iptables -I OUTPUT 1 -p tcp --sport "${sport}" -j DROP 2>/dev/null || true
+    log "installed host isolation DROP rules for sport=${sport}"
+done
+
+# Clean up temporary CRIU 0xC114 DROP rules
 for chain in INPUT OUTPUT; do
     while read -r rule; do
         [ -n "${rule}" ] || continue
