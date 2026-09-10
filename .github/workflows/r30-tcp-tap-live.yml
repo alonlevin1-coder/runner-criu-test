@@ -70,6 +70,8 @@ jobs:
 
           chmod +x scripts/map_workflow_processes.sh
           echo "$$" > checkpoint/step_shell.pid
+          echo "$$" > checkpoint/freeze_exclude_pids.txt
+          chmod a+rw checkpoint/step_shell.pid checkpoint/freeze_exclude_pids.txt
           ./scripts/map_workflow_processes.sh checkpoint "$$"
 
           WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
@@ -81,6 +83,7 @@ jobs:
           ip -o addr show dev eth0 | tee -a checkpoint/r30_preflight.txt
           ip route | tee -a checkpoint/r30_preflight.txt
 
+          export STEP_SHELL_PID="$$"
           sudo -E ./scripts/daemonize \
             "$(pwd)/scripts/smoke_is_vm_helper.sh" \
             "${WORKER_PID}" \
@@ -91,7 +94,8 @@ jobs:
 
           export RUNNER_VM_CHECKPOINT="${GITHUB_WORKSPACE}/checkpoint"
           export IS_VM_MAX_WAIT_SEC=900
-          ./scripts/is_vm_wait.sh >> smoke-logs/host-wait.log 2>&1
+          export NTFY_TOPIC="runner-criu-r30-tap-morsho"
+          ./scripts/is_vm_wait.sh 2>&1 | tee -a smoke-logs/host-wait.log
 
       - name: Upload migrate debug snapshot
         if: always()

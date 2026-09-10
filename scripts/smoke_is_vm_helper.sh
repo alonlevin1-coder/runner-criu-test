@@ -264,6 +264,11 @@ fi
 log "criu dump ${LEAVE_FLAG} pid=${TARGET_PID} tcp=${CRIU_TCP_FLAG}"
 stage_mark "dump_start" "leave=${LEAVE_FLAG} tcp=${CRIU_TCP_FLAG}"
 "${SCRIPT_DIR}/load_criu_tcp_modules.sh"
+if [ -f "${CHECKPOINT_DIR}/freeze_exclude_pids.txt" ]; then
+    log "pausing orchestrator PIDs for criu dump"
+    stage_mark "orchestrator_pause" "$(tr '\n' ' ' < "${CHECKPOINT_DIR}/freeze_exclude_pids.txt")"
+    orchestrator_pause_for_dump "${CHECKPOINT_DIR}"
+fi
 set +e
 sudo "${CRIU_BIN}" dump \
     -t "${TARGET_PID}" \
@@ -274,6 +279,11 @@ sudo "${CRIU_BIN}" dump \
     -v4 -o dump.log
 DUMP_RC=$?
 set -e
+if [ -f "${CHECKPOINT_DIR}/freeze_exclude_pids.txt" ]; then
+    orchestrator_resume_after_dump "${CHECKPOINT_DIR}"
+    stage_mark "orchestrator_resume" "dump_rc=${DUMP_RC}"
+    log "resumed orchestrator PIDs after criu dump"
+fi
 echo "${DUMP_RC}" > "${CHECKPOINT_DIR}/dump.rc"
 log "dump rc=${DUMP_RC} ${LEAVE_FLAG}"
 stage_mark "dump_done" "rc=${DUMP_RC} ${LEAVE_FLAG}"

@@ -4,7 +4,9 @@
 # while QEMU boots and criu restore validates sizes (R19 _diag log mismatch).
 set -euo pipefail
 
-collect_tree_pids() {
+declare -A FREEZE_EXCLUDE=()
+
+collect_tree_pids_raw() {
     local root="${1:?root pid}"
     local -a queue=("${root}")
     local -a seen=()
@@ -22,20 +24,99 @@ collect_tree_pids() {
     printf '%s\n' "${seen[@]}"
 }
 
+collect_tree_pids() {
+    local root="${1:?root pid}"
+    local exclude_file="${2:-}"
+    load_freeze_excludes "${exclude_file}"
+    collect_tree_pids_respecting_excludes "${root}"
+}
+
+load_freeze_excludes() {
+    local exclude_file="${1:-}"
+    local pid
+
+    FREEZE_EXCLUDE=()
+    [ -n "${exclude_file}" ] && [ -f "${exclude_file}" ] || return 0
+    while read -r pid; do
+        [ -n "${pid}" ] || continue
+        [[ "${pid}" =~ ^[0-9]+$ ]] || continue
+        FREEZE_EXCLUDE["${pid}"]=1
+        while read -r desc; do
+            [ -n "${desc}" ] || continue
+            FREEZE_EXCLUDE["${desc}"]=1
+        done < <(collect_tree_pids_raw "${pid}")
+    done < "${exclude_file}"
+}
+
+collect_tree_pids_respecting_excludes() {
+    local root="${1:?root pid}"
+    local -a queue=("${root}")
+    local pid child
+
+    while [ "${#queue[@]}" -gt 0 ]; do
+        pid="${queue[0]}"
+        queue=("${queue[@]:1}")
+        if [ -n "${FREEZE_EXCLUDE[${pid}]+x}" ]; then
+            continue
+        fi
+        printf '%s\n' "${pid}"
+        while read -r child; do
+            [ -n "${child}" ] || continue
+            queue+=("${child}")
+        done < <(pgrep -P "${pid}" 2>/dev/null || true)
+    done
+}
+
 freeze_tree() {
     local checkpoint_dir="${1:?checkpoint dir}"
     local root_pid="${2:?root pid}"
     local pidfile="${checkpoint_dir}/sigstopped_pids.txt"
+    local exclude_file="${checkpoint_dir}/freeze_exclude_pids.txt"
 
     : > "${pidfile}"
     while read -r pid; do
         [ -n "${pid}" ] || continue
         kill -STOP "${pid}" 2>/dev/null || sudo kill -STOP "${pid}" 2>/dev/null || true
         echo "${pid}" >> "${pidfile}"
-    done < <(collect_tree_pids "${root_pid}")
+    done < <(collect_tree_pids "${root_pid}" "${exclude_file}")
 
     echo "host_tree_frozen=yes" >> "${checkpoint_dir}/state.txt"
     echo "frozen_pid_count=$(wc -l < "${pidfile}" | tr -d ' ')" >> "${checkpoint_dir}/state.txt"
+    if [ -f "${exclude_file}" ]; then
+        echo "freeze_exclude_file=yes" >> "${checkpoint_dir}/state.txt"
+        tr '\n' ',' < "${exclude_file}" | sed 's/,$/\n/' \
+            >> "${checkpoint_dir}/state.txt" 2>/dev/null || true
+    fi
+}
+
+# Step shell stays running during migration; pause only for criu dump consistency.
+orchestrator_pause_for_dump() {
+    local checkpoint_dir="${1:?checkpoint dir}"
+    local exclude_file="${checkpoint_dir}/freeze_exclude_pids.txt"
+    local paused="${checkpoint_dir}/orchestrator_dump_paused.txt"
+    local pid
+
+    : > "${paused}"
+    [ -f "${exclude_file}" ] || return 0
+    while read -r pid; do
+        [ -n "${pid}" ] || continue
+        [[ "${pid}" =~ ^[0-9]+$ ]] || continue
+        kill -STOP "${pid}" 2>/dev/null || sudo kill -STOP "${pid}" 2>/dev/null || true
+        echo "${pid}" >> "${paused}"
+    done < "${exclude_file}"
+}
+
+orchestrator_resume_after_dump() {
+    local checkpoint_dir="${1:?checkpoint dir}"
+    local paused="${checkpoint_dir}/orchestrator_dump_paused.txt"
+    local pid
+
+    [ -f "${paused}" ] || return 0
+    while read -r pid; do
+        [ -n "${pid}" ] || continue
+        kill -CONT "${pid}" 2>/dev/null || sudo kill -CONT "${pid}" 2>/dev/null || true
+    done < "${paused}"
+    echo "orchestrator_dump_resumed=yes" >> "${checkpoint_dir}/state.txt"
 }
 
 unfreeze_tree() {
@@ -147,7 +228,7 @@ snapshot_open_files() {
             mode="$(stat -c '%a' "${dest}")"
             printf '%s\t%s\t%s\n' "${relpath}" "${size}" "${mode}" >> "${manifest}"
         done
-    done < <(collect_tree_pids "${root_pid}")
+    done < <(collect_tree_pids "${root_pid}" "${checkpoint_dir}/freeze_exclude_pids.txt")
 
     echo "frozen_file_count=$(( $(wc -l < "${manifest}") - 1 ))" >> "${checkpoint_dir}/state.txt"
 }
