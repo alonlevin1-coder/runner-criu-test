@@ -153,7 +153,7 @@ jobs:
           echo "=== In-VM Socket Diagnostics ==="
           cat checkpoint/vm_socket_diag.txt 2>/dev/null || true
           echo "=== TC Filter Stats ==="
-          for dev in eth0 eth1; do
+          for dev in $(ip -o link show | awk -F': ' '{print $2}' | cut -d'@' -f1 | grep -E '^(eth|en)'); do
             echo "--- dev ${dev} ---"
             tc -s filter show dev "${dev}" parent ffff: 2>/dev/null || true
           done

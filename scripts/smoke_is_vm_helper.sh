@@ -43,10 +43,11 @@ run_with_timeout() {
     if timeout "${sec}" "$@"; then
         stage_mark "timeout_ok" "sec=${sec} cmd=$*"
         return 0
+    else
+        rc=$?
+        stage_mark "timeout_fail" "sec=${sec} rc=${rc} cmd=$*"
+        return "${rc}"
     fi
-    rc=$?
-    stage_mark "timeout_fail" "sec=${sec} rc=${rc} cmd=$*"
-    return "${rc}"
 }
 
 upload_debug_snapshot() {
@@ -307,7 +308,7 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
     if [ "${ISOLATE_HOST_TCP_AFTER_DUMP:-0}" = "1" ]; then
         log "closing host TCP sockets while tree frozen (ss -K)"
         stage_mark "tcp_close_start" ""
-        if ! run_with_timeout "${TCP_CLOSE_TIMEOUT_SEC:-120}" close_tree_tcp_sockets "${CHECKPOINT_DIR}"; then
+        if ! run_with_timeout "${TCP_CLOSE_TIMEOUT_SEC:-120}" "${SCRIPT_DIR}/host_close_tcp_sockets.sh" "${CHECKPOINT_DIR}"; then
             log "ERROR: tcp close timed out or failed"
             send_ntfy "is_vm FAIL" "tcp close timeout rc=$?"
             touch "${CHECKPOINT_DIR}/helper_failed"
