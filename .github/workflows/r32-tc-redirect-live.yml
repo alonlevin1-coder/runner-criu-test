@@ -53,7 +53,7 @@ jobs:
           CRIU_TCP_MODE: established
           NTFY_TOPIC: runner-criu-r30-tap-morsho
           UPLOAD_DEBUG_BRANCH: "0"
-          ISOLATE_HOST_TCP_AFTER_DUMP: "0"
+          ISOLATE_HOST_TCP_AFTER_DUMP: "1"
           TCP_CLOSE_TIMEOUT_SEC: "60"
           TAP_CUTOVER_TIMEOUT_SEC: "60"
           RESTORE_TIMEOUT_SEC: "180"
@@ -153,7 +153,10 @@ jobs:
           echo "=== In-VM Socket Diagnostics ==="
           cat checkpoint/vm_socket_diag.txt 2>/dev/null || true
           echo "=== TC Filter Stats ==="
-          tc -s filter show dev eth0 parent ffff: 2>/dev/null || true
+          for dev in eth0 eth1; do
+            echo "--- dev ${dev} ---"
+            tc -s filter show dev "${dev}" parent ffff: 2>/dev/null || true
+          done
           if [ -f checkpoint/traffic.pcap ]; then
             echo "=== Host traffic.pcap (first 30 packets) ==="
             tcpdump -nn -r checkpoint/traffic.pcap -c 30 2>/dev/null || true

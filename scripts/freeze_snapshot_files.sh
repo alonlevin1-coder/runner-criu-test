@@ -178,7 +178,7 @@ close_tree_tcp_sockets() {
             fi
             [ -n "${sport}" ] || continue
             echo "closing pid=${pid} sport=:${sport} ${line}" >> "${log}"
-            if timeout "${close_sec}" sudo ss -H -K "sport = :${sport}" >> "${log}" 2>&1; then
+            if timeout "${close_sec}" sudo ss -t -H -K "sport = :${sport}" >> "${log}" 2>&1; then
                 closed=$((closed + 1))
             else
                 echo "WARN: ss -K timed out or failed for sport=:${sport}" >> "${log}"

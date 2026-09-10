@@ -38,15 +38,20 @@ run ip route replace "${GUEST_IP:-192.168.100.2}/32" dev "${TAP_DEV}" 2>/dev/nul
 run sysctl -w net.ipv4.ip_forward=1
 run sysctl -w net.ipv4.conf.all.rp_filter=0 2>/dev/null || true
 run sysctl -w net.ipv4.conf.all.accept_local=1 2>/dev/null || true
-run sysctl -w net.ipv4.conf."${HOST_DEV}".rp_filter=0 2>/dev/null || true
+HOST_DEVS="$(ip -o link show | awk -F': ' '{print $2}' | cut -d'@' -f1 | grep -E '^(eth|en)' || echo "${HOST_DEV}")"
+for dev in ${HOST_DEVS}; do
+    run sysctl -w net.ipv4.conf."${dev}".rp_filter=0 2>/dev/null || true
+    run sysctl -w net.ipv4.conf."${dev}".accept_local=1 2>/dev/null || true
+done
 run sysctl -w net.ipv4.conf."${TAP_DEV}".rp_filter=0 2>/dev/null || true
-run sysctl -w net.ipv4.conf."${HOST_DEV}".accept_local=1 2>/dev/null || true
 run sysctl -w net.ipv4.conf."${TAP_DEV}".accept_local=1 2>/dev/null || true
 run iptables -I FORWARD 1 -i "${TAP_DEV}" -j ACCEPT 2>/dev/null || true
 run iptables -I FORWARD 1 -o "${TAP_DEV}" -j ACCEPT 2>/dev/null || true
 TAP_SUBNET="${TAP_HOST_IP%.*}.0/${TAP_PREFIX:-24}"
-run iptables -t nat -I POSTROUTING 1 -s "${TAP_SUBNET}" -o "${HOST_DEV}" -j MASQUERADE 2>/dev/null || true
-log "installed iptables MASQUERADE for ${TAP_SUBNET} out ${HOST_DEV}"
+for dev in ${HOST_DEVS}; do
+    run iptables -t nat -I POSTROUTING 1 -s "${TAP_SUBNET}" -o "${dev}" -j MASQUERADE 2>/dev/null || true
+done
+log "installed iptables MASQUERADE for ${TAP_SUBNET} out ${HOST_DEVS}"
 
 SPORTS_TO_REDIRECT="${WORKER_SPORTS:-${WORKER_SPORT:-}}"
 
@@ -54,19 +59,21 @@ SPORTS_TO_REDIRECT="${WORKER_SPORTS:-${WORKER_SPORT:-}}"
 # Otherwise defer to host_tap_activate.sh (called by smoke_is_vm_helper.sh after criu restore)
 # to avoid guest kernel sending TCP RST for un-restored ports during QEMU boot.
 if [ "${ACTIVATE_TAP_IMMEDIATELY:-0}" = "1" ]; then
-    run tc qdisc add dev "${HOST_DEV}" ingress 2>/dev/null || true
-    for sport in ${SPORTS_TO_REDIRECT}; do
-        [ -n "${sport}" ] || continue
-        log "installing tc ingress redirect: ${HOST_DEV} dport=${sport} -> ${TAP_DEV}"
-        run tc filter add dev "${HOST_DEV}" parent ffff: protocol ip prio 1 u32 \
-            match ip protocol 6 0xff \
-            match ip dport "${sport}" 0xffff \
-            action csum ip tcp \
-            action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || \
-        run tc filter add dev "${HOST_DEV}" parent ffff: protocol ip prio 1 u32 \
-            match ip protocol 6 0xff \
-            match ip dport "${sport}" 0xffff \
-            action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || true
+    for dev in ${HOST_DEVS}; do
+        run tc qdisc add dev "${dev}" ingress 2>/dev/null || true
+        for sport in ${SPORTS_TO_REDIRECT}; do
+            [ -n "${sport}" ] || continue
+            log "installing tc ingress redirect: ${dev} dport=${sport} -> ${TAP_DEV}"
+            run tc filter add dev "${dev}" parent ffff: protocol ip prio 1 u32 \
+                match ip protocol 6 0xff \
+                match ip dport "${sport}" 0xffff \
+                action csum ip tcp \
+                action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || \
+            run tc filter add dev "${dev}" parent ffff: protocol ip prio 1 u32 \
+                match ip protocol 6 0xff \
+                match ip dport "${sport}" 0xffff \
+                action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || true
+        done
     done
 
     for chain in INPUT OUTPUT; do

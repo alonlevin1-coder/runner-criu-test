@@ -67,7 +67,7 @@ trap cleanup EXIT
 cleanup_stale() {
     pkill -9 -f "peer_server.py.*r30local" 2>/dev/null || true
     pkill -9 -x workload_tcp 2>/dev/null || true
-    run_root ss -K "sport = :${LOCAL_PORT}" 2>/dev/null || true
+    run_root ss -t -K "sport = :${LOCAL_PORT}" 2>/dev/null || true
     run_root ip netns del "${PEER_NS}" 2>/dev/null || true
     run_root ip link del "${VETH_H}" 2>/dev/null || true
     run_root ip link del "${DUMMY}" 2>/dev/null || true

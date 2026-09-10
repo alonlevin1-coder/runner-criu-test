@@ -28,24 +28,28 @@ run() {
     fi
 }
 
-# Ensure ingress qdisc on host physical interface
-run tc qdisc add dev "${HOST_DEV}" ingress 2>/dev/null || true
+# Discover all host physical/accelerated interfaces (e.g. eth0, eth1/VF on Azure)
+HOST_DEVS="$(ip -o link show | awk -F': ' '{print $2}' | cut -d'@' -f1 | grep -E '^(eth|en)' || echo "${HOST_DEV}")"
+log "attaching TC redirect across all host interfaces: ${HOST_DEVS}"
 
-# Setup tc ingress redirect on host eth0: intercept inbound packets for worker sports
-# and redirect directly to TAP with TCP/IP checksum recalculation.
 SPORTS_TO_REDIRECT="${WORKER_SPORTS:-${WORKER_SPORT:-}}"
-for sport in ${SPORTS_TO_REDIRECT}; do
-    [ -n "${sport}" ] || continue
-    log "installing tc ingress redirect: ${HOST_DEV} dport=${sport} -> ${TAP_DEV}"
-    run tc filter add dev "${HOST_DEV}" parent ffff: protocol ip prio 1 u32 \
-        match ip protocol 6 0xff \
-        match ip dport "${sport}" 0xffff \
-        action csum ip tcp \
-        action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || \
-    run tc filter add dev "${HOST_DEV}" parent ffff: protocol ip prio 1 u32 \
-        match ip protocol 6 0xff \
-        match ip dport "${sport}" 0xffff \
-        action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || true
+for dev in ${HOST_DEVS}; do
+    run sysctl -w net.ipv4.conf."${dev}".rp_filter=0 2>/dev/null || true
+    run sysctl -w net.ipv4.conf."${dev}".accept_local=1 2>/dev/null || true
+    run tc qdisc add dev "${dev}" ingress 2>/dev/null || true
+    for sport in ${SPORTS_TO_REDIRECT}; do
+        [ -n "${sport}" ] || continue
+        log "installing tc ingress redirect: ${dev} dport=${sport} -> ${TAP_DEV}"
+        run tc filter add dev "${dev}" parent ffff: protocol ip prio 1 u32 \
+            match ip protocol 6 0xff \
+            match ip dport "${sport}" 0xffff \
+            action csum ip tcp \
+            action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || \
+        run tc filter add dev "${dev}" parent ffff: protocol ip prio 1 u32 \
+            match ip protocol 6 0xff \
+            match ip dport "${sport}" 0xffff \
+            action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || true
+    done
 done
 
 # Remove CRIU 0xC114 DROP rules so live packets can flow
