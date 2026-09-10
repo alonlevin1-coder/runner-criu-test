@@ -304,7 +304,7 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
     # Worker alive but frozen (R14: suspend keeps Listener + VM up).
     log "tcp-established: host Worker stays frozen (no SIGKILL on GHA)"
     echo "host_tree_frozen_forever=yes" >> "${CHECKPOINT_DIR}/state.txt"
-    if [ "${ISOLATE_HOST_TCP_AFTER_DUMP:-1}" = "1" ]; then
+    if [ "${ISOLATE_HOST_TCP_AFTER_DUMP:-0}" = "1" ]; then
         log "closing host TCP sockets while tree frozen (ss -K)"
         stage_mark "tcp_close_start" ""
         if ! run_with_timeout "${TCP_CLOSE_TIMEOUT_SEC:-120}" close_tree_tcp_sockets "${CHECKPOINT_DIR}"; then
@@ -316,6 +316,11 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
         fi
         stage_mark "tcp_close_ok" "$(tail -n1 "${CHECKPOINT_DIR}/state.txt" 2>/dev/null || true)"
         send_ntfy "is_vm TCP close" "$(tail -n 15 "${CHECKPOINT_DIR}/host_tcp_close.log" 2>/dev/null || echo done)"
+    else
+        log "skipping ss -K (host Worker stays frozen; VM copy owns TCP for now)"
+        echo "host_tcp_sockets_closed=skipped reason=frozen_host_no_isolate" \
+            >> "${CHECKPOINT_DIR}/state.txt"
+        stage_mark "tcp_close_skip" "frozen_host"
     fi
     chmod +x "${SCRIPT_DIR}/host_tap_cutover.sh"
     stage_mark "tap_start" ""

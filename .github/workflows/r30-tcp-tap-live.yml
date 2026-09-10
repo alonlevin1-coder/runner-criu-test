@@ -49,6 +49,7 @@ jobs:
           CRIU_TCP_MODE: established
           NTFY_TOPIC: runner-criu-r30-tap-morsho
           UPLOAD_DEBUG_BRANCH: "1"
+          ISOLATE_HOST_TCP_AFTER_DUMP: "0"
           TCP_CLOSE_TIMEOUT_SEC: "120"
           TAP_CUTOVER_TIMEOUT_SEC: "120"
           RESTORE_TIMEOUT_SEC: "300"
