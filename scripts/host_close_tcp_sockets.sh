@@ -57,7 +57,9 @@ fi
 if [ -f "${SPEC}" ]; then
     # shellcheck disable=SC1090
     source "${SPEC}"
-    SPORTS_TO_CLOSE="${WORKER_SPORTS:-${WORKER_SPORT:-}}"
+    CRIU_SPORTS="$("${SUDO[@]}" iptables -S INPUT 2>/dev/null | grep -i 0xc114 | grep -oE -- '--dport [0-9]+' | awk '{print $2}' | sort -u || true)"
+    SPORTS_TO_CLOSE="$(echo "${WORKER_SPORTS:-${WORKER_SPORT:-}} ${CRIU_SPORTS:-}" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')"
+    log "sports to close (spec + criu): ${SPORTS_TO_CLOSE}"
     for sport in ${SPORTS_TO_CLOSE}; do
         [ -n "${sport}" ] || continue
         # Pre-install DROP rules in INPUT and OUTPUT to prevent host RST packets

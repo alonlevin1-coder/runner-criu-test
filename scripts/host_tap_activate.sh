@@ -32,7 +32,10 @@ run() {
 HOST_DEVS="$(ip -o link show | awk -F': ' '{print $2}' | cut -d'@' -f1 | grep -E '^(eth|en)' || echo "${HOST_DEV}")"
 log "attaching TC redirect across all host interfaces: ${HOST_DEVS}"
 
-SPORTS_TO_REDIRECT="${WORKER_SPORTS:-${WORKER_SPORT:-}}"
+CRIU_SPORTS="$(run iptables -S INPUT 2>/dev/null | grep -i 0xc114 | grep -oE -- '--dport [0-9]+' | awk '{print $2}' | sort -u || true)"
+SPORTS_TO_REDIRECT="$(echo "${WORKER_SPORTS:-${WORKER_SPORT:-}} ${CRIU_SPORTS:-}" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')"
+log "sports to redirect (spec + criu): ${SPORTS_TO_REDIRECT}"
+
 for dev in ${HOST_DEVS}; do
     run sysctl -w net.ipv4.conf."${dev}".rp_filter=0 2>/dev/null || true
     run sysctl -w net.ipv4.conf."${dev}".accept_local=1 2>/dev/null || true

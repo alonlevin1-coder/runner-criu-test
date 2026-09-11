@@ -53,7 +53,9 @@ for dev in ${HOST_DEVS}; do
 done
 log "installed iptables MASQUERADE for ${TAP_SUBNET} out ${HOST_DEVS}"
 
-SPORTS_TO_REDIRECT="${WORKER_SPORTS:-${WORKER_SPORT:-}}"
+CRIU_SPORTS="$(run iptables -S INPUT 2>/dev/null | grep -i 0xc114 | grep -oE -- '--dport [0-9]+' | awk '{print $2}' | sort -u || true)"
+SPORTS_TO_REDIRECT="$(echo "${WORKER_SPORTS:-${WORKER_SPORT:-}} ${CRIU_SPORTS:-}" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')"
+log "ports to redirect (spec + criu): ${SPORTS_TO_REDIRECT}"
 
 log "activating TC ingress redirect immediately across host interfaces: ${HOST_DEVS}"
 for dev in ${HOST_DEVS}; do

@@ -219,8 +219,21 @@ echo "TARGET_KIND=${TARGET_KIND} TARGET_PID=${TARGET_PID}" >> "${CHECKPOINT_DIR}
 CRIU_BIN="$(command -v criu || true)"
 [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
 
+if [ "${TARGET_KIND}" = "worker" ]; then
+    log "SIGSTOP worker tree before snapshot+dump"
+    stage_mark "freeze_start" "pid=${TARGET_PID}"
+    freeze_tree "${CHECKPOINT_DIR}" "${TARGET_PID}"
+    stage_mark "freeze_ok" "count=$(wc -l < "${CHECKPOINT_DIR}/sigstopped_pids.txt" 2>/dev/null || echo 0)"
+    log "snapshotting open regular files to frozen_files/"
+    snapshot_open_files "${CHECKPOINT_DIR}" "${TARGET_PID}"
+    if [ -f "${CHECKPOINT_DIR}/frozen_files/manifest.tsv" ]; then
+        wc -l "${CHECKPOINT_DIR}/frozen_files/manifest.tsv" | tee -a "${HELPER_LOG}" || true
+        tail -n 5 "${CHECKPOINT_DIR}/frozen_files/manifest.tsv" | tee -a "${HELPER_LOG}" || true
+    fi
+fi
+
 if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; then
-    log "discover Worker established TCP local IPs (Porter F09)"
+    log "discover Worker established TCP local IPs while frozen (Porter F09)"
     stage_mark "tcp_discover_start" "pid=${TARGET_PID}"
     chmod +x "${SCRIPT_DIR}/discover_tcp_ips.sh"
     if ! run_with_timeout 60 "${SCRIPT_DIR}/discover_tcp_ips.sh" "${TARGET_PID}" "${CHECKPOINT_DIR}"; then
@@ -240,19 +253,6 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
     stage_mark "tcp_discover_ok" "ips=$(head -n1 "${CHECKPOINT_DIR}/tcp_local_ips.txt")"
     send_ntfy "is_vm TCP discover" "$(head -n 5 "${CHECKPOINT_DIR}/tcp_local_ips.txt" 2>/dev/null || true)
 $(cat "${CHECKPOINT_DIR}/network_spec.env" 2>/dev/null || true)"
-fi
-
-if [ "${TARGET_KIND}" = "worker" ]; then
-    log "SIGSTOP worker tree before snapshot+dump"
-    stage_mark "freeze_start" "pid=${TARGET_PID}"
-    freeze_tree "${CHECKPOINT_DIR}" "${TARGET_PID}"
-    stage_mark "freeze_ok" "count=$(wc -l < "${CHECKPOINT_DIR}/sigstopped_pids.txt" 2>/dev/null || echo 0)"
-    log "snapshotting open regular files to frozen_files/"
-    snapshot_open_files "${CHECKPOINT_DIR}" "${TARGET_PID}"
-    if [ -f "${CHECKPOINT_DIR}/frozen_files/manifest.tsv" ]; then
-        wc -l "${CHECKPOINT_DIR}/frozen_files/manifest.tsv" | tee -a "${HELPER_LOG}" || true
-        tail -n 5 "${CHECKPOINT_DIR}/frozen_files/manifest.tsv" | tee -a "${HELPER_LOG}" || true
-    fi
 fi
 
 echo "criu_tcp_mode=${CRIU_TCP_MODE}" >> "${CHECKPOINT_DIR}/state.txt"
