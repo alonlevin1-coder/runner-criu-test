@@ -66,6 +66,52 @@ if [ -d /usr/lib/git-core ]; then
     cp -a /usr/lib/git-core/* "${STAGING}/usr/lib/git-core/" 2>/dev/null || true
 fi
 
+# Setuid sudo shim to support root commands (e.g. apt-get) in guest microVM
+echo "Compiling setuid sudo shim..."
+mkdir -p "${STAGING}/usr/local/bin" "${STAGING}/bin"
+cat << 'CEOF' > /tmp/sudo_shim.c
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+int main(int argc, char *argv[]) {
+    if (setgid(0) != 0) perror("setgid");
+    if (setuid(0) != 0) perror("setuid");
+
+    int i = 1;
+    while (i < argc) {
+        if (strcmp(argv[i], "--") == 0) {
+            i++;
+            break;
+        }
+        if (argv[i][0] == '-') {
+            if (strcmp(argv[i], "-u") == 0 || strcmp(argv[i], "-g") == 0 || strcmp(argv[i], "-D") == 0) {
+                i += 2;
+                continue;
+            }
+            i++;
+            continue;
+        }
+        break;
+    }
+
+    if (i >= argc) {
+        return 0;
+    }
+
+    execvp(argv[i], &argv[i]);
+    perror("sudo execvp failed");
+    return 127;
+}
+CEOF
+gcc -O2 /tmp/sudo_shim.c -o "${STAGING}/usr/local/bin/sudo"
+chmod 4755 "${STAGING}/usr/local/bin/sudo"
+cp -a "${STAGING}/usr/local/bin/sudo" "${STAGING}/bin/sudo"
+chmod 4755 "${STAGING}/bin/sudo"
+rm -f /tmp/sudo_shim.c
+
+
 # 3. Install kernel modules for Linux 6.17.0-40-generic (bzImage)
 echo "[3/7] Packaging guest kernel modules..."
 if [ -d "${SCRIPT_DIR}/modules" ]; then
@@ -233,6 +279,19 @@ for ef in /etc/os-release /etc/environment /etc/magic /etc/mime.types; do
         cp -a "${ef}" "${STAGING}/etc/" 2>/dev/null || true
     fi
 done
+
+# Sudo configuration
+if [ -f /etc/sudoers ]; then
+    cp -a /etc/sudoers "${STAGING}/etc/sudoers"
+    chmod 0440 "${STAGING}/etc/sudoers" 2>/dev/null || true
+fi
+if [ -d /etc/sudoers.d ]; then
+    mkdir -p "${STAGING}/etc/sudoers.d"
+    cp -a /etc/sudoers.d/* "${STAGING}/etc/sudoers.d/" 2>/dev/null || true
+    chmod 0750 "${STAGING}/etc/sudoers.d" 2>/dev/null || true
+    chmod 0440 "${STAGING}/etc/sudoers.d"/* 2>/dev/null || true
+fi
+
 
 # SSL certificates
 mkdir -p "${STAGING}/etc/ssl" "${STAGING}/usr/lib/ssl"
