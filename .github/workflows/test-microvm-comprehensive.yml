@@ -1,0 +1,127 @@
+name: Comprehensive MicroVM Test Suite
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-microvm-suite:
+    name: Comprehensive MicroVM Tests
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Step on Host (Baseline Marker)
+        run: |
+          echo "=== Running on Host ==="
+          echo "Host Kernel: $(uname -r)"
+          echo "Host Hostname: $(hostname)"
+          test ! -f /tmp/is_vm && echo "PASS: Host environment confirmed (no /tmp/is_vm)."
+
+      - name: "Single uses: line to migrate to MicroVM"
+        uses: ./
+        with:
+          tcp-mode: established
+          memory-mb: '4096'
+          smp: '2'
+
+      - name: Test 1 - Kernel & Environment Isolation
+        run: |
+          echo "=== Test 1: Kernel & Isolation ==="
+          KERNEL="$(uname -r)"
+          HOST="$(hostname)"
+          PID1_COMM="$(cat /proc/1/comm 2>/dev/null || echo unknown)"
+          echo "Kernel: ${KERNEL}"
+          echo "Hostname: ${HOST}"
+          echo "PID 1 comm: ${PID1_COMM}"
+
+          [ -f /tmp/is_vm ] || { echo "FAIL: /tmp/is_vm missing"; exit 1; }
+          echo "${KERNEL}" | grep -q "6.17" || { echo "FAIL: Expected microVM kernel 6.17, got ${KERNEL}"; exit 1; }
+          [ "${HOST}" = "qemu-restore-vm" ] || { echo "FAIL: Expected hostname qemu-restore-vm, got ${HOST}"; exit 1; }
+          [ "${PID1_COMM}" != "systemd" ] || { echo "FAIL: PID 1 should be init inside VM, got systemd"; exit 1; }
+          echo "PASS: All isolation assertions passed!"
+
+      - name: Test 2 - GitHub Actions Primitives (Env & Output Producer)
+        id: producer
+        run: |
+          echo "=== Test 2: GHA Primitives Producer ==="
+          echo "MIGRATION_ENV_VAL=microvm_verified_42" >> "${GITHUB_ENV}"
+          echo "vm_ticket_id=golden_ticket_999" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## MicroVM Verification Report"
+            echo "| Check | Result | Value |"
+            echo "|---|---|---|"
+            echo "| Kernel | PASS | $(uname -r) |"
+            echo "| Hostname | PASS | $(hostname) |"
+            echo "| MicroVM Marker | PASS | /tmp/is_vm present |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "PASS: Produced GITHUB_ENV, GITHUB_OUTPUT, and GITHUB_STEP_SUMMARY."
+
+      - name: Test 3 - Verify GHA Primitives Across Step Boundary
+        run: |
+          echo "=== Test 3: GHA Primitives Consumer ==="
+          echo "Received MIGRATION_ENV_VAL: ${MIGRATION_ENV_VAL:-missing}"
+          echo "Received output ticket: ${{ steps.producer.outputs.vm_ticket_id }}"
+
+          [ "${MIGRATION_ENV_VAL:-}" = "microvm_verified_42" ] || { echo "FAIL: GITHUB_ENV not propagated"; exit 1; }
+          [ "${{ steps.producer.outputs.vm_ticket_id }}" = "golden_ticket_999" ] || { echo "FAIL: GITHUB_OUTPUT not propagated"; exit 1; }
+          echo "PASS: GHA Environment variables and Step outputs work across step boundary!"
+
+      - name: Test 4 - Workspace Mutation & Filesystem Persistence
+        run: |
+          echo "=== Test 4: Workspace Mutation ==="
+          echo "Hello from microVM at $(date -u)" > "${GITHUB_WORKSPACE}/microvm_created_file.txt"
+          SHA=$(sha256sum "${GITHUB_WORKSPACE}/microvm_created_file.txt" | awk '{print $1}')
+          echo "Created file SHA256: ${SHA}"
+          echo "STORED_SHA=${SHA}" >> "${GITHUB_ENV}"
+
+          echo "Checking git status inside MicroVM:"
+          git status --short
+          echo "PASS: Workspace filesystem mutation verified."
+
+      - name: Test 5 - Workspace Persistence in Subsequent Step
+        run: |
+          echo "=== Test 5: Workspace Persistence ==="
+          [ -f "${GITHUB_WORKSPACE}/microvm_created_file.txt" ] || { echo "FAIL: File did not persist across steps"; exit 1; }
+          CURRENT_SHA=$(sha256sum "${GITHUB_WORKSPACE}/microvm_created_file.txt" | awk '{print $1}')
+          echo "Current SHA256: ${CURRENT_SHA}"
+          [ "${CURRENT_SHA}" = "${STORED_SHA}" ] || { echo "FAIL: File content corrupted across steps"; exit 1; }
+          echo "PASS: Workspace files strictly persist across steps in MicroVM!"
+
+      - name: Test 6 - External Networking, DNS & HTTPS
+        run: |
+          echo "=== Test 6: External Networking ==="
+          echo "Testing DNS and HTTPS to GitHub API..."
+          curl -sSf -I https://api.github.com | head -n 5
+          echo "Fetching GitHub Zen..."
+          ZEN=$(curl -sSf https://api.github.com/zen)
+          echo "GitHub Zen: ${ZEN}"
+          [ -n "${ZEN}" ] || { echo "FAIL: Could not fetch from api.github.com"; exit 1; }
+          echo "PASS: Outbound DNS and HTTPS connections active and functional!"
+
+      - name: Test 7 - Runtime Compilation & Execution in MicroVM
+        run: |
+          echo "=== Test 7: Runtime Compilation & Tooling ==="
+          python3 -c "import sys, platform; print(f'Python {sys.version.split()[0]} running on {platform.system()} {platform.release()}')"
+
+          echo "Compiling and executing C test binary..."
+          cat << 'CEOF' > /tmp/microvm_math.c
+          #include <stdio.h>
+          int main(void) {
+              int a = 1337, b = 7;
+              printf("C Binary Output: %d * %d = %d\n", a, b, a * b);
+              return 0;
+          }
+          CEOF
+          gcc -O2 /tmp/microvm_math.c -o /tmp/microvm_math
+          /tmp/microvm_math
+          echo "PASS: Python and GCC native execution verified inside MicroVM!"
+
+      - name: Test 8 - Real-Time Live Log Streaming (10s)
+        run: |
+          echo "=== Test 8: Live WebSocket Log Streaming ==="
+          for i in $(seq 1 10); do
+            echo "live test tick ${i}/10 at $(date -u +%T) [VM native]"
+            sleep 1
+          done
+          echo "PASS: Live log streaming completed successfully!"

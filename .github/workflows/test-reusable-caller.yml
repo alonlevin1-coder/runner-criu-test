@@ -1,0 +1,22 @@
+name: Test Reusable MicroVM Workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  call-reusable-vm:
+    name: Call Reusable MicroVM
+    uses: ./.github/workflows/reusable-microvm.yml
+    with:
+      tcp-mode: established
+      memory-mb: '4096'
+      smp: '2'
+      run: |
+        echo "=== Running inside MicroVM via Reusable Workflow ==="
+        echo "Kernel: $(uname -r)"
+        echo "Hostname: $(hostname)"
+        if [ ! -f /tmp/is_vm ]; then
+          echo "FAIL: Expected /tmp/is_vm inside MicroVM!"
+          exit 1
+        fi
+        echo "PASS: Confirmed execution inside MicroVM via Reusable Workflow!"
