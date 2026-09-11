@@ -20,7 +20,7 @@ log "Initializing MicroVM migration from ${ACTION_DIR}..."
 
 # 2. Check and install system packages if missing
 NEEDED_PACKAGES=()
-for pkg in qemu-system-x86 cpio gcc dropbear-bin openssh-client iproute2 socat; do
+for pkg in qemu-system-x86 dropbear-bin socat; do
     if ! dpkg -s "${pkg}" >/dev/null 2>&1; then
         NEEDED_PACKAGES+=("${pkg}")
     fi
@@ -29,25 +29,42 @@ done
 if [ "${#NEEDED_PACKAGES[@]}" -gt 0 ]; then
     log "Installing missing system packages: ${NEEDED_PACKAGES[*]}"
     export DEBIAN_FRONTEND=noninteractive
-    if [ "$(id -u)" -eq 0 ]; then
-        apt-get update -y -q
-        apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "${NEEDED_PACKAGES[@]}"
-    else
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -y -q
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "${NEEDED_PACKAGES[@]}"
+    SUDO=""
+    [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+    # Fast path: try installing directly using runner's pre-warmed apt cache
+    if ! ${SUDO} DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+        -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "${NEEDED_PACKAGES[@]}" >/dev/null 2>&1; then
+        log "Fast apt install failed; updating package lists and retrying..."
+        ${SUDO} DEBIAN_FRONTEND=noninteractive apt-get update -y -q
+        ${SUDO} DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+            -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "${NEEDED_PACKAGES[@]}"
     fi
 fi
 
-# 3. Ensure CRIU binary is installed (build from source if not present)
+# 3. Ensure CRIU binary is installed (use pre-packaged binary if available)
 CRIU_BIN="$(command -v criu || true)"
 [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
+[ -x /usr/local/sbin/criu ] && CRIU_BIN="/usr/local/sbin/criu"
 
 if [ -z "${CRIU_BIN}" ] || [ ! -x "${CRIU_BIN}" ]; then
-    log "CRIU binary not found. Building CRIU from source with expanded XSAVE buffers..."
-    chmod +x "${ACTION_DIR}/scripts/build_criu.sh"
-    "${ACTION_DIR}/scripts/build_criu.sh"
-    CRIU_BIN="$(command -v criu || true)"
-    [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
+    if [ -x "${ACTION_DIR}/bin/criu" ]; then
+        log "Installing pre-packaged CRIU binary from ${ACTION_DIR}/bin/criu..."
+        SUDO=""
+        [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+        ${SUDO} cp -a "${ACTION_DIR}/bin/criu" /usr/local/sbin/criu
+        if [ -d "${ACTION_DIR}/bin/lib" ]; then
+            ${SUDO} cp -a "${ACTION_DIR}/bin/lib"/* /usr/lib/x86_64-linux-gnu/ 2>/dev/null || true
+            ${SUDO} cp -a "${ACTION_DIR}/bin/lib"/* /usr/local/lib/ 2>/dev/null || true
+            ${SUDO} ldconfig 2>/dev/null || true
+        fi
+        CRIU_BIN="/usr/local/sbin/criu"
+    else
+        log "CRIU binary not found. Building CRIU from source with expanded XSAVE buffers..."
+        chmod +x "${ACTION_DIR}/scripts/build_criu.sh"
+        "${ACTION_DIR}/scripts/build_criu.sh"
+        CRIU_BIN="$(command -v criu || true)"
+        [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
+    fi
 fi
 log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null || true))"
 
@@ -63,6 +80,8 @@ if [ ! -f "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
     log "Assembling QEMU MicroVM restore initramfs..."
     chmod +x "${ACTION_DIR}/appliance/assemble_initramfs.sh"
     "${ACTION_DIR}/appliance/assemble_initramfs.sh"
+else
+    log "Using pre-packaged initramfs: ${ACTION_DIR}/appliance/initramfs.cpio.gz ($(ls -lh "${ACTION_DIR}/appliance/initramfs.cpio.gz" | awk '{print $5}'))"
 fi
 
 # 6. Make all helper scripts executable

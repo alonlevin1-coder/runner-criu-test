@@ -16,7 +16,37 @@ rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
 # 1. Base directory layout
-mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,host_usr,host_bin,host_lib,host_lib64,host_opt,opt,usr/share/dotnet,modules}
+mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/lib64,usr/lib/x86_64-linux-gnu,usr/share,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,host_usr,host_bin,host_lib,host_lib64,host_opt,opt,usr/share/dotnet,modules}
+ln -sf usr/lib "${STAGING}/lib"
+ln -sf usr/lib64 "${STAGING}/lib64"
+
+copy_lib() {
+    local src="$1"
+    local dest_dir="${STAGING}/usr/lib/x86_64-linux-gnu"
+    [ -e "${src}" ] || return 0
+    if [ -L "${src}" ]; then
+        local target
+        target="$(readlink "${src}")"
+        local sname
+        sname="$(basename "${src}")"
+        ln -sf "${target}" "${dest_dir}/${sname}" 2>/dev/null || true
+        local real
+        real="$(realpath "${src}")"
+        if [ -f "${real}" ]; then
+            local rname
+            rname="$(basename "${real}")"
+            if [ ! -f "${dest_dir}/${rname}" ]; then
+                cp -a "${real}" "${dest_dir}/${rname}" 2>/dev/null || true
+            fi
+        fi
+    else
+        local fname
+        fname="$(basename "${src}")"
+        if [ ! -f "${dest_dir}/${fname}" ]; then
+            cp -a "${src}" "${dest_dir}/${fname}" 2>/dev/null || true
+        fi
+    fi
+}
 
 
 # 2. Install busybox utilities
@@ -128,26 +158,24 @@ fi
 
 # 4. Copy host CRIU binary and dynamic dependencies
 echo "[4/7] Packaging CRIU binary and libraries..."
-CRIU_BIN="$(which criu 2>/dev/null || echo "/usr/sbin/criu")"
+CRIU_BIN="${REPO_DIR}/bin/criu"
+[ -x "${CRIU_BIN}" ] || CRIU_BIN="$(which criu 2>/dev/null || echo "/usr/sbin/criu")"
 if [ -f "${CRIU_BIN}" ]; then
-    cp -L "${CRIU_BIN}" "${STAGING}/usr/sbin/criu"
-    cp -L "${CRIU_BIN}" "${STAGING}/sbin/criu"
+    cp -a "${CRIU_BIN}" "${STAGING}/usr/sbin/criu"
+    cp -a "${CRIU_BIN}" "${STAGING}/sbin/criu"
     ln -sf /sbin/criu "${STAGING}/bin/criu"
     chmod 755 "${STAGING}/usr/sbin/criu" "${STAGING}/sbin/criu"
 
-    mkdir -p "${STAGING}/lib/x86_64-linux-gnu" "${STAGING}/usr/lib/x86_64-linux-gnu" "${STAGING}/lib64"
-
     for bin_to_check in "${CRIU_BIN}" /bin/bash; do
         for lib in $(ldd "${bin_to_check}" 2>/dev/null | grep -o '/[^ ]*' || true); do
-            if [ -f "${lib}" ]; then
-                fname="$(basename "${lib}")"
-                cp -L "${lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-                cp -L "${lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-                if [[ "${lib}" == *ld-linux* ]]; then
-                    cp -L "${lib}" "${STAGING}/lib64/${fname}" 2>/dev/null || true
-                fi
-            fi
+            copy_lib "${lib}"
         done
+    done
+fi
+
+if [ -d "${REPO_DIR}/bin/lib" ]; then
+    for blib in "${REPO_DIR}/bin/lib"/*; do
+        copy_lib "${blib}"
     done
 fi
 
@@ -162,29 +190,23 @@ ln -sf /sbin/iptables "${STAGING}/usr/sbin/iptables" 2>/dev/null || true
 # Dropbear for two-stage SSH (host helper runs criu restore after boot).
 echo "[4b/7] Packaging dropbear..."
 if ! command -v dropbear >/dev/null 2>&1; then
-    sudo apt-get install -y dropbear-bin >/dev/null
+    sudo apt-get install -y dropbear-bin >/dev/null 2>&1 || true
 fi
-DROPBEAR_BIN="$(command -v dropbear)"
+DROPBEAR_BIN="$(command -v dropbear || true)"
 DROPBEARKEY_BIN="$(command -v dropbearkey || true)"
-if [ -z "${DROPBEAR_BIN}" ] || [ ! -f "${DROPBEAR_BIN}" ]; then
-    echo "ERROR: dropbear not found (install dropbear-bin)"
-    exit 1
+if [ -n "${DROPBEAR_BIN}" ] && [ -f "${DROPBEAR_BIN}" ]; then
+    cp -a "${DROPBEAR_BIN}" "${STAGING}/usr/sbin/dropbear"
+    chmod 755 "${STAGING}/usr/sbin/dropbear"
+    for lib in $(ldd "${DROPBEAR_BIN}" 2>/dev/null | grep -o '/[^ ]*' || true); do
+        copy_lib "${lib}"
+    done
 fi
-cp -L "${DROPBEAR_BIN}" "${STAGING}/usr/sbin/dropbear"
-chmod 755 "${STAGING}/usr/sbin/dropbear"
-for lib in $(ldd "${DROPBEAR_BIN}" 2>/dev/null | grep -o '/[^ ]*' || true); do
-    if [ -f "${lib}" ]; then
-        fname="$(basename "${lib}")"
-        cp -L "${lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-        cp -L "${lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-        if [[ "${lib}" == *ld-linux* ]]; then
-            cp -L "${lib}" "${STAGING}/lib64/${fname}" 2>/dev/null || true
-        fi
-    fi
-done
 if [ -n "${DROPBEARKEY_BIN}" ] && [ -f "${DROPBEARKEY_BIN}" ]; then
-    cp -L "${DROPBEARKEY_BIN}" "${STAGING}/usr/sbin/dropbearkey"
+    cp -a "${DROPBEARKEY_BIN}" "${STAGING}/usr/sbin/dropbearkey"
     chmod 755 "${STAGING}/usr/sbin/dropbearkey"
+    for lib in $(ldd "${DROPBEARKEY_BIN}" 2>/dev/null | grep -o '/[^ ]*' || true); do
+        copy_lib "${lib}"
+    done
 fi
 SSH_KEY="${SCRIPT_DIR}/ssh_id_ed25519"
 if [ ! -f "${SSH_KEY}" ]; then
@@ -198,20 +220,6 @@ chmod 600 "${STAGING}/root/.ssh/authorized_keys"
 if command -v dropbearkey >/dev/null 2>&1; then
     dropbearkey -t ed25519 -f "${STAGING}/etc/dropbear/dropbear_ed25519_host_key" >/dev/null 2>&1 || true
 fi
-mkdir -p "${STAGING}/lib/x86_64-linux-gnu" "${STAGING}/usr/lib/x86_64-linux-gnu" "${STAGING}/lib64"
-for bin_to_check in "${DROPBEAR_BIN}" ${DROPBEARKEY_BIN:-}; do
-    [ -n "${bin_to_check}" ] && [ -f "${bin_to_check}" ] || continue
-    for lib in $(ldd "${bin_to_check}" 2>/dev/null | grep -o '/[^ ]*' || true); do
-        if [ -f "${lib}" ]; then
-            fname="$(basename "${lib}")"
-            cp -L "${lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-            cp -L "${lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-            if [[ "${lib}" == *ld-linux* ]]; then
-                cp -L "${lib}" "${STAGING}/lib64/${fname}" 2>/dev/null || true
-            fi
-        fi
-    done
-done
 
 # Copy extra CoreCLR and system runtime libraries from host
 EXTRA_LIBS=(
@@ -244,18 +252,14 @@ EXTRA_LIBS=(
 for lib in "${EXTRA_LIBS[@]}"; do
     found_libs=$(find /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu -name "${lib}*" 2>/dev/null || true)
     for found_lib in ${found_libs}; do
-        fname="$(basename "${found_lib}")"
-        if [ -e "${found_lib}" ] && [ ! -e "${STAGING}/lib/x86_64-linux-gnu/${fname}" ]; then
-            cp -L "${found_lib}" "${STAGING}/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-            cp -L "${found_lib}" "${STAGING}/usr/lib/x86_64-linux-gnu/${fname}" 2>/dev/null || true
-        fi
+        copy_lib "${found_lib}"
     done
 done
 
 # Ensure standard dynamic linker paths
 if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
-    cp -L /lib64/ld-linux-x86-64.so.2 "${STAGING}/lib64/ld-linux-x86-64.so.2" 2>/dev/null || true
-    cp -L /lib64/ld-linux-x86-64.so.2 "${STAGING}/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" 2>/dev/null || true
+    copy_lib /lib64/ld-linux-x86-64.so.2
+    cp -a /lib64/ld-linux-x86-64.so.2 "${STAGING}/usr/lib64/ld-linux-x86-64.so.2" 2>/dev/null || true
 fi
 
 # 5. Configure system files (SSL certs, ld cache, users, DNS, ICU timezone data)
