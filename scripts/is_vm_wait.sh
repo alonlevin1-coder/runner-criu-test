@@ -199,6 +199,18 @@ if [ -f /tmp/is_vm ]; then
     if [ -d /mnt/checkpoint ]; then
         CP="/mnt/checkpoint"
     fi
+    # Setup Docker socket proxy in guest if socat is available
+    if [ ! -S /var/run/docker.sock ] && command -v socat >/dev/null 2>&1; then
+        HOST_GW="$(ip route show default 2>/dev/null | awk '{print $3}' | head -n1)"
+        HOST_GW="${HOST_GW:-192.168.100.1}"
+        sudo mkdir -p /var/run /run
+        sudo pkill -f 'UNIX-LISTEN:/var/run/docker.sock' 2>/dev/null || true
+        sudo socat UNIX-LISTEN:/var/run/docker.sock,fork,mode=666 "TCP:${HOST_GW}:2375" &
+        sudo ln -sf /var/run/docker.sock /run/docker.sock 2>/dev/null || true
+        sudo chmod 666 /var/run/docker.sock 2>/dev/null || true
+        echo "DOCKER_HOST=unix:///var/run/docker.sock" | sudo tee -a /etc/environment >/dev/null || true
+        log "Guest Docker socket bridged to ${HOST_GW}:2375"
+    fi
     log "VM branch — completing migrate step (StepsRunner continues)"
     send_ntfy "is_vm_wait VM branch" "run=${GITHUB_RUN_ID:-0} completing migrate step"
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -427,6 +427,8 @@ progress() {
 /bin/busybox mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 /bin/busybox mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 /bin/busybox chmod 1777 /tmp /dev/shm
+/bin/busybox mkdir -p /sys/fs/cgroup
+/bin/busybox mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
 
 # Set VM hostname
 /bin/busybox hostname qemu-restore-vm
@@ -631,6 +633,14 @@ for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64 /hos
     fi
 done
 echo "host_rootfs_bind done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+
+/bin/busybox mkdir -p /var/run /run
+if [ -x /usr/bin/socat ]; then
+    echo "[GUEST] Launching Docker UNIX socket bridge to 192.168.100.1:2375"
+    /usr/bin/socat UNIX-LISTEN:/var/run/docker.sock,fork,mode=666 TCP:192.168.100.1:2375 &
+    /bin/busybox ln -sf /var/run/docker.sock /run/docker.sock 2>/dev/null || true
+    echo "DOCKER_HOST=unix:///var/run/docker.sock" >> /etc/environment 2>/dev/null || true
+fi
 
 
 if [ -f /opt_sudo_shim ]; then
