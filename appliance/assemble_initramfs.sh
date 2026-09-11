@@ -105,11 +105,14 @@ int main(int argc, char *argv[]) {
     return 127;
 }
 CEOF
-gcc -O2 /tmp/sudo_shim.c -o "${STAGING}/usr/local/bin/sudo"
+gcc -O2 /tmp/sudo_shim.c -o "${STAGING}/opt_sudo_shim"
+chmod 4755 "${STAGING}/opt_sudo_shim"
+cp -a "${STAGING}/opt_sudo_shim" "${STAGING}/usr/local/bin/sudo"
 chmod 4755 "${STAGING}/usr/local/bin/sudo"
-cp -a "${STAGING}/usr/local/bin/sudo" "${STAGING}/bin/sudo"
+cp -a "${STAGING}/opt_sudo_shim" "${STAGING}/bin/sudo"
 chmod 4755 "${STAGING}/bin/sudo"
 rm -f /tmp/sudo_shim.c
+
 
 
 # 3. Install kernel modules for Linux 6.17.0-40-generic (bzImage)
@@ -294,6 +297,17 @@ runner	ALL=(ALL:ALL) NOPASSWD: ALL
 EOF
 chmod 0440 "${STAGING}/etc/sudoers" 2>/dev/null || true
 
+# PAM and security configuration
+if [ -d /etc/pam.d ]; then
+    mkdir -p "${STAGING}/etc/pam.d"
+    cp -a /etc/pam.d/* "${STAGING}/etc/pam.d/" 2>/dev/null || true
+fi
+if [ -d /etc/security ]; then
+    mkdir -p "${STAGING}/etc/security"
+    cp -a /etc/security/* "${STAGING}/etc/security/" 2>/dev/null || true
+fi
+
+
 
 
 # SSL certificates
@@ -348,9 +362,10 @@ EOF
 grep -E "^runner:" /etc/group >> "${STAGING}/etc/group" 2>/dev/null || true
 
 cat << 'EOF' > "${STAGING}/etc/hosts"
-127.0.0.1   localhost
-::1         localhost ip6-localhost ip6-loopback
+127.0.0.1   localhost qemu-restore-vm
+::1         localhost ip6-localhost ip6-loopback qemu-restore-vm
 EOF
+
 
 cat << 'EOF' > "${STAGING}/etc/resolv.conf"
 nameserver 8.8.8.8
@@ -588,6 +603,12 @@ for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64 /hos
     fi
 done
 echo "host_rootfs_bind done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+if [ -f /opt_sudo_shim ]; then
+    echo "[GUEST] Installing setuid sudo shim over /usr/bin/sudo"
+    /bin/busybox mount --bind /opt_sudo_shim /usr/bin/sudo 2>/dev/null || true
+    /bin/busybox mount --bind /opt_sudo_shim /usr/local/bin/sudo 2>/dev/null || true
+fi
+
 FROZEN=/mnt/checkpoint/frozen_files
 if [ -f "${FROZEN}/manifest.tsv" ]; then
     echo "[GUEST] Applying frozen file overlays before criu restore"
