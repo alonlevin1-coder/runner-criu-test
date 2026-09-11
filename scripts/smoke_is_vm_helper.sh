@@ -26,6 +26,14 @@ CRIU_TCP_MODE="${CRIU_TCP_MODE:-close}"
 HELPER_STAGE="${CHECKPOINT_DIR}/helper_stage.txt"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [is_vm] $*" | tee -a "${HELPER_LOG}"; }
 
+# Enable Docker socket proxy for microVM if Docker daemon is running on host
+if [ -S /var/run/docker.sock ] && command -v socat >/dev/null 2>&1; then
+    if ! pgrep -f 'TCP-LISTEN:2375' >/dev/null 2>&1; then
+        socat TCP-LISTEN:2375,bind=0.0.0.0,reuseaddr,fork UNIX-CONNECT:/var/run/docker.sock &
+        log "Enabled Docker daemon proxy on 0.0.0.0:2375"
+    fi
+fi
+
 stage_mark() {
     local stage="${1:?stage}"
     local detail="${2:-}"

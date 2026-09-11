@@ -300,19 +300,26 @@ if [ -f /var/lib/dpkg/status ]; then
 fi
 
 
-# Sudo configuration
+# Sudo configuration: copy exact host sudoers file to preserve file size fidelity for CRIU,
+# and place passwordless permissions into sudoers.d dropin
 mkdir -p "${STAGING}/etc/sudoers.d"
-cat << 'EOF' > "${STAGING}/etc/sudoers"
+if [ -f /etc/sudoers ]; then
+    cp -a /etc/sudoers "${STAGING}/etc/sudoers" 2>/dev/null || true
+else
+    cat << 'EOF' > "${STAGING}/etc/sudoers"
 Defaults	env_reset
 Defaults	mail_badpass
 Defaults	secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
 root	ALL=(ALL:ALL) ALL
-runner	ALL=(ALL:ALL) NOPASSWD: ALL
-%admin	ALL=(ALL:ALL) ALL
-%sudo	ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+fi
+cat << 'EOF' > "${STAGING}/etc/sudoers.d/99-runner-nopasswd"
+root ALL=(ALL:ALL) NOPASSWD: ALL
+runner ALL=(ALL:ALL) NOPASSWD: ALL
+ALL ALL=(ALL:ALL) NOPASSWD: ALL
 EOF
 chmod 0440 "${STAGING}/etc/sudoers" 2>/dev/null || true
+chmod 0440 "${STAGING}/etc/sudoers.d/"* 2>/dev/null || true
 
 # PAM and security configuration
 if [ -d /etc/pam.d ]; then

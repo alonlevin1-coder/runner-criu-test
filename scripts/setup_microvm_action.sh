@@ -112,19 +112,6 @@ export QEMU_MEM="${INPUT_MEMORY_MB:-${QEMU_MEM:-4096}}"
 export NTFY_TOPIC="${INPUT_NTFY_TOPIC:-${NTFY_TOPIC:-}}"
 export STEP_SHELL_PID
 
-# Enable Docker daemon proxy for microVM if Docker daemon is running
-if [ -S /var/run/docker.sock ]; then
-    log "Enabling Docker daemon proxy for microVM on port 2375..."
-    if ! pgrep -f 'TCP-LISTEN:2375' >/dev/null 2>&1; then
-        if [ "$(id -u)" -eq 0 ]; then
-            socat TCP-LISTEN:2375,bind=0.0.0.0,reuseaddr,fork UNIX-CONNECT:/var/run/docker.sock &
-        else
-            sudo socat TCP-LISTEN:2375,bind=0.0.0.0,reuseaddr,fork UNIX-CONNECT:/var/run/docker.sock &
-        fi
-        log "Docker daemon proxy listening on 0.0.0.0:2375"
-    fi
-fi
-
 SERIAL_LOG="${LOG_DIR}/vm_serial.log"
 log "Daemonizing migration helper (target_pid=${WORKER_PID}, tcp_mode=${CRIU_TCP_MODE})..."
 if [ "$(id -u)" -eq 0 ]; then
