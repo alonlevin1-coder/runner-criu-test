@@ -283,6 +283,22 @@ for ef in /etc/os-release /etc/environment /etc/magic /etc/mime.types; do
     fi
 done
 
+# APT package manager and dpkg status for guest package installation
+if [ -d /etc/apt ]; then
+    echo "  -> Copying /etc/apt configuration..."
+    mkdir -p "${STAGING}/etc/apt"
+    cp -a /etc/apt/* "${STAGING}/etc/apt/" 2>/dev/null || true
+fi
+mkdir -p "${STAGING}/var/lib/dpkg/info" "${STAGING}/var/lib/dpkg/updates" \
+         "${STAGING}/var/lib/apt/lists/partial" "${STAGING}/var/cache/apt/archives/partial" \
+         "${STAGING}/var/log/apt"
+if [ -f /var/lib/dpkg/status ]; then
+    echo "  -> Copying /var/lib/dpkg/status..."
+    cp -a /var/lib/dpkg/status "${STAGING}/var/lib/dpkg/status" 2>/dev/null || true
+    touch "${STAGING}/var/lib/dpkg/available"
+fi
+
+
 # Sudo configuration
 mkdir -p "${STAGING}/etc/sudoers.d"
 cat << 'EOF' > "${STAGING}/etc/sudoers"
