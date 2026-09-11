@@ -16,7 +16,7 @@ rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
 # 1. Base directory layout
-mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,host_usr,host_bin,host_lib,host_lib64,host_opt,opt,host_etc,host_var,overlay,usr/share/dotnet,modules}
+mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,host_usr,host_bin,host_lib,host_lib64,host_opt,opt,usr/share/dotnet,modules}
 
 
 # 2. Install busybox utilities
@@ -441,7 +441,7 @@ progress() {
 echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 
 # Load diagnostic kernel modules
-for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables overlay; do
+for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables; do
 
     if [ -f "/modules/${mod}.ko" ]; then
         if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
@@ -507,7 +507,7 @@ echo "=== PID 1:    /bin/busybox sh /init                    ==="
 echo "=========================================================="
 
 # Mount remaining 9p shares
-/bin/busybox mkdir -p /home/runner /host_tmp /mnt/usrlib /host_usr /host_bin /host_lib /host_lib64 /host_opt /opt /usr/share/dotnet /host_etc /host_var
+/bin/busybox mkdir -p /home/runner /host_tmp /mnt/usrlib /host_usr /host_bin /host_lib /host_lib64 /host_opt /opt /usr/share/dotnet
 
 echo "[GUEST] Mounting 9p shares..."
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>&1 && echo "[GUEST] [OK] Mounted host_runner share" || echo "[GUEST] [FAIL] host_runner mount failed!"
@@ -521,12 +521,6 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
     echo "[GUEST] [OK] Mounted host_opt share"
 else
     echo "[GUEST] [INFO] host_opt share not present"
-fi
-if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_etc /host_etc 2>/dev/null; then
-    echo "[GUEST] [OK] Mounted host_etc share"
-fi
-if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_var /host_var 2>/dev/null; then
-    echo "[GUEST] [OK] Mounted host_var share"
 fi
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose dotnet /usr/share/dotnet 2>&1 && echo "[GUEST] [OK] Mounted dotnet share" || echo "[GUEST] [WARN] dotnet mount failed"
 
@@ -629,26 +623,6 @@ for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64 /hos
 done
 echo "host_rootfs_bind done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 
-# OverlayFS for /etc and /var from host shares
-/bin/busybox mkdir -p /overlay /overlay/etc_upper /overlay/etc_work /overlay/var_upper /overlay/var_work
-if [ -d /host_etc ]; then
-    echo "[GUEST] Activating OverlayFS for /etc..."
-    /bin/busybox mount -t overlay overlay -o lowerdir=/host_etc,upperdir=/overlay/etc_upper,workdir=/overlay/etc_work,redirect_dir=off,index=off,metacopy=off /etc 2>/dev/null \
-        && echo "[GUEST] [OK] /etc OverlayFS active" \
-        || echo "[GUEST] [WARN] /etc OverlayFS failed (using initramfs /etc)"
-fi
-if [ -d /host_var ]; then
-    echo "[GUEST] Activating OverlayFS for /var..."
-    /bin/busybox mount -t overlay overlay -o lowerdir=/host_var,upperdir=/overlay/var_upper,workdir=/overlay/var_work,redirect_dir=off,index=off,metacopy=off /var 2>/dev/null \
-        && echo "[GUEST] [OK] /var OverlayFS active" \
-        || echo "[GUEST] [WARN] /var OverlayFS failed (using initramfs /var)"
-fi
-
-# Ensure VM-specific hosts and DNS in /etc overlay
-echo "127.0.0.1 localhost qemu-restore-vm" >> /etc/hosts 2>/dev/null || true
-if [ -f /etc/resolv.conf ]; then
-    grep -q "8.8.8.8" /etc/resolv.conf 2>/dev/null || echo "nameserver 8.8.8.8" >> /etc/resolv.conf 2>/dev/null || true
-fi
 
 if [ -f /opt_sudo_shim ]; then
     echo "[GUEST] Installing setuid sudo shim over /usr/bin/sudo"

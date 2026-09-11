@@ -368,7 +368,7 @@ VIRTFS_ARGS=(
     -virtfs "local,path=${DOTNET_DIR},mount_tag=dotnet,security_model=none,id=dotnet"
     -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
 )
-for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt" "host_etc:/etc" "host_var:/var"; do
+for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt"; do
     tag="${spec%%:*}"
     path="${spec##*:}"
     if [ -d "${path}" ]; then
