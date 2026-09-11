@@ -205,11 +205,58 @@ if [ -f /tmp/is_vm ]; then
         HOST_GW="${HOST_GW:-192.168.100.1}"
         sudo mkdir -p /var/run /run
         sudo pkill -f 'UNIX-LISTEN:/var/run/docker.sock' 2>/dev/null || true
-        sudo socat UNIX-LISTEN:/var/run/docker.sock,fork,mode=666 "TCP:${HOST_GW}:2375" &
+        sudo nohup socat UNIX-LISTEN:/var/run/docker.sock,fork,mode=666 "TCP:${HOST_GW}:2375" >/dev/null 2>&1 &
         sudo ln -sf /var/run/docker.sock /run/docker.sock 2>/dev/null || true
         sudo chmod 666 /var/run/docker.sock 2>/dev/null || true
         echo "DOCKER_HOST=unix:///var/run/docker.sock" | sudo tee -a /etc/environment >/dev/null || true
         log "Guest Docker socket bridged to ${HOST_GW}:2375"
+    fi
+
+    # Ensure host.docker.internal resolves to 127.0.0.1 in guest
+    if ! grep -q "host.docker.internal" /etc/hosts 2>/dev/null; then
+        echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts >/dev/null || true
+    fi
+
+    # Setup background port proxy daemon:
+    # Bridges host ports published by Docker containers or CI service containers (MariaDB, Redis, etc.)
+    # so that localhost:<port> or 127.0.0.1:<port> connects directly to the service.
+    if command -v socat >/dev/null 2>&1; then
+        HOST_GW="$(ip route show default 2>/dev/null | awk '{print $3}' | head -n1)"
+        HOST_GW="${HOST_GW:-192.168.100.1}"
+        sudo bash -c "
+            proxy_ports() {
+                for p in \$*; do
+                    [[ \"\${p}\" =~ ^[0-9]+$ ]] || continue
+                    [ \"\${p}\" -eq 22 ] && continue
+                    [ \"\${p}\" -eq 2375 ] && continue
+                    if ! pgrep -f \"TCP-LISTEN:\${p},bind=127.0.0.1\" >/dev/null 2>&1; then
+                        nohup socat \"TCP-LISTEN:\${p},bind=127.0.0.1,reuseaddr,fork\" \"TCP:${HOST_GW}:\${p}\" >/dev/null 2>&1 &
+                    fi
+                done
+            }
+            # Initial pass: check host listening ports if recorded
+            if [ -f /mnt/checkpoint/host_ports.txt ]; then
+                proxy_ports \$(cat /mnt/checkpoint/host_ports.txt)
+            fi
+            # Common CI service ports: 3306 (MySQL/MariaDB), 3308, 5432, 6379
+            proxy_ports 3306 3308 5432 6379
+            # Continuous monitor: watch docker containers and proxy their published ports
+            (
+                while true; do
+                    if [ -S /var/run/docker.sock ]; then
+                        d_ports=''
+                        if command -v docker >/dev/null 2>&1; then
+                            d_ports=\$(docker ps --format '{{.Ports}}' 2>/dev/null | grep -oE ':[0-9]+->' | tr -d ':->' | sort -u || true)
+                        elif command -v curl >/dev/null 2>&1; then
+                            d_ports=\$(curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json 2>/dev/null | grep -oE '\"PublicPort\":[0-9]+' | cut -d: -f2 | sort -u || true)
+                        fi
+                        [ -n \"\${d_ports:-}\" ] && proxy_ports \${d_ports}
+                    fi
+                    sleep 1
+                done
+            ) >/dev/null 2>&1 &
+        "
+        log "Docker localhost port proxy daemon initialized."
     fi
     log "VM branch — completing migrate step (StepsRunner continues)"
     send_ntfy "is_vm_wait VM branch" "run=${GITHUB_RUN_ID:-0} completing migrate step"

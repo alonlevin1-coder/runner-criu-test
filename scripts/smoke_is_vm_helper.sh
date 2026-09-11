@@ -29,8 +29,9 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [is_vm] $*" | tee -a "${HELPER_LOG}
 # Enable Docker socket proxy for microVM if Docker daemon is running on host
 if [ -S /var/run/docker.sock ] && command -v socat >/dev/null 2>&1; then
     if ! pgrep -f 'TCP-LISTEN:2375' >/dev/null 2>&1; then
-        socat TCP-LISTEN:2375,bind=0.0.0.0,reuseaddr,fork UNIX-CONNECT:/var/run/docker.sock &
-        log "Enabled Docker daemon proxy on 0.0.0.0:2375"
+        nohup socat TCP-LISTEN:2375,bind=0.0.0.0,reuseaddr,fork UNIX-CONNECT:/var/run/docker.sock >/dev/null 2>&1 &
+        disown || true
+        log "Enabled persistent Docker daemon proxy on 0.0.0.0:2375"
     fi
 fi
 
@@ -262,6 +263,11 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
     stage_mark "tcp_discover_ok" "ips=$(head -n1 "${CHECKPOINT_DIR}/tcp_local_ips.txt")"
     send_ntfy "is_vm TCP discover" "$(head -n 5 "${CHECKPOINT_DIR}/tcp_local_ips.txt" 2>/dev/null || true)
 $(cat "${CHECKPOINT_DIR}/network_spec.env" 2>/dev/null || true)"
+fi
+
+if command -v ss >/dev/null 2>&1; then
+    ss -tlnH 2>/dev/null | awk '{print $4}' | grep -oE '[0-9]+$' | sort -u > "${CHECKPOINT_DIR}/host_ports.txt" 2>/dev/null || true
+    chmod a+rw "${CHECKPOINT_DIR}/host_ports.txt" 2>/dev/null || true
 fi
 
 echo "criu_tcp_mode=${CRIU_TCP_MODE}" >> "${CHECKPOINT_DIR}/state.txt"
