@@ -16,7 +16,7 @@ rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
 # 1. Base directory layout
-mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,host_usr,host_bin,host_lib,host_lib64,usr/share/dotnet,modules}
+mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,host_usr,host_bin,host_lib,host_lib64,host_opt,opt,usr/share/dotnet,modules}
 
 # 2. Install busybox utilities
 echo "[1/7] Installing busybox utilities..."
@@ -406,7 +406,7 @@ echo "=== PID 1:    /bin/busybox sh /init                    ==="
 echo "=========================================================="
 
 # Mount remaining 9p shares
-/bin/busybox mkdir -p /home/runner /host_tmp /mnt/usrlib /host_usr /host_bin /host_lib /host_lib64 /usr/share/dotnet
+/bin/busybox mkdir -p /home/runner /host_tmp /mnt/usrlib /host_usr /host_bin /host_lib /host_lib64 /host_opt /opt /usr/share/dotnet
 
 echo "[GUEST] Mounting 9p shares..."
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>&1 && echo "[GUEST] [OK] Mounted host_runner share" || echo "[GUEST] [FAIL] host_runner mount failed!"
@@ -416,6 +416,11 @@ echo "[GUEST] Mounting 9p shares..."
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_bin /host_bin 2>&1 && echo "[GUEST] [OK] Mounted host_bin share" || echo "[GUEST] [WARN] host_bin mount failed"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_lib /host_lib 2>&1 && echo "[GUEST] [OK] Mounted host_lib share" || echo "[GUEST] [WARN] host_lib mount failed"
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_lib64 /host_lib64 2>&1 && echo "[GUEST] [OK] Mounted host_lib64 share" || echo "[GUEST] [WARN] host_lib64 mount failed"
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_opt /host_opt 2>/dev/null; then
+    echo "[GUEST] [OK] Mounted host_opt share"
+else
+    echo "[GUEST] [INFO] host_opt share not present"
+fi
 /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose dotnet /usr/share/dotnet 2>&1 && echo "[GUEST] [OK] Mounted dotnet share" || echo "[GUEST] [WARN] dotnet mount failed"
 
 # Populate missing libraries from usrlib share
@@ -504,7 +509,7 @@ touch /tmp/is_vm
 echo "is_vm" > /tmp/is_vm
 echo "is_vm marker created" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 echo "[GUEST] Binding host /usr /bin /lib for criu path fidelity"
-for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64; do
+for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64 /host_opt:/opt; do
     src="${pair%%:*}"
     dst="${pair##*:}"
     if [ -d "${src}" ]; then

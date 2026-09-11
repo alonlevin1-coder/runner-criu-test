@@ -1,0 +1,66 @@
+name: Reusable MicroVM Artifact Producer
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: "Name of the artifact to upload"
+        required: false
+        type: string
+        default: "reusable-microvm-artifact"
+    outputs:
+      artifact-sha:
+        description: "SHA256 of the generated artifact"
+        value: ${{ jobs.produce-in-vm.outputs.artifact_sha }}
+
+jobs:
+  produce-in-vm:
+    name: MicroVM Reusable Producer
+    runs-on: ubuntu-22.04
+    outputs:
+      artifact_sha: ${{ steps.build.outputs.artifact_sha }}
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Migrate Runner to MicroVM
+        uses: ./
+        with:
+          tcp-mode: established
+          memory-mb: '4096'
+          smp: '2'
+
+      - name: Verify MicroVM Execution
+        run: |
+          echo "=== Executing in MicroVM Reusable Workflow ==="
+          echo "Kernel: $(uname -r)"
+          echo "Hostname: $(hostname)"
+          [ -f /tmp/is_vm ] || { echo "FAIL: Not in MicroVM"; exit 1; }
+
+      - name: Generate Artifact inside MicroVM
+        id: build
+        run: |
+          echo "=== Generating Artifact Data in MicroVM ==="
+          FILE="microvm_artifact_payload.txt"
+          {
+            echo "Artifact produced by MicroVM"
+            echo "Kernel: $(uname -r)"
+            echo "Hostname: $(hostname)"
+            echo "Timestamp: $(date -u)"
+            echo "Random UUID: $(cat /proc/sys/kernel/random/uuid)"
+          } > "${FILE}"
+
+          SHA=$(sha256sum "${FILE}" | cut -d' ' -f1)
+          echo "artifact_sha=${SHA}" >> "${GITHUB_OUTPUT}"
+          echo "${SHA}  ${FILE}" > "${FILE}.sha256"
+          cat "${FILE}"
+          echo "Artifact SHA: ${SHA}"
+
+      - name: 3rd Party Action - Upload Artifact from MicroVM
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            microvm_artifact_payload.txt
+            microvm_artifact_payload.txt.sha256
+          retention-days: 1
