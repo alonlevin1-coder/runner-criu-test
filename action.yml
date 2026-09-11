@@ -35,5 +35,7 @@ runs:
         INPUT_SMP: ${{ inputs.smp }}
         INPUT_NTFY_TOPIC: ${{ inputs.ntfy-topic }}
       run: |
+        chmod +x "${ACTION_DIR}/scripts/"*.sh "${ACTION_DIR}/appliance/"*.sh 2>/dev/null || true
+        chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true
         chmod +x "${ACTION_DIR}/scripts/setup_microvm_action.sh"
         "${ACTION_DIR}/scripts/setup_microvm_action.sh"

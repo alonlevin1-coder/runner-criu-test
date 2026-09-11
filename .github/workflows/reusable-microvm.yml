@@ -28,11 +28,18 @@ jobs:
   microvm-runner:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Code
+      - name: Checkout Caller Repository
         uses: actions/checkout@v4
 
+      - name: Checkout MicroVM Action
+        uses: actions/checkout@v4
+        with:
+          repository: alonlevin1-coder/runner-criu-test
+          ref: port/is-vm-worker-migration
+          path: .github/actions/microvm
+
       - name: Migrate to MicroVM
-        uses: alonlevin1-coder/runner-criu-test@port/is-vm-worker-migration
+        uses: ./.github/actions/microvm
         with:
           tcp-mode: ${{ inputs.tcp-mode }}
           memory-mb: ${{ inputs.memory-mb }}

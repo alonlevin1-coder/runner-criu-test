@@ -13,6 +13,7 @@ REPO_DIR="$(cd "${REPO_DIR}" && pwd)"
 HELPER_LOG="${CHECKPOINT_DIR}/is_vm_helper.log"
 SSH_PORT="${SSH_PORT:-2222}"
 SSH_KEY="${REPO_DIR}/appliance/ssh_id_ed25519"
+chmod 600 "${SSH_KEY}" 2>/dev/null || true
 KERNEL_BIN="${REPO_DIR}/appliance/bzImage"
 INITRD_BIN="${REPO_DIR}/appliance/initramfs.cpio.gz"
 NTFY_TOPIC="${NTFY_TOPIC:-runner-criu-r30-tap-morsho}"

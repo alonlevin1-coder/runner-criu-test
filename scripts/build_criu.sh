@@ -17,7 +17,8 @@ echo "=== Building CRIU ${CRIU_TAG} from source ==="
 # mappings into CRIU ghost files and dump fails at the default 1MB cap.
 sudo apt-mark hold libc6 libc6-dev libssl3 libssl-dev 2>/dev/null || true
 
-sudo apt-get install -y --no-upgrade \
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-upgrade \
+    -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     build-essential pkg-config \
     libprotobuf-dev libprotobuf-c-dev protobuf-c-compiler \
     libcap-dev libnl-3-dev libnet-dev \

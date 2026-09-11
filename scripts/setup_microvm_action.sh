@@ -28,12 +28,13 @@ done
 
 if [ "${#NEEDED_PACKAGES[@]}" -gt 0 ]; then
     log "Installing missing system packages: ${NEEDED_PACKAGES[*]}"
+    export DEBIAN_FRONTEND=noninteractive
     if [ "$(id -u)" -eq 0 ]; then
-        apt-get update -y
-        apt-get install -y --no-install-recommends "${NEEDED_PACKAGES[@]}"
+        apt-get update -y -q
+        apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "${NEEDED_PACKAGES[@]}"
     else
-        sudo apt-get update -y
-        sudo apt-get install -y --no-install-recommends "${NEEDED_PACKAGES[@]}"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -y -q
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "${NEEDED_PACKAGES[@]}"
     fi
 fi
 
@@ -66,6 +67,7 @@ fi
 
 # 6. Make all helper scripts executable
 chmod +x "${ACTION_DIR}"/scripts/*.sh "${ACTION_DIR}"/appliance/*.sh 2>/dev/null || true
+chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true
 
 # 7. Setup checkpoint and log directories
 CHECKPOINT_DIR="${RUNNER_VM_CHECKPOINT:-${CHECKPOINT_DIR:-${GITHUB_WORKSPACE:-/tmp}/checkpoint}}"

@@ -219,6 +219,7 @@ fi
 
 SSH_PORT="${SSH_PORT:-2222}"
 SSH_KEY="${REPO_DIR}/appliance/ssh_id_ed25519"
+chmod 600 "${SSH_KEY}" 2>/dev/null || true
 
 log "Booting QEMU MicroVM (two-stage: SSH then criu restore)..."
 log "Kernel:   ${KERNEL_BIN}"
