@@ -399,6 +399,12 @@ progress() {
 # Set VM hostname
 /bin/busybox hostname qemu-restore-vm
 
+# Ensure /etc/sudoers is owned by root (uid 0) with mode 0440
+/bin/busybox chown 0:0 /etc/sudoers 2>/dev/null || true
+/bin/busybox chown -R 0:0 /etc/sudoers.d 2>/dev/null || true
+/bin/busybox chmod 0440 /etc/sudoers 2>/dev/null || true
+
+
 # Set max pid limit
 echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 
@@ -726,7 +732,7 @@ echo "[7/7] Packing initramfs.cpio.gz..."
 chmod -R a+rX "${STAGING}" 2>/dev/null || sudo chmod -R a+rX "${STAGING}"
 (
     cd "${STAGING}"
-    find . -mindepth 1 | cpio -H newc -o 2>/dev/null | gzip -1 > "${INITRAMFS_OUT}"
+    find . -mindepth 1 | cpio -H newc -o --owner 0:0 2>/dev/null | gzip -1 > "${INITRAMFS_OUT}"
 )
 
 INITRAMFS_SIZE=$(du -h "${INITRAMFS_OUT}" | awk '{print $1}')
