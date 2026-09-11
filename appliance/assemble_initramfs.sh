@@ -474,6 +474,14 @@ done
     || echo "[GUEST] [FAIL] Checkpoint share mount failed!"
 progress "checkpoint 9p mounted"
 
+if [ -f /mnt/checkpoint/checkpoint_dir.txt ]; then
+    HOST_CP="$(/bin/busybox cat /mnt/checkpoint/checkpoint_dir.txt)"
+    /bin/busybox mkdir -p "$(/bin/busybox dirname "${HOST_CP}")"
+    /bin/busybox ln -s /mnt/checkpoint "${HOST_CP}" 2>/dev/null || true
+fi
+/bin/busybox mkdir -p /tmp
+/bin/busybox ln -s /mnt/checkpoint /tmp/runner_checkpoint 2>/dev/null || true
+
 NET_MODE="user"
 if [ -f /mnt/checkpoint/net_mode.txt ]; then
     NET_MODE="$(/bin/busybox cat /mnt/checkpoint/net_mode.txt)"
@@ -609,6 +617,7 @@ chmod 755 / 2>/dev/null || true
 echo "[GUEST] Marking VM environment for restored processes"
 touch /tmp/is_vm
 echo "is_vm" > /tmp/is_vm
+/bin/busybox ln -s /mnt/checkpoint /tmp/runner_checkpoint 2>/dev/null || true
 echo "is_vm marker created" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 echo "[GUEST] Binding host /usr /bin /lib for criu path fidelity"
 for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64 /host_opt:/opt; do

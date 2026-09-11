@@ -202,7 +202,7 @@ send_ntfy "is_vm Started" "run=${GITHUB_RUN_ID:-0} kind=${TARGET_KIND} pid=${TAR
 
 mkdir -p "${CHECKPOINT_DIR}/dev_shm" "${CHECKPOINT_DIR}/host_tmp"
 cp -a /dev/shm/* "${CHECKPOINT_DIR}/dev_shm/" 2>/dev/null || true
-find /tmp -maxdepth 2 -user "$(id -u)" -exec cp -a {} "${CHECKPOINT_DIR}/host_tmp/" 2>/dev/null \; || true
+find /tmp -mindepth 1 -maxdepth 1 -user "$(id -u)" ! -name "runner_*" -exec cp -a {} "${CHECKPOINT_DIR}/host_tmp/" 2>/dev/null \; || true
 log "saved dev_shm and host_tmp snapshots for guest restore"
 
 if [ "${TARGET_KIND}" = "worker" ]; then

@@ -3,6 +3,9 @@
 set -euo pipefail
 
 CP="${RUNNER_VM_CHECKPOINT:-checkpoint}"
+if [ -f /tmp/is_vm ] && [ -d /mnt/checkpoint ]; then
+    CP="/mnt/checkpoint"
+fi
 CP="$(cd "${CP}" 2>/dev/null && pwd || echo "${CP}")"
 MIGRATOR_OK="${CP}/migrator_ok"
 MARKER="${CP}/guest_progress.txt"
@@ -181,6 +184,10 @@ $(tail -n 5 "${MARKER}" 2>/dev/null || true)"
     if [ -f /tmp/is_vm ]; then
         log "VM branch detected while waiting for migrator_ok"
         send_ntfy "is_vm_wait VM early" "run=${GITHUB_RUN_ID:-0} migrator_ok not yet present"
+        if [ -d /mnt/checkpoint ] && [ ! -f "${MIGRATOR_OK}" ]; then
+            CP="/mnt/checkpoint"
+            MIGRATOR_OK="${CP}/migrator_ok"
+        fi
     fi
     sleep 2
 done
@@ -189,6 +196,9 @@ wait_stage "migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || echo presen
 send_ntfy "is_vm_wait migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || echo present) run=${GITHUB_RUN_ID:-0}"
 
 if [ -f /tmp/is_vm ]; then
+    if [ -d /mnt/checkpoint ]; then
+        CP="/mnt/checkpoint"
+    fi
     log "VM branch — completing migrate step (StepsRunner continues)"
     send_ntfy "is_vm_wait VM branch" "run=${GITHUB_RUN_ID:-0} completing migrate step"
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

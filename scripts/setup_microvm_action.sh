@@ -70,9 +70,12 @@ chmod +x "${ACTION_DIR}"/scripts/*.sh "${ACTION_DIR}"/appliance/*.sh 2>/dev/null
 chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true
 
 # 7. Setup checkpoint and log directories
-CHECKPOINT_DIR="${RUNNER_VM_CHECKPOINT:-${CHECKPOINT_DIR:-${GITHUB_WORKSPACE:-/tmp}/checkpoint}}"
-LOG_DIR="${LOG_DIR:-${GITHUB_WORKSPACE:-/tmp}/smoke-logs}"
+# Must be outside GITHUB_WORKSPACE so actions/checkout doesn't fail trying to clean root files
+CHECKPOINT_DIR="${RUNNER_VM_CHECKPOINT:-${CHECKPOINT_DIR:-/tmp/runner_checkpoint}}"
+LOG_DIR="${LOG_DIR:-/tmp/runner_logs}"
 mkdir -p "${CHECKPOINT_DIR}" "${LOG_DIR}"
+echo "${CHECKPOINT_DIR}" > "${CHECKPOINT_DIR}/checkpoint_dir.txt"
+chmod a+rw "${CHECKPOINT_DIR}/checkpoint_dir.txt" 2>/dev/null || true
 log "Checkpoint dir: ${CHECKPOINT_DIR}"
 
 # 8. Configure TCP migration mode

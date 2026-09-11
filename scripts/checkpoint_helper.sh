@@ -75,7 +75,7 @@ log "Saved /dev/shm contents to ${CHECKPOINT_DIR}/dev_shm"
 
 # Save host /tmp state if any
 mkdir -p "${CHECKPOINT_DIR}/host_tmp"
-find /tmp -maxdepth 2 -user "$(id -u)" -exec cp -a {} "${CHECKPOINT_DIR}/host_tmp/" 2>/dev/null || true
+find /tmp -mindepth 1 -maxdepth 1 -user "$(id -u)" ! -name "runner_*" -exec cp -a {} "${CHECKPOINT_DIR}/host_tmp/" 2>/dev/null \; || true
 log "Saved /tmp user state to ${CHECKPOINT_DIR}/host_tmp"
 
 # Settle delay: allow Step 2 bash process to settle into its builtin read loop
