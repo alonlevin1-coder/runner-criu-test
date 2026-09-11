@@ -1,0 +1,41 @@
+name: Reusable MicroVM Job
+
+on:
+  workflow_call:
+    inputs:
+      run:
+        description: 'Commands or script to execute inside the microVM'
+        required: true
+        type: string
+      tcp-mode:
+        description: 'CRIU TCP mode (established or close)'
+        required: false
+        type: string
+        default: 'established'
+      memory-mb:
+        description: 'RAM in MB for microVM'
+        required: false
+        type: string
+        default: '4096'
+      smp:
+        description: 'vCPUs for microVM'
+        required: false
+        type: string
+        default: '2'
+
+jobs:
+  microvm-runner:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Migrate to MicroVM
+        uses: ./
+        with:
+          tcp-mode: ${{ inputs.tcp-mode }}
+          memory-mb: ${{ inputs.memory-mb }}
+          smp: ${{ inputs.smp }}
+
+      - name: Execute User Workload in MicroVM
+        run: ${{ inputs.run }}

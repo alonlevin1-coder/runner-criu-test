@@ -400,9 +400,13 @@ else
     )
 fi
 
+MEM_ARG="${QEMU_MEM:-2G}"
+[[ "${MEM_ARG}" =~ ^[0-9]+$ ]] && MEM_ARG="${MEM_ARG}M"
+SMP_ARG="${QEMU_SMP:-2}"
+
 set +e
 qemu-system-x86_64 \
-    ${ACCEL_ARGS} -m 2G -smp 2 \
+    ${ACCEL_ARGS} -m "${MEM_ARG}" -smp "${SMP_ARG}" \
     -display none -monitor none \
     -kernel "${KERNEL_BIN}" \
     -initrd "${INITRD_BIN}" \

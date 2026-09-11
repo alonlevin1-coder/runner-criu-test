@@ -1,0 +1,52 @@
+name: Demo MicroVM Composite Action
+
+on:
+  workflow_dispatch:
+    inputs:
+      sleep_sec:
+        description: 'Seconds to stream live logs in microVM'
+        required: false
+        default: '30'
+
+jobs:
+  test-vm-action:
+    name: Test MicroVM Action (Single Uses Line)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Step on Host (Pre-migration marker)
+        run: |
+          echo "=== Step on Host ==="
+          echo "Host Kernel: $(uname -r)"
+          echo "Host Hostname: $(hostname)"
+          test ! -f /tmp/is_vm && echo "Confirmed running on Host."
+
+      - name: Migrate Runner to MicroVM
+        uses: ./
+        with:
+          tcp-mode: established
+          memory-mb: '4096'
+          smp: '2'
+
+      - name: Step 1 inside MicroVM (Environment Verification)
+        run: |
+          echo "=== Step inside MicroVM ==="
+          echo "VM Kernel: $(uname -r)"
+          echo "VM Hostname: $(hostname)"
+          if [ ! -f /tmp/is_vm ]; then
+            echo "ERROR: Expected to run inside MicroVM (/tmp/is_vm missing)!"
+            exit 1
+          fi
+          echo "CONFIRMED: Successfully executing inside MicroVM!"
+
+      - name: Step 2 inside MicroVM (Live Log Streaming)
+        run: |
+          TOTAL_TICKS="${{ inputs.sleep_sec || '30' }}"
+          echo "=== Live Streaming Logs inside MicroVM (${TOTAL_TICKS}s) ==="
+          for i in $(seq 1 "${TOTAL_TICKS}"); do
+            echo "lalala live stream tick ${i}/${TOTAL_TICKS} at $(date -u +%T) [VM native]"
+            sleep 1
+          done
+          echo "MicroVM live streaming step completed!"

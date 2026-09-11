@@ -1,0 +1,39 @@
+name: 'Run in MicroVM'
+description: 'Transparently migrates the GitHub Actions runner worker into an isolated QEMU microVM using CRIU, preserving live WebSocket log streaming'
+author: 'alonlevin1-coder'
+branding:
+  icon: 'cpu'
+  color: 'purple'
+
+inputs:
+  tcp-mode:
+    description: 'CRIU TCP migration mode (established or close)'
+    required: false
+    default: 'established'
+  memory-mb:
+    description: 'RAM allocated to QEMU microVM in megabytes'
+    required: false
+    default: '4096'
+  smp:
+    description: 'Number of vCPUs for QEMU microVM'
+    required: false
+    default: '2'
+  ntfy-topic:
+    description: 'Optional ntfy.sh topic for migration progress notifications'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Migrate Runner to MicroVM
+      shell: bash
+      env:
+        ACTION_DIR: ${{ github.action_path }}
+        INPUT_TCP_MODE: ${{ inputs.tcp-mode }}
+        INPUT_MEMORY_MB: ${{ inputs.memory-mb }}
+        INPUT_SMP: ${{ inputs.smp }}
+        INPUT_NTFY_TOPIC: ${{ inputs.ntfy-topic }}
+      run: |
+        chmod +x "${ACTION_DIR}/scripts/setup_microvm_action.sh"
+        "${ACTION_DIR}/scripts/setup_microvm_action.sh"
