@@ -221,6 +221,19 @@ if [ -f /etc/ld.so.conf ]; then
     cp -a /etc/ld.so.conf "${STAGING}/etc/ld.so.conf"
 fi
 
+# Copy /etc/alternatives (critical for Debian/Ubuntu symlinks like awk, cc, c++, editor)
+if [ -d /etc/alternatives ]; then
+    echo "  -> Copying /etc/alternatives symlinks..."
+    mkdir -p "${STAGING}/etc"
+    cp -a /etc/alternatives "${STAGING}/etc/"
+fi
+
+for ef in /etc/os-release /etc/environment /etc/magic /etc/mime.types; do
+    if [ -f "${ef}" ]; then
+        cp -a "${ef}" "${STAGING}/etc/" 2>/dev/null || true
+    fi
+done
+
 # SSL certificates
 mkdir -p "${STAGING}/etc/ssl" "${STAGING}/usr/lib/ssl"
 if [ -d /etc/ssl/certs ]; then
