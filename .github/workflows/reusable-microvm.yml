@@ -22,13 +22,9 @@ on:
         required: false
         type: string
         default: '2'
-      shell:
-        description: 'Shell for running commands'
-        required: false
-        type: string
-        default: 'bash'
 
 jobs:
+
   microvm-runner:
     runs-on: ubuntu-22.04
     steps:
@@ -43,5 +39,6 @@ jobs:
           smp: ${{ inputs.smp }}
 
       - name: Execute User Workload in MicroVM
-        shell: ${{ inputs.shell }}
+        shell: bash
         run: ${{ inputs.run }}
+
