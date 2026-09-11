@@ -54,6 +54,7 @@ jobs:
           NTFY_TOPIC: runner-criu-r30-tap-morsho
           UPLOAD_DEBUG_BRANCH: "0"
           ISOLATE_HOST_TCP_AFTER_DUMP: "1"
+          ACTIVATE_TAP_IMMEDIATELY: "1"
           TCP_CLOSE_TIMEOUT_SEC: "60"
           TAP_CUTOVER_TIMEOUT_SEC: "60"
           RESTORE_TIMEOUT_SEC: "180"

@@ -43,11 +43,6 @@ for dev in ${HOST_DEVS}; do
         run tc filter add dev "${dev}" parent ffff: protocol ip prio 1 u32 \
             match ip protocol 6 0xff \
             match ip dport "${sport}" 0xffff \
-            action csum ip tcp \
-            action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || \
-        run tc filter add dev "${dev}" parent ffff: protocol ip prio 1 u32 \
-            match ip protocol 6 0xff \
-            match ip dport "${sport}" 0xffff \
             action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || true
     done
 done

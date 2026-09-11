@@ -55,39 +55,40 @@ log "installed iptables MASQUERADE for ${TAP_SUBNET} out ${HOST_DEVS}"
 
 SPORTS_TO_REDIRECT="${WORKER_SPORTS:-${WORKER_SPORT:-}}"
 
-# If ACTIVATE_TAP_IMMEDIATELY=1, install TC filter and clean drop rules now.
-# Otherwise defer to host_tap_activate.sh (called by smoke_is_vm_helper.sh after criu restore)
-# to avoid guest kernel sending TCP RST for un-restored ports during QEMU boot.
-if [ "${ACTIVATE_TAP_IMMEDIATELY:-0}" = "1" ]; then
-    for dev in ${HOST_DEVS}; do
-        run tc qdisc add dev "${dev}" ingress 2>/dev/null || true
-        for sport in ${SPORTS_TO_REDIRECT}; do
-            [ -n "${sport}" ] || continue
-            log "installing tc ingress redirect: ${dev} dport=${sport} -> ${TAP_DEV}"
-            run tc filter add dev "${dev}" parent ffff: protocol ip prio 1 u32 \
-                match ip protocol 6 0xff \
-                match ip dport "${sport}" 0xffff \
-                action csum ip tcp \
-                action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || \
-            run tc filter add dev "${dev}" parent ffff: protocol ip prio 1 u32 \
-                match ip protocol 6 0xff \
-                match ip dport "${sport}" 0xffff \
-                action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || true
-        done
+log "activating TC ingress redirect immediately across host interfaces: ${HOST_DEVS}"
+for dev in ${HOST_DEVS}; do
+    run tc qdisc add dev "${dev}" ingress 2>/dev/null || true
+    for sport in ${SPORTS_TO_REDIRECT}; do
+        [ -n "${sport}" ] || continue
+        log "installing tc ingress redirect: ${dev} dport=${sport} -> ${TAP_DEV}"
+        run tc filter add dev "${dev}" parent ffff: protocol ip prio 1 u32 \
+            match ip protocol 6 0xff \
+            match ip dport "${sport}" 0xffff \
+            action mirred egress redirect dev "${TAP_DEV}" 2>/dev/null || true
     done
+done
 
-    for chain in INPUT OUTPUT; do
-        while read -r rule; do
-            [ -n "${rule}" ] || continue
-            del_rule="$(echo "${rule}" | sed "s/-A ${chain}/-D ${chain}/")"
-            # shellcheck disable=SC2086
-            run iptables ${del_rule} 2>/dev/null || true
-            log "deleted rule: ${del_rule}"
-        done < <(run iptables -S "${chain}" 2>/dev/null | grep -i 0xc114 | grep -i drop || true)
-    done
-else
-    log "deferring TC redirect and drop rule removal to host_tap_activate.sh (post-restore)"
-fi
+# Keep host TCP stack completely isolated from the migrated connections:
+# 1. Inbound packets reaching host stack (INPUT) are dropped so host never generates RSTs.
+# 2. Outbound packets from host kernel (OUTPUT) for these sports (e.g. spurious TCP RSTs) are dropped.
+# Note: MicroVM packets traverse the FORWARD chain and are completely unaffected.
+for sport in ${SPORTS_TO_REDIRECT}; do
+    [ -n "${sport}" ] || continue
+    run iptables -I INPUT 1 -p tcp --dport "${sport}" -j DROP 2>/dev/null || true
+    run iptables -I OUTPUT 1 -p tcp --sport "${sport}" -j DROP 2>/dev/null || true
+    log "installed host isolation DROP rules for sport=${sport}"
+done
+
+# Clean up temporary CRIU 0xC114 DROP rules
+for chain in INPUT OUTPUT; do
+    while read -r rule; do
+        [ -n "${rule}" ] || continue
+        del_rule="$(echo "${rule}" | sed "s/-A ${chain}/-D ${chain}/")"
+        # shellcheck disable=SC2086
+        run iptables ${del_rule} 2>/dev/null || true
+        log "deleted rule: ${del_rule}"
+    done < <(run iptables -S "${chain}" 2>/dev/null | grep -i 0xc114 | grep -i drop || true)
+done
 
 if ! ip -o addr show to "${LOCAL_IP}" 2>/dev/null | grep -q .; then
     log "ERROR: LOCAL_IP missing from host after cutover"
@@ -102,6 +103,6 @@ if command -v tcpdump >/dev/null 2>&1; then
 fi
 
 echo "tap" > "${CHECKPOINT_DIR}/net_mode.txt"
-echo "host_tap_cutover=yes tap_dev=${TAP_DEV} tc_redirect=deferred sports=${SPORTS_TO_REDIRECT}" >> "${CHECKPOINT_DIR}/state.txt"
+echo "host_tap_cutover=yes tap_dev=${TAP_DEV} tc_redirect=active sports=${SPORTS_TO_REDIRECT}" >> "${CHECKPOINT_DIR}/state.txt"
 chmod a+rw "${CHECKPOINT_DIR}/net_mode.txt" 2>/dev/null || true
-log "cutover OK (eth0 IP preserved, accept_local active on ${TAP_DEV} & ${HOST_DEV}, sports: ${SPORTS_TO_REDIRECT})"
+log "cutover OK (eth0 IP preserved, tc redirect active on all host devs, sports: ${SPORTS_TO_REDIRECT})"
