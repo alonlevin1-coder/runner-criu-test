@@ -281,16 +281,19 @@ for ef in /etc/os-release /etc/environment /etc/magic /etc/mime.types; do
 done
 
 # Sudo configuration
-if [ -f /etc/sudoers ]; then
-    cp -a /etc/sudoers "${STAGING}/etc/sudoers"
-    chmod 0440 "${STAGING}/etc/sudoers" 2>/dev/null || true
-fi
-if [ -d /etc/sudoers.d ]; then
-    mkdir -p "${STAGING}/etc/sudoers.d"
-    cp -a /etc/sudoers.d/* "${STAGING}/etc/sudoers.d/" 2>/dev/null || true
-    chmod 0750 "${STAGING}/etc/sudoers.d" 2>/dev/null || true
-    chmod 0440 "${STAGING}/etc/sudoers.d"/* 2>/dev/null || true
-fi
+mkdir -p "${STAGING}/etc/sudoers.d"
+cat << 'EOF' > "${STAGING}/etc/sudoers"
+Defaults	env_reset
+Defaults	mail_badpass
+Defaults	secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+root	ALL=(ALL:ALL) ALL
+runner	ALL=(ALL:ALL) NOPASSWD: ALL
+%admin	ALL=(ALL:ALL) ALL
+%sudo	ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+chmod 0440 "${STAGING}/etc/sudoers" 2>/dev/null || true
+
 
 
 # SSL certificates
