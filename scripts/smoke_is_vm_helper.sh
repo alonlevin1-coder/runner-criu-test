@@ -377,6 +377,7 @@ stage_mark "qemu_start" "net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
 send_ntfy "is_vm Booting QEMU" "run=${GITHUB_RUN_ID:-0} accel=${ACCEL_ARGS} net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
 
 VIRTFS_ARGS=(
+    -virtfs "local,path=/,mount_tag=host_root,security_model=none,readonly=on,id=host_root"
     -virtfs "local,path=${RUNNER_HOME},mount_tag=host_runner,security_model=none,id=host_runner"
     -virtfs "local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp"
     -virtfs "local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib"

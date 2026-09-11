@@ -65,6 +65,7 @@ BB_APPLETS=(
     sh mount umount mkdir rm cp mv ln ls ps cat echo grep egrep sed awk
     sleep sync date hostname uname ifconfig ip route insmod modprobe rmmod
     poweroff reboot tr find chmod chown test kill killall tail head vi readlink
+    pivot_root switch_root
 )
 for applet in "${BB_APPLETS[@]}"; do
     ln -sf /bin/busybox "${STAGING}/bin/${applet}"
@@ -467,16 +468,16 @@ for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetli
     fi
 done
 
-# Load 9p virtio filesystem modules in dependency order
-for mod in netfs 9pnet 9pnet_virtio 9p; do
+# Load 9p virtio filesystem and overlay modules in dependency order
+for mod in netfs 9pnet 9pnet_virtio 9p overlay; do
     if [ -f "/modules/${mod}.ko" ]; then
         if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
             echo "[GUEST] [OK] Loaded module ${mod}"
         else
-            echo "[GUEST] [FAIL] Failed to load 9p module ${mod}"
+            echo "[GUEST] [FAIL] Failed to load module ${mod}"
         fi
     else
-        echo "[GUEST] [FAIL] 9p module /modules/${mod}.ko not found!"
+        echo "[GUEST] [FAIL] Module /modules/${mod}.ko not found!"
     fi
 done
 
@@ -527,7 +528,121 @@ echo "=== Kernel:   $(/bin/busybox uname -r)                 ==="
 echo "=== PID 1:    /bin/busybox sh /init                    ==="
 echo "=========================================================="
 
-# Mount remaining 9p shares
+# Check if Host Rootfs (read-only) is available for OverlayFS projection
+/bin/busybox mkdir -p /mnt/host_root /mnt/cow /newroot
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_root /mnt/host_root 2>/dev/null; then
+    echo "[GUEST] [OK] Mounted host_root read-only"
+    /bin/busybox mount -t tmpfs -o mode=0755 tmpfs /mnt/cow
+    /bin/busybox mkdir -p /mnt/cow/upper /mnt/cow/work
+
+    if /bin/busybox mount -t overlay overlay -o lowerdir=/mnt/host_root,upperdir=/mnt/cow/upper,workdir=/mnt/cow/work,index=off,metacopy=off /newroot 2>&1; then
+        echo "[GUEST] [OK] Mounted unified OverlayFS on /newroot"
+
+        # Prepare newroot directories
+        /bin/busybox mkdir -p /newroot/tmp /newroot/run /newroot/mnt/checkpoint /newroot/dev /newroot/proc /newroot/sys /newroot/etc/dropbear /newroot/root/.ssh /newroot/old_root
+
+        # Mark VM
+        /bin/busybox touch /newroot/tmp/is_vm
+        echo "is_vm" > /newroot/tmp/is_vm
+
+        # Static DNS
+        cat << 'DNSEOF' > /newroot/etc/resolv.conf
+nameserver 192.168.100.1
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+DNSEOF
+
+        # Mask conflicting systemd units in overlay upperdir
+        mkdir -p /newroot/etc/systemd/system /newroot/etc/systemd/network
+        for svc in $(find /newroot/etc/systemd/system -name 'actions.runner*.service' 2>/dev/null); do
+            ln -sf /dev/null "/newroot/etc/systemd/system/$(basename "$svc")"
+        done
+        for svc in walinuxagent.service cloud-init.service cloud-init-local.service \
+                   cloud-config.service cloud-final.service azure-setup.service \
+                   unattended-upgrades.service apt-daily.service apt-daily.timer \
+                   apt-daily-upgrade.service apt-daily-upgrade.timer \
+                   snapd.service snapd.socket snapd.seeded.service \
+                   systemd-udev-settle.service \
+                   systemd-networkd.service systemd-networkd-wait-online.service \
+                   NetworkManager.service; do
+            ln -sf /dev/null "/newroot/etc/systemd/system/${svc}"
+        done
+        cat << 'NETEOF' > /newroot/etc/systemd/network/99-unmanaged-all.network
+[Match]
+Name=eth* tap* lo
+
+[Link]
+Unmanaged=yes
+NETEOF
+
+        # Mount checkpoint into newroot & stage images
+        mkdir -p /newroot/tmp/restore
+        /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=none checkpoint /newroot/mnt/checkpoint 2>/dev/null || true
+        /bin/busybox cp -a /newroot/mnt/checkpoint/*.img /newroot/mnt/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
+        /bin/busybox chmod -R 777 /newroot/tmp/restore 2>/dev/null || true
+        /bin/busybox ln -sf /mnt/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
+        if [ -n "${HOST_CP:-}" ]; then
+            /bin/busybox mkdir -p "$(/bin/busybox dirname "/newroot/${HOST_CP}")"
+            /bin/busybox ln -sf /mnt/checkpoint "/newroot/${HOST_CP}" 2>/dev/null || true
+        fi
+
+        # Install t9_restore.sh in newroot
+        cp -a /usr/sbin/t9_restore.sh /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
+        chmod 755 /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
+
+        # Pivot root into /newroot
+        echo "[GUEST] Pivoting root into unified Ubuntu rootfs..."
+        cd /newroot
+        /bin/busybox pivot_root . old_root
+
+        # Remount core pseudo-filesystems in native root
+        /bin/busybox mount -t proc proc /proc
+        /bin/busybox mount -t sysfs sysfs /sys
+        /bin/busybox mount -t devtmpfs devtmpfs /dev
+        /bin/busybox mkdir -p /dev/pts /dev/shm
+        /bin/busybox mount -t devpts devpts /dev/pts
+        /bin/busybox mount -t tmpfs tmpfs /dev/shm
+        /bin/busybox mount -t tmpfs -o mode=0755 tmpfs /run
+        /bin/busybox mkdir -p /run/user/1001 /run/lock /var/run
+        /bin/busybox chown 1001:1001 /run/user/1001 2>/dev/null || true
+
+        # Restore /dev/shm from checkpoint if present
+        if [ -d /mnt/checkpoint/dev_shm ]; then
+            echo "[GUEST] Restoring /dev/shm from host..."
+            cp -a /mnt/checkpoint/dev_shm/* /dev/shm/ 2>/dev/null || true
+            chmod 1777 /dev/shm
+        fi
+
+        # Start Dropbear SSH inside the new root
+        mkdir -p /var/run /var/log /etc/dropbear /root/.ssh
+        chown -R 0:0 /root /etc/dropbear 2>/dev/null || true
+        chmod 755 /root
+        chmod 700 /root/.ssh
+        cp -a /old_root/root/.ssh/* /root/.ssh/ 2>/dev/null || true
+        chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+
+        echo "[GUEST] Starting Dropbear SSH on port 22 in pivoted root..."
+        if [ -x /usr/sbin/dropbear ]; then
+            /usr/sbin/dropbear -R -E -s -p 22 2>&1 || /old_root/usr/sbin/dropbear -R -E -s -p 22 2>&1 || true
+        else
+            /old_root/usr/sbin/dropbear -R -E -s -p 22 2>&1 || true
+        fi
+        echo SSH_READY
+        echo "[GUEST] SSH_READY — full Ubuntu userspace active!"
+        progress "SSH_READY_OVERLAY"
+
+        while true; do
+            /bin/busybox sleep 30
+            progress "appliance still up (overlay root)"
+        done
+    else
+        echo "[GUEST] [WARN] OverlayFS mount failed, falling back to legacy 9p mounts"
+    fi
+else
+    echo "[GUEST] [INFO] host_root share not present, using legacy 9p mounts"
+fi
+
+# Fallback: Mount individual 9p shares
 /bin/busybox mkdir -p /home/runner /host_tmp /mnt/usrlib /host_usr /host_bin /host_lib /host_lib64 /host_opt /opt /usr/share/dotnet
 
 echo "[GUEST] Mounting 9p shares..."

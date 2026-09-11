@@ -1,0 +1,143 @@
+name: Full Tooling MicroVM Verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [port/is-vm-worker-migration]
+    paths:
+      - '.github/workflows/test-full-tooling-vm.yml'
+      - '.github/workflows/reusable-microvm.yml'
+      - 'scripts/smoke_is_vm_helper.sh'
+      - 'appliance/assemble_initramfs.sh'
+
+jobs:
+  run-full-tooling-suite:
+    name: Test Full Toolchain in MicroVM
+    uses: ./.github/workflows/reusable-microvm.yml
+    with:
+      tcp-mode: established
+      memory-mb: '4096'
+      smp: '2'
+      run: |
+        set -euo pipefail
+
+        echo "================================================================="
+        echo "=== STARTING COMPREHENSIVE FULL TOOLING MICROVM TEST SUITE   ==="
+        echo "================================================================="
+
+        echo ""
+        echo "--- 1. Environment & Kernel Isolation ---"
+        KERNEL="$(uname -r)"
+        HOST="$(hostname)"
+        echo "MicroVM Kernel: ${KERNEL}"
+        echo "MicroVM Hostname: ${HOST}"
+        if [ ! -f /tmp/is_vm ]; then
+          echo "FAIL: /tmp/is_vm marker not found!"
+          exit 1
+        fi
+        echo "PASS: Environment verified inside MicroVM (/tmp/is_vm present)!"
+
+        echo ""
+        echo "--- 2. PHP Runtime (User-Requested Toolchain) ---"
+        php -v
+        php -r "echo 'PHP Execution OK: 21 * 2 = ' . (21 * 2) . PHP_EOL;"
+        echo "Installed PHP extensions:"
+        php -m | head -n 15
+        echo "PASS: PHP runtime verified!"
+
+        echo ""
+        echo "--- 3. Python 3 Runtime & SSL ---"
+        python3 --version
+        python3 -c "import sys, platform, ssl; print(f'Python {sys.version.split()[0]} on {platform.system()} with OpenSSL {ssl.OPENSSL_VERSION}')"
+        echo "PASS: Python 3 verified!"
+
+        echo ""
+        echo "--- 4. Node.js & NPM Toolchains ---"
+        echo "Node Version: $(node -v)"
+        echo "NPM Version:  $(npm -v)"
+        node -e "console.log('Node.js math execution: ' + (1337 + 42))"
+        echo "PASS: Node.js and NPM verified!"
+
+        echo ""
+        echo "--- 5. Docker Engine & Container Execution ---"
+        docker version --format 'Client: {{.Client.Version}} | Server: {{.Server.Version}}' || docker version
+        docker info | grep -E "Server Version|Operating System|Storage Driver" || true
+        echo "Launching test container..."
+        docker run --rm alpine:latest sh -c "echo 'Hello World from Docker Alpine container running in MicroVM! Date: $(date -u)'"
+        echo "PASS: Docker container lifecycle verified!"
+
+        echo ""
+        echo "--- 6. Java Development Kit (JDK) ---"
+        java -version
+        javac -version
+        echo "PASS: Java runtime and compiler verified!"
+
+        echo ""
+        echo "--- 7. Go Toolchain ---"
+        go version
+        echo "Go Root: $(go env GOROOT)"
+        echo "PASS: Go toolchain verified!"
+
+        echo ""
+        echo "--- 8. Rust & Cargo Toolchain ---"
+        rustc --version
+        cargo --version
+        echo "PASS: Rust and Cargo verified!"
+
+        echo ""
+        echo "--- 9. Ruby Runtime ---"
+        ruby -v
+        ruby -e 'puts "Ruby math verification: #{10 * 10}"'
+        echo "PASS: Ruby verified!"
+
+        echo ""
+        echo "--- 10. .NET SDK & Runtimes ---"
+        dotnet --version
+        dotnet --list-runtimes
+        echo "PASS: .NET SDK verified!"
+
+        echo ""
+        echo "--- 11. C/C++ Native Compilers (GCC & Clang) ---"
+        gcc --version | head -n 1
+        cat << 'CEOF' > /tmp/microvm_tooling_test.c
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <string.h>
+
+        int main(void) {
+            char buffer[64];
+            snprintf(buffer, sizeof(buffer), "MicroVM Native C Tooling Verified: %d", 2026);
+            printf("%s\n", buffer);
+            return 0;
+        }
+        CEOF
+        gcc -O2 -Wall /tmp/microvm_tooling_test.c -o /tmp/microvm_tooling_test
+        /tmp/microvm_tooling_test
+        rm -f /tmp/microvm_tooling_test*
+        echo "PASS: GCC compilation and execution verified!"
+
+        echo ""
+        echo "--- 12. Package Manager & DPKG Database ---"
+        echo "Total installed Debian packages:"
+        dpkg -l | wc -l
+        echo "Sample package status:"
+        dpkg -s libc6 | grep -E "Package|Version|Status"
+        echo "PASS: DPKG database intact!"
+
+        echo ""
+        echo "--- 13. External Networking, DNS & GitHub API ---"
+        echo "Testing outbound HTTPS connection..."
+        ZEN=$(curl -sSf --max-time 10 https://api.github.com/zen)
+        echo "GitHub Zen: \"${ZEN}\""
+        [ -n "${ZEN}" ] || { echo "FAIL: Empty response from GitHub API"; exit 1; }
+        echo "PASS: External networking and HTTPS verified!"
+
+        echo ""
+        echo "--- 14. Workspace Git Integrity ---"
+        git status --short
+        echo "PASS: Git repository status verified!"
+
+        echo ""
+        echo "================================================================="
+        echo "=== ALL TOOLING TESTS PASSED SUCCESSFULLY INSIDE THE MICROVM! ==="
+        echo "================================================================="

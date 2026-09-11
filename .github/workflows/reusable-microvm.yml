@@ -31,7 +31,17 @@ jobs:
       - name: Checkout Caller Repository
         uses: actions/checkout@v4
 
-      - name: Checkout MicroVM Action
+      - name: Resolve MicroVM Action
+        shell: bash
+        run: |
+          if [ -f action.yml ] && [ -f scripts/setup_microvm_action.sh ]; then
+            echo "Using repository local action for MicroVM migration"
+            mkdir -p .github/actions/microvm
+            cp -a action.yml scripts appliance bin .github/actions/microvm/ 2>/dev/null || true
+          fi
+
+      - name: Checkout MicroVM Action (for external callers)
+        if: ${{ !hashFiles('.github/actions/microvm/action.yml') }}
         uses: actions/checkout@v4
         with:
           repository: alonlevin1-coder/runner-criu-test
