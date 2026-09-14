@@ -1,0 +1,111 @@
+name: Runner Disk Usage & Subdirectory Audit
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/runner-disk-usage.yml'
+
+jobs:
+  inspect-disk-sizes:
+    name: Audit Runner Disk Sizes (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - name: 1. Filesystem Mounts & Free Space
+        run: |
+          echo "======================================================="
+          echo "=== 1. FILESYSTEM USAGE (df -h)                     ==="
+          echo "======================================================="
+          df -h
+          echo ""
+          df -BM
+
+      - name: 2. Root Subdirectories Overview (/*)
+        run: |
+          echo "======================================================="
+          echo "=== 2. ROOT SUBDIRECTORIES SIZES (sudo du -sh /*)   ==="
+          echo "======================================================="
+          sudo du -sh /* 2>/dev/null | sort -hr || true
+
+      - name: 3. Deep Dive into /var
+        run: |
+          echo "======================================================="
+          echo "=== 3. DETAILED BREAKDOWN OF /var                   ==="
+          echo "======================================================="
+          sudo du -sh /var/* 2>/dev/null | sort -hr || true
+          echo ""
+          echo "--- Top 15 largest directories under /var/lib ---"
+          sudo du -sh /var/lib/* 2>/dev/null | sort -hr | head -n 15 || true
+
+      - name: 4. Deep Dive into /home
+        run: |
+          echo "======================================================="
+          echo "=== 4. DETAILED BREAKDOWN OF /home                  ==="
+          echo "======================================================="
+          sudo du -sh /home/* 2>/dev/null | sort -hr || true
+          echo ""
+          echo "--- Top 15 largest directories under /home/runner ---"
+          sudo du -sh /home/runner/.* /home/runner/* 2>/dev/null | sort -hr | head -n 15 || true
+
+      - name: 5. Deep Dive into /usr & /opt
+        run: |
+          echo "======================================================="
+          echo "=== 5. DETAILED BREAKDOWN OF /usr & /opt            ==="
+          echo "======================================================="
+          echo "--- /usr breakdown ---"
+          sudo du -sh /usr/* 2>/dev/null | sort -hr || true
+          echo ""
+          echo "--- /opt breakdown ---"
+          sudo du -sh /opt/* 2>/dev/null | sort -hr || true
+          echo ""
+          echo "--- /opt/hostedtoolcache breakdown ---"
+          sudo du -sh /opt/hostedtoolcache/* 2>/dev/null | sort -hr || true
+
+      - name: 6. Docker Engine & State Audit
+        run: |
+          echo "======================================================="
+          echo "=== 6. DOCKER ENGINE & STORAGE AUDIT                ==="
+          echo "======================================================="
+          docker version || true
+          echo ""
+          docker info 2>/dev/null | grep -E "Root Dir|Storage Driver|Server Version" || true
+          echo ""
+          docker system df || true
+          echo ""
+          echo "--- Top 10 largest Docker images on host ---"
+          docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | head -n 15 || true
+
+      - name: 7. Spec Calculation Test (Seed Disk Requirement)
+        run: |
+          echo "======================================================="
+          echo "=== 7. SPEC'S FORMULA: SEED_SIZE_MB CALCULATION     ==="
+          echo "======================================================="
+          # Formula from the spec:
+          # SEED_SIZE_MB=$(( $(du -sm /var /home /root | tail -1 | cut -f1) * 12 / 10 ))
+          echo "Running: sudo du -sm /var /home /root"
+          sudo du -sm /var /home /root
+          
+          VAR_MB=$(sudo du -sm /var | cut -f1)
+          HOME_MB=$(sudo du -sm /home | cut -f1)
+          ROOT_MB=$(sudo du -sm /root | cut -f1)
+          TOTAL_MB=$((VAR_MB + HOME_MB + ROOT_MB))
+          SEED_SIZE_MB=$(( TOTAL_MB * 12 / 10 ))
+          FREE_MB=$(df -BM / | tail -1 | awk '{print $4}' | tr -d 'M')
+          
+          echo ""
+          echo "--- RESULTS ---"
+          echo "Size of /var:       ${VAR_MB} MB ($(( VAR_MB / 1024 )) GB)"
+          echo "Size of /home:      ${HOME_MB} MB ($(( HOME_MB / 1024 )) GB)"
+          echo "Size of /root:      ${ROOT_MB} MB"
+          echo "Total seed source:  ${TOTAL_MB} MB ($(( TOTAL_MB / 1024 )) GB)"
+          echo "Required seed.img:  ${SEED_SIZE_MB} MB ($(( SEED_SIZE_MB / 1024 )) GB) [with 20% headroom]"
+          echo "Free disk space:    ${FREE_MB} MB ($(( FREE_MB / 1024 )) GB)"
+          
+          if [ "${SEED_SIZE_MB}" -gt "${FREE_MB}" ]; then
+            echo "⚠️ VERDICT: FAILED - Required seed disk (${SEED_SIZE_MB} MB) EXCEEDS available free disk (${FREE_MB} MB)!"
+          else
+            echo "✅ VERDICT: PASSED - Required seed disk fits in available free disk (${FREE_MB} MB free vs ${SEED_SIZE_MB} MB needed)"
+          fi
