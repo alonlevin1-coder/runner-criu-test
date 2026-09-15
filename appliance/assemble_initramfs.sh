@@ -956,6 +956,7 @@ cat << 'RESTOREEOF' > "${STAGING}/usr/sbin/t9_restore.sh"
 #!/bin/busybox sh
 # Run from SSH after appliance boot. Does not dump; only restore.
 set +e
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 if [ -f /mnt/checkpoint/state.txt ]; then
     echo "t9_restore start" >> /mnt/checkpoint/guest_progress.txt
 fi
@@ -1067,7 +1068,6 @@ if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
     esac
 fi
 echo "[GUEST] t9_restore: criu restore ${TCP_FLAG}"
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 CRIU_BIN=""
 for candidate in /usr/local/sbin/criu /usr/sbin/criu /sbin/criu; do
     if [ -x "$candidate" ]; then CRIU_BIN="$candidate"; break; fi
