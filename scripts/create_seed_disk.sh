@@ -64,14 +64,21 @@ if [ "${IS_CI}" -eq 1 ]; then
     sudo mkdir -p "${MOUNT_POINT}/var" "${MOUNT_POINT}/home/runner" "${MOUNT_POINT}/root"
     
     safe_rsync() {
+        local logfile
+        logfile="$(mktemp)"
         set +e
-        sudo rsync "$@"
+        sudo rsync -v "$@" 2>"${logfile}"
         local rc=$?
         set -e
         # rsync exit code 24 = vanished/modified source files (e.g. active log rotation)
-        if [ "$rc" -ne 0 ] && [ "$rc" -ne 24 ]; then
+        if [ "$rc" -eq 24 ]; then
+            echo "[SEED DISK] rsync note: source files vanished during sync (rc=24):"
+            grep -E 'vanished|No such file' "${logfile}" || cat "${logfile}"
+        elif [ "$rc" -ne 0 ]; then
             echo "[SEED DISK] rsync warning: exited with code ${rc}" >&2
+            cat "${logfile}" >&2
         fi
+        rm -f "${logfile}"
         return 0
     }
 

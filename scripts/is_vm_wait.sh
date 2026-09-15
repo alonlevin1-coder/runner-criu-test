@@ -142,9 +142,31 @@ send_ntfy "is_vm_wait waiting" "run=${GITHUB_RUN_ID:-0} cp=${CP} max=${IS_VM_MAX
 touch "${CP}/wait_loop_ready"
 log "signaled wait_loop_ready"
 
+unfreeze_host_tree() {
+    local pidfile="${CP}/sigstopped_pids.txt"
+    if [ -f "${pidfile}" ]; then
+        log "UNFREEZING host worker tree to prevent runner deadlock..."
+        while read -r p; do
+            [ -n "${p}" ] || continue
+            kill -CONT "${p}" 2>/dev/null || sudo kill -CONT "${p}" 2>/dev/null || true
+        done < "${pidfile}"
+        echo "host_tree_unfrozen=yes" >> "${CP}/state.txt" 2>/dev/null || true
+    fi
+}
+
+on_wait_exit() {
+    local rc=$?
+    if [ ! -f "${MIGRATOR_OK}" ] && [ ! -f "${CP}/vm_done" ]; then
+        log "is_vm_wait exiting (rc=${rc}) without migrator_ok/vm_done — ensuring host tree unfrozen"
+        unfreeze_host_tree
+    fi
+}
+trap on_wait_exit EXIT
+
 check_migration_failed() {
     if [ -f "${CP}/helper_failed" ]; then
         log "helper_failed — migration aborted"
+        unfreeze_host_tree
         [ -f "${CP}/dump.rc" ] && log "dump.rc=$(cat "${CP}/dump.rc")"
         [ -f "${CP}/restore.rc" ] && log "restore.rc=$(cat "${CP}/restore.rc")"
         wait_stage "fail" "helper_failed"
@@ -155,6 +177,7 @@ $(tail -n 8 "${MARKER}" 2>/dev/null || true)"
     fi
     if [ -f "${CP}/dump.rc" ] && [ "$(cat "${CP}/dump.rc")" != "0" ]; then
         log "dump failed rc=$(cat "${CP}/dump.rc")"
+        unfreeze_host_tree
         send_ntfy "is_vm_wait FAIL" "dump.rc=$(cat "${CP}/dump.rc") run=${GITHUB_RUN_ID:-0}"
         exit 1
     fi
@@ -168,6 +191,7 @@ while [ ! -f "${MIGRATOR_OK}" ]; do
     NOW=$(date +%s)
     if [ $((NOW - START)) -ge "${MAX_WAIT}" ]; then
         log "timeout after ${MAX_WAIT}s waiting for migrator_ok"
+        unfreeze_host_tree
         wait_stage "timeout" "no migrator_ok after ${MAX_WAIT}s"
         send_ntfy "is_vm_wait TIMEOUT" "no migrator_ok after ${MAX_WAIT}s run=${GITHUB_RUN_ID:-0}
 $(checkpoint_snapshot)

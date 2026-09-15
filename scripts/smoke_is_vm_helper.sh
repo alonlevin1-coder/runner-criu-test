@@ -77,38 +77,40 @@ finalize_host_tree() {
     if [ ! -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
         return 0
     fi
-    if [ -f "${CHECKPOINT_DIR}/helper_failed" ] || [ -f "${CHECKPOINT_DIR}/ssh_failed" ] || [ "${HELPER_EXIT_RC:-0}" -ne 0 ]; then
-        log "migration failed — unfreezing host tree to prevent runner deadlock"
+
+    # Check if migration succeeded (migrator_ok or vm_done present)
+    if [ -f "${CHECKPOINT_DIR}/migrator_ok" ] || [ -f "${CHECKPOINT_DIR}/vm_done" ]; then
+        if [ -f "${CHECKPOINT_DIR}/vm_done" ] \
+            && grep -qE 'tag=vm_(entry|loop|branch)' "${CHECKPOINT_DIR}/vm_done" 2>/dev/null \
+            && [ "${KILL_HOST_WORKER_AFTER_MIGRATE:-0}" = "1" ]; then
+            log "VM owns continuation — stopping host Worker tree"
+            while read -r pid; do
+                [ -n "${pid}" ] || continue
+                kill -9 "${pid}" 2>/dev/null || sudo kill -9 "${pid}" 2>/dev/null || true
+            done < "${CHECKPOINT_DIR}/sigstopped_pids.txt"
+            echo "host_worker_stopped=yes" >> "${CHECKPOINT_DIR}/state.txt"
+            return 0
+        fi
+        if [ "${CRIU_TCP_MODE}" = "established" ]; then
+            log "tcp-established mode: migration succeeded — host Worker stays frozen"
+            return 0
+        fi
+        if host_tree_already_unfrozen; then
+            log "host tree already unfrozen (migrator_ok branch path)"
+            return 0
+        fi
+        log "migration succeeded — SIGCONT host tree"
         unfreeze_tree "${CHECKPOINT_DIR}"
         return 0
     fi
-    if [ -f "${CHECKPOINT_DIR}/state.txt" ] \
-        && grep -qE 'host_tree_frozen_forever=yes|host_tree_killed=yes|host_worker_killed=yes' \
-            "${CHECKPOINT_DIR}/state.txt" 2>/dev/null; then
-        log "host tree must stay frozen (GHA tcp-established) — skip unfreeze"
-        return 0
-    fi
-    if [ -f "${CHECKPOINT_DIR}/vm_done" ] \
-        && grep -qE 'tag=vm_(entry|loop|branch)' "${CHECKPOINT_DIR}/vm_done" 2>/dev/null \
-        && [ "${KILL_HOST_WORKER_AFTER_MIGRATE:-0}" = "1" ]; then
-        log "VM owns continuation — stopping host Worker tree"
-        while read -r pid; do
-            [ -n "${pid}" ] || continue
-            kill -9 "${pid}" 2>/dev/null || sudo kill -9 "${pid}" 2>/dev/null || true
-        done < "${CHECKPOINT_DIR}/sigstopped_pids.txt"
-        echo "host_worker_stopped=yes" >> "${CHECKPOINT_DIR}/state.txt"
-        return 0
-    fi
-    if host_tree_already_unfrozen; then
-        log "host tree already unfrozen (migrator_ok branch path)"
-        return 0
-    fi
-    if [ "${CRIU_TCP_MODE}" = "established" ]; then
-        log "tcp-established mode — never unfreeze host tree"
-        return 0
-    fi
-    log "SIGCONT host tree after VM restore window"
+
+    # If we reached here, migration did NOT succeed (incomplete, timed out, or failed).
+    # Regardless of CRIU TCP mode, unconditionally UNFREEZE host worker so GitHub Actions
+    # does NOT hang indefinitely with a frozen runner process.
+    log "MIGRATION FAILED/INCOMPLETE — unconditionally UNFREEZING host worker tree to fail loud"
+    touch "${CHECKPOINT_DIR}/helper_failed" 2>/dev/null || true
     unfreeze_tree "${CHECKPOINT_DIR}"
+    echo "host_tree_unfrozen_on_failure=yes" >> "${CHECKPOINT_DIR}/state.txt" 2>/dev/null || true
 }
 send_ntfy() {
     local title="${1:-is_vm}"
@@ -389,18 +391,18 @@ stage_mark "qemu_start" "net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
 send_ntfy "is_vm Booting QEMU" "run=${GITHUB_RUN_ID:-0} accel=${ACCEL_ARGS} net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
 
 VIRTFS_ARGS=(
-    -virtfs "local,path=/,mount_tag=host_root,security_model=none,readonly=on,id=host_root"
+    -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
+    -virtfs "local,path=/etc,mount_tag=host_etc,security_model=none,readonly=on,id=host_etc"
+    -virtfs "local,path=/usr,mount_tag=host_usr,security_model=none,readonly=on,id=host_usr"
+    -virtfs "local,path=/opt,mount_tag=host_opt,security_model=none,readonly=on,id=host_opt"
     -virtfs "local,path=${RUNNER_HOME},mount_tag=host_runner,security_model=none,id=host_runner"
     -virtfs "local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp"
-    -virtfs "local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib"
-    -virtfs "local,path=${DOTNET_DIR},mount_tag=dotnet,security_model=none,id=dotnet"
-    -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
 )
-for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt"; do
+for spec in "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64"; do
     tag="${spec%%:*}"
     path="${spec##*:}"
-    if [ -d "${path}" ]; then
-        VIRTFS_ARGS+=(-virtfs "local,path=${path},mount_tag=${tag},security_model=none,id=${tag}")
+    if [ -d "${path}" ] && [ ! -L "${path}" ]; then
+        VIRTFS_ARGS+=(-virtfs "local,path=${path},mount_tag=${tag},security_model=none,readonly=on,id=${tag}")
     fi
 done
 
