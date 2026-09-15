@@ -137,6 +137,7 @@ if [ -f /tmp/is_vm ] && [ -f "${MIGRATOR_OK}" ]; then
 fi
 
 log "waiting for migrator_ok (pid=$$ cp=${CP})"
+[ -f "${CP}/freeze_exclude_pids.txt" ] && echo "$$" >> "${CP}/freeze_exclude_pids.txt" 2>/dev/null || true
 wait_stage "waiting" "max=${IS_VM_MAX_WAIT_SEC:-600}s"
 send_ntfy "is_vm_wait waiting" "run=${GITHUB_RUN_ID:-0} cp=${CP} max=${IS_VM_MAX_WAIT_SEC:-600}s"
 touch "${CP}/wait_loop_ready"

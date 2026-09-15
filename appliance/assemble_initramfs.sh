@@ -447,7 +447,7 @@ progress() {
 /bin/busybox mount -t devpts devpts /dev/pts 2>/dev/null || true
 /bin/busybox mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 /bin/busybox mount -t tmpfs tmpfs /tmp 2>/dev/null || true
-/bin/busybox mount -t tmpfs -o mode=0755 tmpfs /run 2>/dev/null || true
+/bin/busybox mount -t tmpfs -o mode=0755,size=75% tmpfs /run 2>/dev/null || /bin/busybox mount -t tmpfs -o mode=0755 tmpfs /run 2>/dev/null || true
 /bin/busybox chmod 1777 /tmp /dev/shm 2>/dev/null || true
 /bin/busybox mkdir -p /sys/fs/cgroup 2>/dev/null || true
 /bin/busybox mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
@@ -550,14 +550,26 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=
     /bin/busybox ln -sf usr/lib /newroot/lib 2>/dev/null || true
     /bin/busybox ln -sf usr/lib64 /newroot/lib64 2>/dev/null || true
 
-    # 3. Mount host_usr at /newroot/usr
-    /bin/busybox mount --move /run/9p_usr /newroot/usr 2>/dev/null || \
-        /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=loose,ro host_usr /newroot/usr 2>&1
-    echo "[GUEST] [OK] Mounted host_usr at /newroot/usr"
+    # 3. Mount host_usr with OverlayFS at /newroot/usr
+    /bin/busybox mkdir -p /run/cow/usr /run/cow/work_usr 2>/dev/null || true
+    if /bin/busybox mount -t overlay overlay -o lowerdir=/run/9p_usr,upperdir=/run/cow/usr,workdir=/run/cow/work_usr,index=off,metacopy=off /newroot/usr 2>&1; then
+        echo "[GUEST] [OK] Mounted OverlayFS on /newroot/usr (guest-writable tooling)"
+    else
+        echo "[GUEST] [WARN] OverlayFS mount on /newroot/usr failed, falling back to read-only"
+        /bin/busybox mount --move /run/9p_usr /newroot/usr 2>/dev/null || \
+            /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=loose,ro host_usr /newroot/usr 2>&1
+    fi
 
-    # 4. Mount host_opt at /newroot/opt
-    if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=loose,ro host_opt /newroot/opt 2>/dev/null; then
-        echo "[GUEST] [OK] Mounted host_opt at /newroot/opt"
+    # 4. Mount host_opt with OverlayFS at /newroot/opt
+    /bin/busybox mkdir -p /run/9p_opt /run/cow/opt /run/cow/work_opt 2>/dev/null || true
+    if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=loose,ro host_opt /run/9p_opt 2>/dev/null; then
+        echo "[GUEST] [OK] Mounted host_opt 9p read-only"
+        if /bin/busybox mount -t overlay overlay -o lowerdir=/run/9p_opt,upperdir=/run/cow/opt,workdir=/run/cow/work_opt,index=off,metacopy=off /newroot/opt 2>&1; then
+            echo "[GUEST] [OK] Mounted OverlayFS on /newroot/opt (guest-writable tooling)"
+        else
+            echo "[GUEST] [WARN] OverlayFS mount on /newroot/opt failed, bind-mounting read-only"
+            /bin/busybox mount --bind /run/9p_opt /newroot/opt 2>/dev/null || true
+        fi
     else
         echo "[GUEST] [INFO] host_opt not mounted or not exported"
     fi

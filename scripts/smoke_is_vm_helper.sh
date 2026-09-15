@@ -555,7 +555,12 @@ if [ "${RESTORE_RC}" -eq 0 ]; then
         fi
     fi
 else
-    log "restore failed (rc=${RESTORE_RC}) — not writing migrator_ok"
+    log "restore failed (rc=${RESTORE_RC}) — failing helper and unfreezing host tree"
+    touch "${CHECKPOINT_DIR}/helper_failed"
+    echo "${RESTORE_RC}" > "${CHECKPOINT_DIR}/restore.rc"
+    unfreeze_tree "${CHECKPOINT_DIR}"
+    HELPER_EXIT_RC="${RESTORE_RC}"
+    exit "${RESTORE_RC}"
 fi
 
 for i in $(seq 1 60); do

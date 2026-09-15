@@ -137,7 +137,7 @@ log "TCP mode configured: ${CRIU_TCP_MODE}"
 # 9. Isolate orchestrator step shell from CRIU freeze
 STEP_SHELL_PID="${STEP_SHELL_PID:-$$}"
 echo "${STEP_SHELL_PID}" > "${CHECKPOINT_DIR}/step_shell.pid"
-echo "${STEP_SHELL_PID}" > "${CHECKPOINT_DIR}/freeze_exclude_pids.txt"
+printf '%s\n%s\n' "${STEP_SHELL_PID}" "${PPID}" > "${CHECKPOINT_DIR}/freeze_exclude_pids.txt"
 chmod a+rw "${CHECKPOINT_DIR}/step_shell.pid" "${CHECKPOINT_DIR}/freeze_exclude_pids.txt" 2>/dev/null || true
 
 log "Mapping runner process tree..."

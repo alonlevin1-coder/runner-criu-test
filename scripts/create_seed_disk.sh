@@ -41,9 +41,12 @@ if [ "${IS_CI}" -eq 1 ]; then
     echo "=== [SEED DISK] CI Environment Detected (GitHub-hosted Runner) ==="
     
     # Calculate exact size of /var, /home/runner, /root + 25% headroom
-    VAR_MB=$(du -sm /var 2>/dev/null | cut -f1 || echo 1500)
-    HOME_MB=$(du -sm /home/runner 2>/dev/null | cut -f1 || echo 3000)
-    ROOT_MB=$(du -sm /root 2>/dev/null | cut -f1 || echo 50)
+    VAR_MB=$(sudo du -sm /var 2>/dev/null | tail -n1 | awk '{print $1}' || echo 1500)
+    [[ "${VAR_MB}" =~ ^[0-9]+$ ]] || VAR_MB=1500
+    HOME_MB=$(sudo du -sm /home/runner 2>/dev/null | tail -n1 | awk '{print $1}' || echo 3000)
+    [[ "${HOME_MB}" =~ ^[0-9]+$ ]] || HOME_MB=3000
+    ROOT_MB=$(sudo du -sm /root 2>/dev/null | tail -n1 | awk '{print $1}' || echo 50)
+    [[ "${ROOT_MB}" =~ ^[0-9]+$ ]] || ROOT_MB=50
     TOTAL_MB=$((VAR_MB + HOME_MB + ROOT_MB))
     SEED_SIZE_MB=$(( (TOTAL_MB * 125) / 100 ))
     
