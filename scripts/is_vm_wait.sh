@@ -170,6 +170,14 @@ check_migration_failed() {
         unfreeze_host_tree
         [ -f "${CP}/dump.rc" ] && log "dump.rc=$(cat "${CP}/dump.rc")"
         [ -f "${CP}/restore.rc" ] && log "restore.rc=$(cat "${CP}/restore.rc")"
+        if [ -f "${CP}/post_restore_diag.txt" ]; then
+            log "=== post_restore_diag.txt ==="
+            cat "${CP}/post_restore_diag.txt" || true
+        fi
+        if [ -f "${CP}/is_vm_helper.log" ]; then
+            log "=== is_vm_helper.log ==="
+            cat "${CP}/is_vm_helper.log" || true
+        fi
         wait_stage "fail" "helper_failed"
         send_ntfy "is_vm_wait FAIL" "helper_failed run=${GITHUB_RUN_ID:-0}
 $(checkpoint_snapshot)

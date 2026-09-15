@@ -957,17 +957,47 @@ cat << 'RESTOREEOF' > "${STAGING}/usr/sbin/t9_restore.sh"
 # Run from SSH after appliance boot. Does not dump; only restore.
 set +e
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
+DIAG_FILE="/mnt/checkpoint/post_restore_diag.txt"
+log_diag() {
+    echo "[GUEST_DIAG] $*"
+    echo "[GUEST_DIAG] $*" >> "${DIAG_FILE}" 2>/dev/null || true
+}
+run_diag() {
+    echo "=== [GUEST_DIAG] $* ==="
+    echo "=== [GUEST_DIAG] $* ===" >> "${DIAG_FILE}" 2>/dev/null || true
+    eval "$*" 2>&1 | while IFS= read -r line; do
+        echo "  ${line}"
+        echo "  ${line}" >> "${DIAG_FILE}" 2>/dev/null || true
+    done
+}
+
+log_diag "=== PHASE 1: TOP OF T9_RESTORE (UTC: $(date -u '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date) uptime: $(cat /proc/uptime 2>/dev/null || true)) ==="
+run_diag "stat /tmp"
+run_diag "ls -ld /tmp /tmp/restore"
+run_diag "ls -la /tmp"
+run_diag "ls -la /mnt/checkpoint/*.img"
+run_diag "grep -E '/tmp|/mnt/checkpoint' /proc/self/mountinfo"
+run_diag "timeout 5 systemctl status tmp.mount 2>&1 || true"
+run_diag "timeout 5 journalctl -b --no-pager 2>&1 | grep -iE 'tmp\.mount|tmpfs' || true"
+
 if [ -f /mnt/checkpoint/state.txt ]; then
     echo "t9_restore start" >> /mnt/checkpoint/guest_progress.txt
 fi
+
+log_diag "Copy start timestamp: UTC=$(date -u '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date) uptime=$(cat /proc/uptime 2>/dev/null || true)"
 if [ ! -f /tmp/restore/inventory.img ]; then
     echo "[GUEST] t9_restore: copying images"
     mkdir -p /tmp/restore
-    cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>/dev/null || true
+    cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>&1 || true
     chmod -R 777 /tmp/restore 2>/dev/null || true
 else
     echo "[GUEST] t9_restore: images already present in /tmp/restore (skipping redundant copy)"
 fi
+log_diag "Copy end timestamp: UTC=$(date -u '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date) uptime=$(cat /proc/uptime 2>/dev/null || true)"
+run_diag "stat /tmp"
+run_diag "ls -ld /tmp /tmp/restore"
+run_diag "ls -la /tmp/restore"
 chmod 755 / 2>/dev/null || true
 echo "[GUEST] Marking VM environment for restored processes"
 touch /tmp/is_vm
@@ -1075,6 +1105,16 @@ done
 [ -n "$CRIU_BIN" ] || CRIU_BIN="$(command -v criu || true)"
 [ -n "$CRIU_BIN" ] || { echo "[GUEST] FATAL: criu binary not found" >&2; exit 127; }
 echo "[GUEST] Using CRIU binary: ${CRIU_BIN}"
+
+log_diag "=== PHASE 2: IMMEDIATELY PRE-CRIU (UTC: $(date -u '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date) uptime: $(cat /proc/uptime 2>/dev/null || true)) ==="
+run_diag "stat /tmp"
+run_diag "ls -ld /tmp /tmp/restore"
+run_diag "ls -la /tmp/restore"
+run_diag "grep -E '/tmp|/mnt/checkpoint' /proc/self/mountinfo"
+run_diag "timeout 5 systemctl status tmp.mount 2>&1 || true"
+run_diag "timeout 5 systemctl show tmp.mount --property=ActiveEnterTimestamp,ActiveExitTimestamp,InactiveEnterTimestamp,StateChangeTimestamp 2>&1 || true"
+run_diag "timeout 5 journalctl -b --no-pager 2>&1 | grep -iE 'tmp\.mount|tmpfs' || true"
+
 "${CRIU_BIN}" restore -d -D /tmp/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check "${TCP_FLAG}" \
     --ghost-limit 32M \
