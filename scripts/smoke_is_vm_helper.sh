@@ -511,7 +511,7 @@ $(tail -n 20 "${CHECKPOINT_DIR}/restore_log.txt" 2>/dev/null || tail -n 20 "${HE
 
 if [ -f "${CHECKPOINT_DIR}/post_restore_diag.txt" ]; then
     log "post-restore diag:"
-    cat "${CHECKPOINT_DIR}/post_restore_diag.txt" | tee -a "${HELPER_LOG}" || true
+    tail -n 60 "${CHECKPOINT_DIR}/post_restore_diag.txt" | tee -a "${HELPER_LOG}" || true
 fi
 if [ -f "${CHECKPOINT_DIR}/vm_done" ]; then
     log "vm_done after restore: $(cat "${CHECKPOINT_DIR}/vm_done")"

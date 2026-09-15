@@ -706,11 +706,12 @@ Name=eth* tap* lo
 Unmanaged=yes
 NETEOF
 
-    # Bind mount checkpoint into newroot & stage images so it survives /run tmpfs overmount
-    mkdir -p /newroot/tmp/restore /newroot/mnt/checkpoint 2>/dev/null || true
+    # Bind mount checkpoint into newroot & stage images at /run/restore so it survives systemd tmp.mount
+    mkdir -p /newroot/run/restore /newroot/mnt/checkpoint 2>/dev/null || true
     /bin/busybox mount --bind /run/checkpoint /newroot/mnt/checkpoint 2>/dev/null || true
-    /bin/busybox cp -a /run/checkpoint/*.img /run/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
-    /bin/busybox chmod -R 777 /newroot/tmp/restore 2>/dev/null || true
+    /bin/busybox cp -a /run/checkpoint/*.img /run/checkpoint/*.txt /newroot/run/restore/ 2>/dev/null || true
+    /bin/busybox chmod -R 777 /newroot/run/restore 2>/dev/null || true
+    /bin/busybox ln -sf /mnt/checkpoint /newroot/run/runner_checkpoint 2>/dev/null || true
     /bin/busybox ln -sf /mnt/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
     if [ -n "${HOST_CP:-}" ]; then
         /bin/busybox mkdir -p "$(/bin/busybox dirname "/newroot/${HOST_CP}")" 2>/dev/null || true
@@ -834,10 +835,13 @@ Name=eth* tap* lo
 Unmanaged=yes
 NETEOF
 
-        mkdir -p /newroot/tmp/restore /newroot/mnt/checkpoint 2>/dev/null || true
+        mkdir -p /run/restore /newroot/run/restore /newroot/mnt/checkpoint 2>/dev/null || true
         /bin/busybox mount --bind /run/checkpoint /newroot/mnt/checkpoint 2>/dev/null || true
-        /bin/busybox cp -a /run/checkpoint/*.img /run/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
-        /bin/busybox chmod -R 777 /newroot/tmp/restore 2>/dev/null || true
+        /bin/busybox cp -a /run/checkpoint/*.img /run/checkpoint/*.txt /run/restore/ 2>/dev/null || true
+        /bin/busybox cp -a /run/checkpoint/*.img /run/checkpoint/*.txt /newroot/run/restore/ 2>/dev/null || true
+        /bin/busybox chmod -R 777 /run/restore /newroot/run/restore 2>/dev/null || true
+        /bin/busybox ln -sf /mnt/checkpoint /run/runner_checkpoint 2>/dev/null || true
+        /bin/busybox ln -sf /mnt/checkpoint /newroot/run/runner_checkpoint 2>/dev/null || true
         /bin/busybox ln -sf /mnt/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
 
         /bin/busybox cp -a /usr/sbin/t9_restore.sh /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
@@ -920,10 +924,10 @@ fi
 echo "[GUEST] Inspecting /mnt/checkpoint contents:"
 /bin/busybox ls -lh /mnt/checkpoint 2>&1 || true
 
-/bin/busybox mkdir -p /tmp/restore
+/bin/busybox mkdir -p /run/restore
 echo "[GUEST] Copying checkpoint images to local tmpfs..."
-/bin/busybox cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>/dev/null || true
-/bin/busybox chmod -R 777 /tmp/restore 2>/dev/null || true
+/bin/busybox cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /run/restore/ 2>/dev/null || true
+/bin/busybox chmod -R 777 /run/restore 2>/dev/null || true
 /bin/busybox chmod 755 /
 echo "[GUEST] Testing CRIU binary..."
 /bin/busybox ls -la /usr/sbin/criu /usr/sbin/dropbear /lib64/ld-linux-x86-64.so.2 2>&1 || true
@@ -973,11 +977,13 @@ run_diag() {
 }
 
 log_diag "=== PHASE 1: TOP OF T9_RESTORE (UTC: $(date -u '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date) uptime: $(cat /proc/uptime 2>/dev/null || true)) ==="
-run_diag "stat /tmp"
-run_diag "ls -ld /tmp /tmp/restore"
-run_diag "ls -la /tmp"
+run_diag "stat /run"
+run_diag "ls -ld /run /run/restore"
+run_diag "ls -la /run/restore"
 run_diag "ls -la /mnt/checkpoint/*.img"
-run_diag "grep -E '/tmp|/mnt/checkpoint' /proc/self/mountinfo"
+run_diag "grep -E '/run|/mnt/checkpoint|/tmp' /proc/self/mountinfo"
+run_diag "systemctl list-units --type=mount 2>&1 | grep -i run || true"
+run_diag "systemd-analyze dump 2>/dev/null | grep -A5 '\"/run\"' || true"
 run_diag "timeout 5 systemctl status tmp.mount 2>&1 || true"
 run_diag "timeout 5 journalctl -b --no-pager 2>&1 | grep -iE 'tmp\.mount|tmpfs' || true"
 
@@ -986,18 +992,18 @@ if [ -f /mnt/checkpoint/state.txt ]; then
 fi
 
 log_diag "Copy start timestamp: UTC=$(date -u '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date) uptime=$(cat /proc/uptime 2>/dev/null || true)"
-if [ ! -f /tmp/restore/inventory.img ]; then
+if [ ! -f /run/restore/inventory.img ]; then
     echo "[GUEST] t9_restore: copying images"
-    mkdir -p /tmp/restore
-    cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>&1 || true
-    chmod -R 777 /tmp/restore 2>/dev/null || true
+    mkdir -p /run/restore
+    cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /run/restore/ 2>&1 || true
+    chmod -R 777 /run/restore 2>/dev/null || true
 else
-    echo "[GUEST] t9_restore: images already present in /tmp/restore (skipping redundant copy)"
+    echo "[GUEST] t9_restore: images already present in /run/restore (skipping redundant copy)"
 fi
 log_diag "Copy end timestamp: UTC=$(date -u '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date) uptime=$(cat /proc/uptime 2>/dev/null || true)"
-run_diag "stat /tmp"
-run_diag "ls -ld /tmp /tmp/restore"
-run_diag "ls -la /tmp/restore"
+run_diag "stat /run"
+run_diag "ls -ld /run /run/restore"
+run_diag "ls -la /run/restore"
 chmod 755 / 2>/dev/null || true
 echo "[GUEST] Marking VM environment for restored processes"
 touch /tmp/is_vm
@@ -1107,15 +1113,14 @@ done
 echo "[GUEST] Using CRIU binary: ${CRIU_BIN}"
 
 log_diag "=== PHASE 2: IMMEDIATELY PRE-CRIU (UTC: $(date -u '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date) uptime: $(cat /proc/uptime 2>/dev/null || true)) ==="
-run_diag "stat /tmp"
-run_diag "ls -ld /tmp /tmp/restore"
-run_diag "ls -la /tmp/restore"
-run_diag "grep -E '/tmp|/mnt/checkpoint' /proc/self/mountinfo"
-run_diag "timeout 5 systemctl status tmp.mount 2>&1 || true"
-run_diag "timeout 5 systemctl show tmp.mount --property=ActiveEnterTimestamp,ActiveExitTimestamp,InactiveEnterTimestamp,StateChangeTimestamp 2>&1 || true"
-run_diag "timeout 5 journalctl -b --no-pager 2>&1 | grep -iE 'tmp\.mount|tmpfs' || true"
+run_diag "stat /run"
+run_diag "ls -ld /run /run/restore"
+run_diag "ls -la /run/restore"
+run_diag "grep -E '/run|/mnt/checkpoint|/tmp' /proc/self/mountinfo"
+run_diag "systemctl list-units --type=mount 2>&1 | grep -i run || true"
+run_diag "systemd-analyze dump 2>/dev/null | grep -A5 '\"/run\"' || true"
 
-"${CRIU_BIN}" restore -d -D /tmp/restore \
+"${CRIU_BIN}" restore -d -D /run/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check "${TCP_FLAG}" \
     --ghost-limit 32M \
     -v4 -o /mnt/checkpoint/restore_log.txt
