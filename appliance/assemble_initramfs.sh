@@ -660,42 +660,46 @@ Name=eth* tap* lo
 Unmanaged=yes
 NETEOF
 
-        # Link checkpoint into newroot & stage images
+        # Bind mount checkpoint into newroot & stage images so it survives /run tmpfs overmount
         mkdir -p /newroot/tmp/restore /newroot/mnt/checkpoint 2>/dev/null || true
+        /bin/busybox mount --bind /run/checkpoint /newroot/mnt/checkpoint 2>/dev/null || true
         /bin/busybox cp -a /run/checkpoint/*.img /run/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
         /bin/busybox chmod -R 777 /newroot/tmp/restore 2>/dev/null || true
-        /bin/busybox ln -sf /run/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
-        /bin/busybox ln -sf /run/checkpoint /newroot/mnt/checkpoint 2>/dev/null || true
+        /bin/busybox ln -sf /mnt/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
         if [ -n "${HOST_CP:-}" ]; then
             /bin/busybox mkdir -p "$(/bin/busybox dirname "/newroot/${HOST_CP}")" 2>/dev/null || true
-            /bin/busybox ln -sf /run/checkpoint "/newroot/${HOST_CP}" 2>/dev/null || true
+            /bin/busybox ln -sf /mnt/checkpoint "/newroot/${HOST_CP}" 2>/dev/null || true
         fi
 
-        # Install t9_restore.sh in newroot
+        # Install t9_restore.sh and dropbear in newroot
         /bin/busybox cp -a /usr/sbin/t9_restore.sh /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
         /bin/busybox chmod 755 /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
+        /bin/busybox cp -a /usr/sbin/dropbear /newroot/usr/sbin/dropbear 2>/dev/null || true
+        /bin/busybox chmod 755 /newroot/usr/sbin/dropbear 2>/dev/null || true
 
         # Mask host OpenSSH so it doesn't conflict with appliance Dropbear on port 22
         ln -sf /dev/null /newroot/etc/systemd/system/ssh.service 2>/dev/null || true
         ln -sf /dev/null /newroot/etc/systemd/system/ssh.socket 2>/dev/null || true
         ln -sf /dev/null /newroot/etc/systemd/system/sshd.service 2>/dev/null || true
 
-        # Create Dropbear systemd service unit
+        # Create Dropbear systemd service unit (early activation under sysinit.target)
         cat << 'DROPEOF' > /newroot/etc/systemd/system/dropbear.service
 [Unit]
 Description=MicroVM Dropbear SSH Server
 DefaultDependencies=no
-After=network.target
+Conflicts=shutdown.target
 
 [Service]
 Type=simple
 ExecStart=/usr/sbin/dropbear -R -E -s -p 22 -F
 Restart=always
+RestartSec=1s
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sysinit.target multi-user.target
 DROPEOF
-        mkdir -p /newroot/etc/systemd/system/multi-user.target.wants 2>/dev/null || true
+        mkdir -p /newroot/etc/systemd/system/sysinit.target.wants /newroot/etc/systemd/system/multi-user.target.wants 2>/dev/null || true
+        ln -sf /etc/systemd/system/dropbear.service /newroot/etc/systemd/system/sysinit.target.wants/dropbear.service 2>/dev/null || true
         ln -sf /etc/systemd/system/dropbear.service /newroot/etc/systemd/system/multi-user.target.wants/dropbear.service 2>/dev/null || true
 
         # Unmount non-moved temporary filesystems in initramfs

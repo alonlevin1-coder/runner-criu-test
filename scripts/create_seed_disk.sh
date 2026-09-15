@@ -63,12 +63,24 @@ if [ "${IS_CI}" -eq 1 ]; then
     echo "--- Seeding /var, /home, /root into seed disk ---"
     sudo mkdir -p "${MOUNT_POINT}/var" "${MOUNT_POINT}/home/runner" "${MOUNT_POINT}/root"
     
+    safe_rsync() {
+        set +e
+        sudo rsync "$@"
+        local rc=$?
+        set -e
+        # rsync exit code 24 = vanished/modified source files (e.g. active log rotation)
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 24 ]; then
+            echo "[SEED DISK] rsync warning: exited with code ${rc}" >&2
+        fi
+        return 0
+    }
+
     # Copy /var excluding runtime/lock/docker cache that restarts clean
-    sudo rsync -aHAX --exclude='/var/run' --exclude='/var/lock' --exclude='/var/tmp/*' /var/ "${MOUNT_POINT}/var/"
+    safe_rsync -aHAX --exclude='/var/run' --exclude='/var/lock' --exclude='/var/tmp/*' /var/ "${MOUNT_POINT}/var/"
     # Copy runner homedir
-    sudo rsync -aHAX /home/runner/ "${MOUNT_POINT}/home/runner/"
+    safe_rsync -aHAX /home/runner/ "${MOUNT_POINT}/home/runner/"
     # Copy root homedir
-    sudo rsync -aHAX /root/ "${MOUNT_POINT}/root/" 2>/dev/null || true
+    safe_rsync -aHAX /root/ "${MOUNT_POINT}/root/" 2>/dev/null || true
 
     # Fix runner permissions
     sudo chown -R 1001:1001 "${MOUNT_POINT}/home/runner" 2>/dev/null || true

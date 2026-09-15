@@ -77,6 +77,11 @@ finalize_host_tree() {
     if [ ! -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
         return 0
     fi
+    if [ -f "${CHECKPOINT_DIR}/helper_failed" ] || [ -f "${CHECKPOINT_DIR}/ssh_failed" ] || [ "${HELPER_EXIT_RC:-0}" -ne 0 ]; then
+        log "migration failed — unfreezing host tree to prevent runner deadlock"
+        unfreeze_tree "${CHECKPOINT_DIR}"
+        return 0
+    fi
     if [ -f "${CHECKPOINT_DIR}/state.txt" ] \
         && grep -qE 'host_tree_frozen_forever=yes|host_tree_killed=yes|host_worker_killed=yes' \
             "${CHECKPOINT_DIR}/state.txt" 2>/dev/null; then
@@ -465,7 +470,7 @@ SSH=(ssh -i "${SSH_KEY}" -p "${SSH_PORT}" -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o BatchMode=yes root@127.0.0.1)
 
 SSH_OK=0
-for i in $(seq 1 90); do
+for i in $(seq 1 180); do
     if "${SSH[@]}" 'echo SSH_OK' >/dev/null 2>> "${HELPER_LOG}"; then
         SSH_OK=1
         break
@@ -484,6 +489,7 @@ $(tail -n 15 "${HELPER_LOG}" 2>/dev/null || true)"
     kill -9 "${QEMU_PID}" 2>/dev/null || true
     touch "${CHECKPOINT_DIR}/helper_failed"
     HELPER_EXIT_RC=1
+    unfreeze_tree "${CHECKPOINT_DIR}"
     exit 1
 fi
 
