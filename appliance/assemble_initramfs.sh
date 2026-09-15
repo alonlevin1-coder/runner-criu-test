@@ -1067,8 +1067,15 @@ if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
     esac
 fi
 echo "[GUEST] t9_restore: criu restore ${TCP_FLAG}"
-export PATH="/sbin:/usr/sbin:/bin:/usr/bin:${PATH:-}"
-/sbin/criu restore -d -D /tmp/restore \
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+CRIU_BIN=""
+for candidate in /usr/local/sbin/criu /usr/sbin/criu /sbin/criu; do
+    if [ -x "$candidate" ]; then CRIU_BIN="$candidate"; break; fi
+done
+[ -n "$CRIU_BIN" ] || CRIU_BIN="$(command -v criu || true)"
+[ -n "$CRIU_BIN" ] || { echo "[GUEST] FATAL: criu binary not found" >&2; exit 127; }
+echo "[GUEST] Using CRIU binary: ${CRIU_BIN}"
+"${CRIU_BIN}" restore -d -D /tmp/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check "${TCP_FLAG}" \
     --ghost-limit 32M \
     -v4 -o /mnt/checkpoint/restore_log.txt

@@ -93,6 +93,12 @@ if [ -z "${CRIU_BIN}" ] || ! "${CRIU_BIN}" --version >/dev/null 2>&1; then
 fi
 log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null | head -n1))"
 
+# Ensure symlinks exist at both /usr/sbin/criu and /usr/local/sbin/criu before /usr export or seed capture
+SUDO=""
+[ "$(id -u)" -ne 0 ] && SUDO="sudo"
+${SUDO} ln -sf "${CRIU_BIN}" /usr/sbin/criu 2>/dev/null || true
+${SUDO} ln -sf "${CRIU_BIN}" /usr/local/sbin/criu 2>/dev/null || true
+
 # 4. Ensure daemonize helper binary exists
 if [ ! -x "${ACTION_DIR}/scripts/daemonize" ]; then
     log "Compiling daemonize helper..."

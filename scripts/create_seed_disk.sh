@@ -70,7 +70,7 @@ if [ "${IS_CI}" -eq 1 ]; then
         local logfile
         logfile="$(mktemp)"
         set +e
-        sudo rsync -v "$@" 2>"${logfile}"
+        sudo rsync "$@" 2>"${logfile}"
         local rc=$?
         set -e
         # rsync exit code 24 = vanished/modified source files (e.g. active log rotation)
