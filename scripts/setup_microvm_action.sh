@@ -46,27 +46,52 @@ CRIU_BIN="$(command -v criu || true)"
 [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
 [ -x /usr/local/sbin/criu ] && CRIU_BIN="/usr/local/sbin/criu"
 
-if [ -z "${CRIU_BIN}" ] || [ ! -x "${CRIU_BIN}" ]; then
+# If already installed, verify it can actually execute without dynamic linker errors
+if [ -n "${CRIU_BIN}" ] && [ -x "${CRIU_BIN}" ]; then
+    if ! "${CRIU_BIN}" --version >/dev/null 2>&1; then
+        log "Existing CRIU binary ${CRIU_BIN} failed runtime execution check. Will reinstall or build."
+        CRIU_BIN=""
+    fi
+fi
+
+if [ -z "${CRIU_BIN}" ]; then
+    SUDO=""
+    [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+
+    USE_PREBUILT=0
     if [ -x "${ACTION_DIR}/bin/criu" ]; then
-        log "Installing pre-packaged CRIU binary from ${ACTION_DIR}/bin/criu..."
-        SUDO=""
-        [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+        log "Testing pre-packaged CRIU binary from ${ACTION_DIR}/bin/criu..."
         ${SUDO} cp -a "${ACTION_DIR}/bin/criu" /usr/local/sbin/criu
         if [ -d "${ACTION_DIR}/bin/lib" ]; then
             ${SUDO} cp -a "${ACTION_DIR}/bin/lib"/* /usr/lib/x86_64-linux-gnu/ 2>/dev/null || true
             ${SUDO} cp -a "${ACTION_DIR}/bin/lib"/* /usr/local/lib/ 2>/dev/null || true
             ${SUDO} ldconfig 2>/dev/null || true
         fi
-        CRIU_BIN="/usr/local/sbin/criu"
-    else
-        log "CRIU binary not found. Building CRIU from source with expanded XSAVE buffers..."
+        if /usr/local/sbin/criu --version >/dev/null 2>&1; then
+            CRIU_BIN="/usr/local/sbin/criu"
+            USE_PREBUILT=1
+            log "Pre-packaged CRIU binary verified and operational."
+        else
+            log "Pre-packaged CRIU binary failed runtime dynamic check (e.g. OS version mismatch). Removing..."
+            ${SUDO} rm -f /usr/local/sbin/criu
+        fi
+    fi
+
+    if [ "${USE_PREBUILT}" -eq 0 ]; then
+        log "Building CRIU from source with expanded XSAVE buffers for native host compatibility..."
         chmod +x "${ACTION_DIR}/scripts/build_criu.sh"
         "${ACTION_DIR}/scripts/build_criu.sh"
         CRIU_BIN="$(command -v criu || true)"
         [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
+        [ -x /usr/local/sbin/criu ] && CRIU_BIN="/usr/local/sbin/criu"
     fi
 fi
-log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null || true))"
+
+if [ -z "${CRIU_BIN}" ] || ! "${CRIU_BIN}" --version >/dev/null 2>&1; then
+    log "FATAL: No working CRIU binary available!"
+    exit 1
+fi
+log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null | head -n1))"
 
 # 4. Ensure daemonize helper binary exists
 if [ ! -x "${ACTION_DIR}/scripts/daemonize" ]; then

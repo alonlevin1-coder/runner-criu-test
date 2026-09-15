@@ -228,6 +228,7 @@ fi
 echo "TARGET_KIND=${TARGET_KIND} TARGET_PID=${TARGET_PID}" >> "${CHECKPOINT_DIR}/state.txt"
 CRIU_BIN="$(command -v criu || true)"
 [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
+[ -x /usr/local/sbin/criu ] && CRIU_BIN="/usr/local/sbin/criu"
 
 if [ "${TARGET_KIND}" = "worker" ]; then
     log "SIGSTOP worker tree before snapshot+dump"
@@ -247,15 +248,17 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
     stage_mark "tcp_discover_start" "pid=${TARGET_PID}"
     chmod +x "${SCRIPT_DIR}/discover_tcp_ips.sh"
     if ! run_with_timeout 60 "${SCRIPT_DIR}/discover_tcp_ips.sh" "${TARGET_PID}" "${CHECKPOINT_DIR}"; then
-        log "ERROR: tcp discover failed or timed out"
+        log "ERROR: tcp discover failed or timed out; unfreezing worker tree"
         send_ntfy "is_vm FAIL" "tcp discover timeout/fail"
+        unfreeze_tree "${CHECKPOINT_DIR}"
         touch "${CHECKPOINT_DIR}/helper_failed"
         HELPER_EXIT_RC=1
         exit 1
     fi
     if [ ! -s "${CHECKPOINT_DIR}/tcp_local_ips.txt" ]; then
-        log "ERROR: established mode requires non-loopback ESTAB socket local IP"
+        log "ERROR: established mode requires non-loopback ESTAB socket local IP; unfreezing worker tree"
         send_ntfy "is_vm FAIL" "tcp discover: no local IP in tcp_local_ips.txt"
+        unfreeze_tree "${CHECKPOINT_DIR}"
         touch "${CHECKPOINT_DIR}/helper_failed"
         HELPER_EXIT_RC=1
         exit 1
@@ -309,6 +312,10 @@ if [ "${DUMP_RC}" -ne 0 ]; then
     dump_tail="$(tail -n 25 "${CHECKPOINT_DIR}/dump.log" 2>/dev/null || true)"
     send_ntfy "is_vm dump FAIL" "rc=${DUMP_RC}
 ${dump_tail}"
+    if [ -f "${CHECKPOINT_DIR}/sigstopped_pids.txt" ]; then
+        log "Dump failed (rc=${DUMP_RC}); unfreezing worker tree"
+        unfreeze_tree "${CHECKPOINT_DIR}"
+    fi
     touch "${CHECKPOINT_DIR}/helper_failed"
     HELPER_EXIT_RC="${DUMP_RC}"
     exit "${DUMP_RC}"
