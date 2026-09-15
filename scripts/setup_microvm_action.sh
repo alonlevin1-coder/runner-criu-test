@@ -97,6 +97,12 @@ echo "${CHECKPOINT_DIR}" > "${CHECKPOINT_DIR}/checkpoint_dir.txt"
 chmod a+rw "${CHECKPOINT_DIR}/checkpoint_dir.txt" 2>/dev/null || true
 log "Checkpoint dir: ${CHECKPOINT_DIR}"
 
+# 7b. Create guest-local seed disk for dynamic state (/home, /var)
+if [ -x "${ACTION_DIR}/scripts/create_seed_disk.sh" ]; then
+    log "Creating guest-local seed disk for /home and /var..."
+    "${ACTION_DIR}/scripts/create_seed_disk.sh" "${CHECKPOINT_DIR}/seed.img" || log "WARN: seed disk creation failed"
+fi
+
 # 8. Configure TCP migration mode
 CRIU_TCP_MODE="${INPUT_TCP_MODE:-${CRIU_TCP_MODE:-established}}"
 echo "${CRIU_TCP_MODE}" > "${CHECKPOINT_DIR}/criu_tcp_mode.txt"

@@ -8,6 +8,8 @@ on:
       - '.github/workflows/test-full-tooling-vm.yml'
       - '.github/workflows/reusable-microvm.yml'
       - 'scripts/smoke_is_vm_helper.sh'
+      - 'scripts/setup_microvm_action.sh'
+      - 'scripts/create_seed_disk.sh'
       - 'appliance/assemble_initramfs.sh'
 
 jobs:

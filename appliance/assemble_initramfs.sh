@@ -179,6 +179,15 @@ if [ -d "${REPO_DIR}/bin/lib" ]; then
         copy_lib "${blib}"
     done
 fi
+# Package official Ubuntu run-init binary and its klibc shared runtime
+if [ -f /usr/lib/klibc/bin/run-init ]; then
+    rm -f "${STAGING}/sbin/run-init"
+    cp -a /usr/lib/klibc/bin/run-init "${STAGING}/sbin/run-init"
+    chmod 755 "${STAGING}/sbin/run-init"
+    mkdir -p "${STAGING}/usr/lib" "${STAGING}/lib"
+    cp -a /usr/lib/klibc-*.so "${STAGING}/usr/lib/" 2>/dev/null || true
+    cp -a /lib/klibc-*.so "${STAGING}/lib/" 2>/dev/null || true
+fi
 
 # Stub iptables so CRIU post-restore netfilter cleanup does not fail with status 127
 cat << 'IPT_EOF' > "${STAGING}/sbin/iptables"
@@ -418,45 +427,44 @@ EOF
 echo "[6/7] Writing guest /init..."
 cat << 'EOF' > "${STAGING}/init"
 #!/bin/busybox sh
-set -e
+set +e
 
 progress() {
     msg="$*"
     echo "[GUEST] ${msg}"
     # Only the 9p checkpoint share is visible on the host helper.
-    if [ -f /mnt/checkpoint/state.txt ]; then
-        echo "${msg}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+    if [ -f /run/checkpoint/state.txt ]; then
+        echo "${msg}" >> /run/checkpoint/guest_progress.txt 2>/dev/null || true
         /bin/busybox sync 2>/dev/null || true
     fi
 }
 
 # Mount pseudo-filesystems
-/bin/busybox mount -t proc proc /proc
-/bin/busybox mount -t sysfs sysfs /sys
-/bin/busybox mount -t devtmpfs devtmpfs /dev
-/bin/busybox mkdir -p /dev/pts /dev/shm
+/bin/busybox mount -t proc proc /proc 2>/dev/null || true
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null || true
+/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+/bin/busybox mkdir -p /dev/pts /dev/shm /run 2>/dev/null || true
 /bin/busybox mount -t devpts devpts /dev/pts 2>/dev/null || true
 /bin/busybox mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 /bin/busybox mount -t tmpfs tmpfs /tmp 2>/dev/null || true
-/bin/busybox chmod 1777 /tmp /dev/shm
-/bin/busybox mkdir -p /sys/fs/cgroup
+/bin/busybox mount -t tmpfs -o mode=0755 tmpfs /run 2>/dev/null || true
+/bin/busybox chmod 1777 /tmp /dev/shm 2>/dev/null || true
+/bin/busybox mkdir -p /sys/fs/cgroup 2>/dev/null || true
 /bin/busybox mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
 
 # Set VM hostname
-/bin/busybox hostname qemu-restore-vm
+/bin/busybox hostname qemu-restore-vm 2>/dev/null || true
 
 # Ensure /etc/sudoers is owned by root (uid 0) with mode 0440
 /bin/busybox chown 0:0 /etc/sudoers 2>/dev/null || true
 /bin/busybox chown -R 0:0 /etc/sudoers.d 2>/dev/null || true
 /bin/busybox chmod 0440 /etc/sudoers 2>/dev/null || true
 
-
 # Set max pid limit
 echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 
 # Load diagnostic kernel modules
 for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables; do
-
     if [ -f "/modules/${mod}.ko" ]; then
         if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
             echo "[GUEST] [OK] Loaded module ${mod}"
@@ -482,23 +490,19 @@ for mod in netfs 9pnet 9pnet_virtio 9p overlay; do
 done
 
 # Mount checkpoint first to read net_mode (Porter TAP vs user NAT).
-/bin/busybox mkdir -p /mnt/checkpoint
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=none checkpoint /mnt/checkpoint 2>&1 \
-    && echo "[GUEST] [OK] Mounted checkpoint share (early)" \
+/bin/busybox mkdir -p /run/checkpoint 2>/dev/null || true
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=none checkpoint /run/checkpoint 2>&1 \
+    && echo "[GUEST] [OK] Mounted checkpoint share in /run" \
     || echo "[GUEST] [FAIL] Checkpoint share mount failed!"
 progress "checkpoint 9p mounted"
 
-if [ -f /mnt/checkpoint/checkpoint_dir.txt ]; then
-    HOST_CP="$(/bin/busybox cat /mnt/checkpoint/checkpoint_dir.txt)"
-    /bin/busybox mkdir -p "$(/bin/busybox dirname "${HOST_CP}")"
-    /bin/busybox ln -s /mnt/checkpoint "${HOST_CP}" 2>/dev/null || true
+if [ -f /run/checkpoint/checkpoint_dir.txt ]; then
+    HOST_CP="$(/bin/busybox cat /run/checkpoint/checkpoint_dir.txt 2>/dev/null || true)"
 fi
-/bin/busybox mkdir -p /tmp
-/bin/busybox ln -s /mnt/checkpoint /tmp/runner_checkpoint 2>/dev/null || true
 
 NET_MODE="user"
-if [ -f /mnt/checkpoint/net_mode.txt ]; then
-    NET_MODE="$(/bin/busybox cat /mnt/checkpoint/net_mode.txt)"
+if [ -f /run/checkpoint/net_mode.txt ]; then
+    NET_MODE="$(/bin/busybox cat /run/checkpoint/net_mode.txt 2>/dev/null || echo user)"
 fi
 echo "[GUEST] net_mode=${NET_MODE}"
 
@@ -523,27 +527,107 @@ fi
 
 echo "=========================================================="
 echo "=== QEMU Guest VM Booted for GitHub Runner Restore     ==="
-echo "=== Hostname: $(/bin/busybox hostname)                 ==="
-echo "=== Kernel:   $(/bin/busybox uname -r)                 ==="
+echo "=== Hostname: $(/bin/busybox hostname 2>/dev/null || echo guest) ==="
+echo "=== Kernel:   $(/bin/busybox uname -r 2>/dev/null || echo linux) ==="
 echo "=== PID 1:    /bin/busybox sh /init                    ==="
 echo "=========================================================="
 
 # Check if Host Rootfs (read-only) is available for OverlayFS projection
-/bin/busybox mkdir -p /mnt/host_root /mnt/cow /newroot
-if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_root /mnt/host_root 2>/dev/null; then
-    echo "[GUEST] [OK] Mounted host_root read-only"
-    /bin/busybox mount -t tmpfs -o mode=0755 tmpfs /mnt/cow
-    /bin/busybox mkdir -p /mnt/cow/upper /mnt/cow/work
+/bin/busybox mkdir -p /run/host_root /run/cow /newroot 2>/dev/null || true
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_root /run/host_root 2>/dev/null; then
+    echo "[GUEST] [OK] Mounted host_root read-only in /run"
+    /bin/busybox mkdir -p /run/cow/upper /run/cow/work /newroot 2>/dev/null || true
 
-    if /bin/busybox mount -t overlay overlay -o lowerdir=/mnt/host_root,upperdir=/mnt/cow/upper,workdir=/mnt/cow/work,index=off,metacopy=off /newroot 2>&1; then
+    if /bin/busybox mount -t overlay overlay -o lowerdir=/run/host_root,upperdir=/run/cow/upper,workdir=/run/cow/work,index=off,metacopy=off /newroot 2>&1; then
         echo "[GUEST] [OK] Mounted unified OverlayFS on /newroot"
 
         # Prepare newroot directories
-        /bin/busybox mkdir -p /newroot/tmp /newroot/run /newroot/mnt/checkpoint /newroot/dev /newroot/proc /newroot/sys /newroot/etc/dropbear /newroot/root/.ssh /newroot/old_root
+        /bin/busybox mkdir -p /newroot/tmp /newroot/run /newroot/mnt /newroot/dev /newroot/proc /newroot/sys /newroot/etc/dropbear 2>/dev/null || true
+
+        # Mount a dedicated tmpfs over /newroot/root so root homedir is always clean, writable, and independent of host permissions
+        /bin/busybox mount -t tmpfs -o mode=0700 tmpfs /newroot/root 2>/dev/null || true
+        /bin/busybox mkdir -p /newroot/root/.ssh 2>/dev/null || true
+        /bin/busybox chmod 700 /newroot/root /newroot/root/.ssh 2>/dev/null || true
+        /bin/busybox cp -a /root/.ssh/* /newroot/root/.ssh/ 2>/dev/null || true
+        /bin/busybox chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+
+        # Copy Dropbear keys from initramfs into newroot
+        /bin/busybox cp -a /etc/dropbear/* /newroot/etc/dropbear/ 2>/dev/null || true
+
+        # Seed disk detection & mount for dynamic state (/home, /var)
+        /bin/busybox mkdir -p /run/seed /newroot/home /newroot/var 2>/dev/null || true
+        SEED_DEV=""
+        for dev in /dev/vda /dev/vdb /dev/vdc; do
+            if [ -b "${dev}" ]; then
+                SEED_DEV="${dev}"
+                break
+            fi
+        done
+
+        if [ -n "${SEED_DEV}" ]; then
+            echo "[GUEST] [OK] Found seed block device ${SEED_DEV}, mounting for /home and /var..."
+            if /bin/busybox mount "${SEED_DEV}" /run/seed 2>/dev/null; then
+                if [ -d /run/seed/home ]; then
+                    /bin/busybox mount --bind /run/seed/home /newroot/home 2>/dev/null || true
+                    echo "[GUEST] [OK] Mounted private ext4 /home from seed disk"
+                fi
+                if [ -d /run/seed/var ]; then
+                    /bin/busybox mount --bind /run/seed/var /newroot/var 2>/dev/null || true
+                    echo "[GUEST] [OK] Mounted private ext4 /var from seed disk"
+                fi
+                if [ -d /run/seed/root ]; then
+                    /bin/busybox mount --bind /run/seed/root /newroot/root 2>/dev/null || true
+                fi
+            else
+                echo "[GUEST] [WARN] Failed to mount seed device ${SEED_DEV}"
+            fi
+        else
+            echo "[GUEST] [INFO] No seed block device found, /home and /var backed by overlay"
+        fi
+
+        # Ensure root SSH authorized keys are present in /newroot/root/.ssh even if seed mounted over /root
+        /bin/busybox mkdir -p /newroot/root/.ssh 2>/dev/null || true
+        /bin/busybox chmod 700 /newroot/root /newroot/root/.ssh 2>/dev/null || true
+        /bin/busybox cp -a /root/.ssh/* /newroot/root/.ssh/ 2>/dev/null || true
+        /bin/busybox chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+
+        # Ensure /newroot/etc/shadow is readable so Dropbear can authenticate root
+        if ! /bin/busybox test -r /newroot/etc/shadow 2>/dev/null; then
+            cat << 'SHADOWEOF' > /newroot/etc/shadow
+root:*:19700:0:99999:7:::
+daemon:*:19700:0:99999:7:::
+bin:*:19700:0:99999:7:::
+sys:*:19700:0:99999:7:::
+sync:*:19700:0:99999:7:::
+games:*:19700:0:99999:7:::
+man:*:19700:0:99999:7:::
+lp:*:19700:0:99999:7:::
+mail:*:19700:0:99999:7:::
+news:*:19700:0:99999:7:::
+uucp:*:19700:0:99999:7:::
+proxy:*:19700:0:99999:7:::
+www-data:*:19700:0:99999:7:::
+backup:*:19700:0:99999:7:::
+list:*:19700:0:99999:7:::
+irc:*:19700:0:99999:7:::
+gnats:*:19700:0:99999:7:::
+nobody:*:19700:0:99999:7:::
+runner:*:19700:0:99999:7:::
+SHADOWEOF
+            chmod 640 /newroot/etc/shadow 2>/dev/null || true
+        fi
+
+        # Exclude host identity files and replace /etc/fstab to prevent 90s device timeouts
+        rm -f /newroot/etc/machine-id /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
+        touch /newroot/etc/machine-id 2>/dev/null || true
+        cat << 'FSTABEOF' > /newroot/etc/fstab
+# /etc/fstab: MicroVM guest filesystem table
+/dev/root / ext4 defaults 0 0
+FSTABEOF
 
         # Mark VM
-        /bin/busybox touch /newroot/tmp/is_vm
-        echo "is_vm" > /newroot/tmp/is_vm
+        /bin/busybox touch /newroot/tmp/is_vm 2>/dev/null || true
+        echo "is_vm" > /newroot/tmp/is_vm 2>/dev/null || true
 
         # Static DNS
         cat << 'DNSEOF' > /newroot/etc/resolv.conf
@@ -553,19 +637,20 @@ nameserver 1.1.1.1
 DNSEOF
 
         # Mask conflicting systemd units in overlay upperdir
-        mkdir -p /newroot/etc/systemd/system /newroot/etc/systemd/network
+        mkdir -p /newroot/etc/systemd/system /newroot/etc/systemd/network 2>/dev/null || true
         for svc in $(find /newroot/etc/systemd/system -name 'actions.runner*.service' 2>/dev/null); do
-            ln -sf /dev/null "/newroot/etc/systemd/system/$(basename "$svc")"
+            ln -sf /dev/null "/newroot/etc/systemd/system/$(basename "$svc")" 2>/dev/null || true
         done
         for svc in walinuxagent.service cloud-init.service cloud-init-local.service \
                    cloud-config.service cloud-final.service azure-setup.service \
                    unattended-upgrades.service apt-daily.service apt-daily.timer \
                    apt-daily-upgrade.service apt-daily-upgrade.timer \
-                   snapd.service snapd.socket snapd.seeded.service \
+                   snapd.service snapd.socket snapd.seeded.service snapd.apparmor.service snapd.mounts.target \
+                   apparmor.service \
                    systemd-udev-settle.service \
                    systemd-networkd.service systemd-networkd-wait-online.service \
                    NetworkManager.service; do
-            ln -sf /dev/null "/newroot/etc/systemd/system/${svc}"
+            ln -sf /dev/null "/newroot/etc/systemd/system/${svc}" 2>/dev/null || true
         done
         cat << 'NETEOF' > /newroot/etc/systemd/network/99-unmanaged-all.network
 [Match]
@@ -575,66 +660,57 @@ Name=eth* tap* lo
 Unmanaged=yes
 NETEOF
 
-        # Mount checkpoint into newroot & stage images
-        mkdir -p /newroot/tmp/restore
-        /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=none checkpoint /newroot/mnt/checkpoint 2>/dev/null || true
-        /bin/busybox cp -a /newroot/mnt/checkpoint/*.img /newroot/mnt/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
+        # Link checkpoint into newroot & stage images
+        mkdir -p /newroot/tmp/restore /newroot/mnt/checkpoint 2>/dev/null || true
+        /bin/busybox cp -a /run/checkpoint/*.img /run/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
         /bin/busybox chmod -R 777 /newroot/tmp/restore 2>/dev/null || true
-        /bin/busybox ln -sf /mnt/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
+        /bin/busybox ln -sf /run/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
+        /bin/busybox ln -sf /run/checkpoint /newroot/mnt/checkpoint 2>/dev/null || true
         if [ -n "${HOST_CP:-}" ]; then
-            /bin/busybox mkdir -p "$(/bin/busybox dirname "/newroot/${HOST_CP}")"
-            /bin/busybox ln -sf /mnt/checkpoint "/newroot/${HOST_CP}" 2>/dev/null || true
+            /bin/busybox mkdir -p "$(/bin/busybox dirname "/newroot/${HOST_CP}")" 2>/dev/null || true
+            /bin/busybox ln -sf /run/checkpoint "/newroot/${HOST_CP}" 2>/dev/null || true
         fi
 
         # Install t9_restore.sh in newroot
-        cp -a /usr/sbin/t9_restore.sh /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
-        chmod 755 /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
+        /bin/busybox cp -a /usr/sbin/t9_restore.sh /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
+        /bin/busybox chmod 755 /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
 
-        # Pivot root into /newroot
-        echo "[GUEST] Pivoting root into unified Ubuntu rootfs..."
-        cd /newroot
-        /bin/busybox pivot_root . old_root
+        # Mask host OpenSSH so it doesn't conflict with appliance Dropbear on port 22
+        ln -sf /dev/null /newroot/etc/systemd/system/ssh.service 2>/dev/null || true
+        ln -sf /dev/null /newroot/etc/systemd/system/ssh.socket 2>/dev/null || true
+        ln -sf /dev/null /newroot/etc/systemd/system/sshd.service 2>/dev/null || true
 
-        # Remount core pseudo-filesystems in native root
-        /bin/busybox mount -t proc proc /proc
-        /bin/busybox mount -t sysfs sysfs /sys
-        /bin/busybox mount -t devtmpfs devtmpfs /dev
-        /bin/busybox mkdir -p /dev/pts /dev/shm
-        /bin/busybox mount -t devpts devpts /dev/pts
-        /bin/busybox mount -t tmpfs tmpfs /dev/shm
-        /bin/busybox mount -t tmpfs -o mode=0755 tmpfs /run
-        /bin/busybox mkdir -p /run/user/1001 /run/lock /var/run
-        /bin/busybox chown 1001:1001 /run/user/1001 2>/dev/null || true
+        # Create Dropbear systemd service unit
+        cat << 'DROPEOF' > /newroot/etc/systemd/system/dropbear.service
+[Unit]
+Description=MicroVM Dropbear SSH Server
+DefaultDependencies=no
+After=network.target
 
-        # Restore /dev/shm from checkpoint if present
-        if [ -d /mnt/checkpoint/dev_shm ]; then
-            echo "[GUEST] Restoring /dev/shm from host..."
-            cp -a /mnt/checkpoint/dev_shm/* /dev/shm/ 2>/dev/null || true
-            chmod 1777 /dev/shm
-        fi
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dropbear -R -E -s -p 22 -F
+Restart=always
 
-        # Start Dropbear SSH inside the new root
-        mkdir -p /var/run /var/log /etc/dropbear /root/.ssh
-        chown -R 0:0 /root /etc/dropbear 2>/dev/null || true
-        chmod 755 /root
-        chmod 700 /root/.ssh
-        cp -a /old_root/root/.ssh/* /root/.ssh/ 2>/dev/null || true
-        chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+[Install]
+WantedBy=multi-user.target
+DROPEOF
+        mkdir -p /newroot/etc/systemd/system/multi-user.target.wants 2>/dev/null || true
+        ln -sf /etc/systemd/system/dropbear.service /newroot/etc/systemd/system/multi-user.target.wants/dropbear.service 2>/dev/null || true
 
-        echo "[GUEST] Starting Dropbear SSH on port 22 in pivoted root..."
-        if [ -x /usr/sbin/dropbear ]; then
-            /usr/sbin/dropbear -R -E -s -p 22 2>&1 || /old_root/usr/sbin/dropbear -R -E -s -p 22 2>&1 || true
-        else
-            /old_root/usr/sbin/dropbear -R -E -s -p 22 2>&1 || true
-        fi
-        echo SSH_READY
-        echo "[GUEST] SSH_READY — full Ubuntu userspace active!"
-        progress "SSH_READY_OVERLAY"
+        # Unmount non-moved temporary filesystems in initramfs
+        /bin/busybox umount /dev/pts /dev/shm /tmp /sys/fs/cgroup 2>/dev/null || true
+        /bin/busybox umount /sys /proc /dev 2>/dev/null || true
 
-        while true; do
-            /bin/busybox sleep 30
-            progress "appliance still up (overlay root)"
-        done
+        # Mount pristine virtual filesystems directly inside newroot
+        /bin/busybox mount -t proc proc /newroot/proc 2>/dev/null || true
+        /bin/busybox mount -t sysfs sysfs /newroot/sys 2>/dev/null || true
+        /bin/busybox mount -t devtmpfs devtmpfs /newroot/dev 2>/dev/null || true
+        /bin/busybox mount -o move /run /newroot/run 2>/dev/null || true
+
+        echo "[GUEST] Switching root to OverlayFS and handing PID 1 to host systemd via run-init..."
+        exec /sbin/run-init /newroot /sbin/init < /newroot/dev/console > /newroot/dev/console 2>&1
+        echo "[GUEST] [FATAL] exec run-init returned: $?"
     else
         echo "[GUEST] [WARN] OverlayFS mount failed, falling back to legacy 9p mounts"
     fi

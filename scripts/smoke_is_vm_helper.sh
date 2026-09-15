@@ -420,6 +420,20 @@ MEM_ARG="${QEMU_MEM:-2G}"
 [[ "${MEM_ARG}" =~ ^[0-9]+$ ]] && MEM_ARG="${MEM_ARG}M"
 SMP_ARG="${QEMU_SMP:-2}"
 
+SEED_DRIVE_ARGS=()
+SEED_DISK_PATH="${SEED_DISK:-}"
+[ -z "${SEED_DISK_PATH}" ] && [ -f "${CHECKPOINT_DIR}/seed.img" ] && SEED_DISK_PATH="${CHECKPOINT_DIR}/seed.img"
+[ -z "${SEED_DISK_PATH}" ] && [ -f "/tmp/test_seed.qcow2" ] && SEED_DISK_PATH="/tmp/test_seed.qcow2"
+
+if [ -n "${SEED_DISK_PATH}" ] && [ -f "${SEED_DISK_PATH}" ]; then
+    SEED_FMT="raw"
+    if [[ "${SEED_DISK_PATH}" == *.qcow2 ]]; then
+        SEED_FMT="qcow2"
+    fi
+    SEED_DRIVE_ARGS=(-drive "file=${SEED_DISK_PATH},if=virtio,format=${SEED_FMT},id=seed_disk")
+    log "attaching seed disk ${SEED_DISK_PATH} with format=${SEED_FMT}"
+fi
+
 set +e
 qemu-system-x86_64 \
     ${ACCEL_ARGS} -m "${MEM_ARG}" -smp "${SMP_ARG}" \
@@ -430,6 +444,7 @@ qemu-system-x86_64 \
     -no-reboot \
     "${NETDEV_ARGS[@]}" \
     "${VIRTFS_ARGS[@]}" \
+    "${SEED_DRIVE_ARGS[@]}" \
     -serial "file:${SERIAL_LOG}" >> "${HELPER_LOG}" 2>&1 &
 QEMU_PID=$!
 set -e
