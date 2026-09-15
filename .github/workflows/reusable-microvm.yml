@@ -31,12 +31,11 @@ jobs:
       - name: Checkout Caller Repository
         uses: actions/checkout@v4
 
-      - name: Checkout MicroVM Action
-        uses: actions/checkout@v4
-        with:
-          repository: alonlevin1-coder/runner-criu-test
-          ref: port/is-vm-worker-migration
-          path: .github/actions/microvm
+      - name: Resolve MicroVM Action
+        shell: bash
+        run: |
+          mkdir -p .github/actions/microvm
+          cp -a action.yml scripts appliance bin .github/actions/microvm/ 2>/dev/null || true
 
       - name: Migrate to MicroVM
         uses: ./.github/actions/microvm
