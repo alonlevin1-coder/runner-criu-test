@@ -35,6 +35,7 @@ BB_APPLETS=(
     sh mount umount mkdir rm cp mv ln ls ps cat echo grep egrep sed awk
     sleep sync date hostname uname ifconfig ip route insmod modprobe rmmod
     poweroff reboot tr find chmod chown test kill killall tail head vi readlink
+    pivot_root switch_root
 )
 for applet in "${BB_APPLETS[@]}"; do
     ln -sf /bin/busybox "${STAGING}/bin/${applet}"
@@ -212,6 +213,16 @@ for bin_to_check in "${DROPBEAR_BIN}" ${DROPBEARKEY_BIN:-}; do
         fi
     done
 done
+
+# Package official Ubuntu run-init binary and its klibc shared runtime
+if [ -f /usr/lib/klibc/bin/run-init ]; then
+    rm -f "${STAGING}/sbin/run-init"
+    cp -a /usr/lib/klibc/bin/run-init "${STAGING}/sbin/run-init"
+    chmod 755 "${STAGING}/sbin/run-init"
+    mkdir -p "${STAGING}/usr/lib" "${STAGING}/lib"
+    cp -a /usr/lib/klibc-*.so "${STAGING}/usr/lib/" 2>/dev/null || true
+    cp -a /lib/klibc-*.so "${STAGING}/lib/" 2>/dev/null || true
+fi
 
 # Copy extra CoreCLR and system runtime libraries from host
 EXTRA_LIBS=(
@@ -402,11 +413,47 @@ ethers:         files
 rpc:            files
 EOF
 
+# Guest-safe /etc/fstab stub (avoids host block device wait stalls under systemd)
+cat << 'EOF' > "${STAGING}/etc/fstab"
+# /etc/fstab: MicroVM guest filesystem table (rootfs mounted by initramfs)
+EOF
+
+# Fresh machine-id for systemd-machine-id-setup
+touch "${STAGING}/etc/machine-id"
+
+# Shadow authentication file for guest accounts
+cat << 'EOF' > "${STAGING}/etc/shadow"
+root:*:19700:0:99999:7:::
+runner:*:19700:0:99999:7:::
+EOF
+chmod 640 "${STAGING}/etc/shadow"
+
+# Mask conflicting host services that would race Dropbear or unmanage network
+mkdir -p "${STAGING}/etc/systemd/system" "${STAGING}/etc/systemd/network"
+for svc in ssh.service ssh.socket sshd.service \
+           walinuxagent.service cloud-init.service cloud-init-local.service \
+           cloud-config.service cloud-final.service azure-setup.service \
+           unattended-upgrades.service apt-daily.service apt-daily.timer \
+           apt-daily-upgrade.service apt-daily-upgrade.timer \
+           snapd.service snapd.socket snapd.seeded.service \
+           systemd-udev-settle.service \
+           systemd-networkd.service systemd-networkd-wait-online.service \
+           NetworkManager.service; do
+    ln -sf /dev/null "${STAGING}/etc/systemd/system/${svc}"
+done
+cat << 'EOF' > "${STAGING}/etc/systemd/network/99-unmanaged-all.network"
+[Match]
+Name=eth* tap* lo
+
+[Link]
+Unmanaged=yes
+EOF
+
 # 6. Generate guest /init
 echo "[6/7] Writing guest /init..."
 cat << 'EOF' > "${STAGING}/init"
 #!/bin/busybox sh
-set -e
+set +e
 
 progress() {
     msg="$*"
@@ -506,87 +553,136 @@ echo "=== Kernel:   $(/bin/busybox uname -r)                 ==="
 echo "=== PID 1:    /bin/busybox sh /init                    ==="
 echo "=========================================================="
 
-# Mount remaining 9p shares
-/bin/busybox mkdir -p /home/runner /host_tmp /mnt/usrlib /host_usr /host_bin /host_lib /host_lib64 /host_opt /opt /usr/share/dotnet
+# 1. Base rootfs tmpfs for systemd switch_root
+/bin/busybox mkdir -p /newroot
+/bin/busybox mount -t tmpfs -o mode=0755 tmpfs /newroot
 
-echo "[GUEST] Mounting 9p shares..."
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /home/runner 2>&1 && echo "[GUEST] [OK] Mounted host_runner share" || echo "[GUEST] [FAIL] host_runner mount failed!"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_tmp /host_tmp 2>&1 && echo "[GUEST] [OK] Mounted host_tmp share" || echo "[GUEST] [FAIL] host_tmp mount failed!"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose usrlib /mnt/usrlib 2>&1 && echo "[GUEST] [OK] Mounted usrlib share" || echo "[GUEST] [WARN] usrlib mount failed (using initramfs libs)"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_usr /host_usr 2>&1 && echo "[GUEST] [OK] Mounted host_usr share" || echo "[GUEST] [WARN] host_usr mount failed"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_bin /host_bin 2>&1 && echo "[GUEST] [OK] Mounted host_bin share" || echo "[GUEST] [WARN] host_bin mount failed"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_lib /host_lib 2>&1 && echo "[GUEST] [OK] Mounted host_lib share" || echo "[GUEST] [WARN] host_lib mount failed"
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_lib64 /host_lib64 2>&1 && echo "[GUEST] [OK] Mounted host_lib64 share" || echo "[GUEST] [WARN] host_lib64 mount failed"
-if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_opt /host_opt 2>/dev/null; then
-    echo "[GUEST] [OK] Mounted host_opt share"
+# 2. Standard directory layout and merged-usr symlinks (/bin, /sbin, /lib, /lib64 -> usr/...)
+/bin/busybox mkdir -p /newroot/usr /newroot/opt /newroot/etc /newroot/var /newroot/home /newroot/root \
+                      /newroot/tmp /newroot/run /newroot/mnt /newroot/dev /newroot/proc /newroot/sys
+/bin/busybox ln -sf usr/bin /newroot/bin
+/bin/busybox ln -sf usr/sbin /newroot/sbin
+/bin/busybox ln -sf usr/lib /newroot/lib
+/bin/busybox ln -sf usr/lib64 /newroot/lib64
+
+# 3. Mount 9p shares into newroot
+echo "[GUEST] Mounting 9p shares into /newroot..."
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_usr /newroot/usr 2>&1 \
+    && echo "[GUEST] [OK] Mounted host_usr at /newroot/usr" \
+    || echo "[GUEST] [FAIL] host_usr mount failed!"
+
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_opt /newroot/opt 2>/dev/null; then
+    echo "[GUEST] [OK] Mounted host_opt at /newroot/opt"
+fi
+
+/bin/busybox mkdir -p /newroot/home/runner
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /newroot/home/runner 2>&1 \
+    && echo "[GUEST] [OK] Mounted host_runner share" \
+    || echo "[GUEST] [FAIL] host_runner mount failed!"
+
+if [ -d /newroot/usr/share/dotnet ]; then
+    /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose dotnet /newroot/usr/share/dotnet 2>/dev/null || true
+fi
+
+# Move checkpoint share from initramfs to newroot
+/bin/busybox mkdir -p /newroot/mnt/checkpoint
+if /bin/busybox mount --move /mnt/checkpoint /newroot/mnt/checkpoint 2>/dev/null; then
+    echo "[GUEST] [OK] Moved checkpoint share to /newroot/mnt/checkpoint"
 else
-    echo "[GUEST] [INFO] host_opt share not present"
-fi
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose dotnet /usr/share/dotnet 2>&1 && echo "[GUEST] [OK] Mounted dotnet share" || echo "[GUEST] [WARN] dotnet mount failed"
-
-
-# Populate missing libraries from usrlib share
-if [ -d /mnt/usrlib ]; then
-    for f in /mnt/usrlib/*; do
-        fname="$(/bin/busybox basename "$f")"
-        if [ ! -e "/usr/lib/x86_64-linux-gnu/$fname" ]; then
-            /bin/busybox ln -sf "$f" "/usr/lib/x86_64-linux-gnu/$fname" 2>/dev/null || true
-        fi
-        if [ ! -e "/lib/x86_64-linux-gnu/$fname" ]; then
-            /bin/busybox ln -sf "$f" "/lib/x86_64-linux-gnu/$fname" 2>/dev/null || true
-        fi
-    done
+    /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=none checkpoint /newroot/mnt/checkpoint 2>&1 \
+        && echo "[GUEST] [OK] Mounted checkpoint share in /newroot" \
+        || echo "[GUEST] [FAIL] checkpoint mount in /newroot failed"
 fi
 
-# Populate host /dev/shm
-if [ -d /mnt/checkpoint/dev_shm ]; then
+# 4. Share /etc simply by copying staged /etc from initramfs
+echo "[GUEST] Copying staged /etc into /newroot..."
+/bin/busybox cp -a /etc/* /newroot/etc/ 2>/dev/null || true
+
+# Identity & config requirements for systemd PID 1
+cat << 'FSTABEOF' > /newroot/etc/fstab
+# /etc/fstab: MicroVM guest filesystem table (rootfs mounted by initramfs)
+FSTABEOF
+
+rm -f /newroot/etc/machine-id 2>/dev/null || true
+touch /newroot/etc/machine-id
+rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
+
+/bin/busybox chown 0:0 /newroot/etc/sudoers 2>/dev/null || true
+/bin/busybox chmod 0440 /newroot/etc/sudoers 2>/dev/null || true
+
+# 5. Root & Dropbear auth setup in /newroot
+/bin/busybox mkdir -p /newroot/root/.ssh /newroot/etc/dropbear /newroot/var/run /newroot/var/log
+/bin/busybox chown -R 0:0 /newroot/root /newroot/etc/dropbear 2>/dev/null || true
+/bin/busybox chmod 755 /newroot/root
+/bin/busybox chmod 700 /newroot/root/.ssh
+/bin/busybox cp -a /root/.ssh/* /newroot/root/.ssh/ 2>/dev/null || true
+/bin/busybox chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+/bin/busybox cp -a /etc/dropbear/* /newroot/etc/dropbear/ 2>/dev/null || true
+
+# Copy Dropbear binary, BusyBox, and restore script into newroot
+/bin/busybox cp -a /usr/sbin/dropbear /newroot/usr/sbin/dropbear 2>/dev/null || true
+/bin/busybox chmod 755 /newroot/usr/sbin/dropbear 2>/dev/null || true
+/bin/busybox cp -a /usr/sbin/t9_restore.sh /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
+/bin/busybox chmod 755 /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
+/bin/busybox cp -a /bin/busybox /newroot/bin/busybox 2>/dev/null || true
+/bin/busybox chmod 755 /newroot/bin/busybox 2>/dev/null || true
+
+if [ -f /opt_sudo_shim ]; then
+    /bin/busybox cp -a /opt_sudo_shim /newroot/opt_sudo_shim 2>/dev/null || true
+    /bin/busybox chmod 4755 /newroot/opt_sudo_shim 2>/dev/null || true
+fi
+
+for candidate in /usr/sbin/criu /sbin/criu /usr/local/sbin/criu; do
+    if [ -f "$candidate" ]; then
+        /bin/busybox cp -a "$candidate" /newroot/usr/sbin/criu 2>/dev/null || true
+        /bin/busybox cp -a "$candidate" /newroot/usr/local/sbin/criu 2>/dev/null || true
+        /bin/busybox chmod 755 /newroot/usr/sbin/criu /newroot/usr/local/sbin/criu 2>/dev/null || true
+        break
+    fi
+done
+
+# 6. Checkpoint images and VM marker staging
+/bin/busybox mkdir -p /newroot/tmp/restore
+/bin/busybox cp -a /newroot/mnt/checkpoint/*.img /newroot/mnt/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
+/bin/busybox chmod -R 777 /newroot/tmp/restore 2>/dev/null || true
+/bin/busybox touch /newroot/tmp/is_vm
+/bin/busybox echo "is_vm" > /newroot/tmp/is_vm
+/bin/busybox ln -sf /mnt/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
+
+# 7. Mount pristine virtual kernel filesystems in /newroot
+/bin/busybox mount -t proc proc /newroot/proc 2>/dev/null || true
+/bin/busybox mount -t sysfs sysfs /newroot/sys 2>/dev/null || true
+/bin/busybox mount -t devtmpfs devtmpfs /newroot/dev 2>/dev/null || true
+/bin/busybox mount -t tmpfs -o mode=0755 tmpfs /newroot/run 2>/dev/null || true
+/bin/busybox mount -t tmpfs -o mode=1777 tmpfs /newroot/tmp 2>/dev/null || true
+/bin/busybox mkdir -p /newroot/dev/pts /newroot/dev/shm
+/bin/busybox mount -t devpts devpts /newroot/dev/pts 2>/dev/null || true
+/bin/busybox mount -t tmpfs tmpfs /newroot/dev/shm 2>/dev/null || true
+if [ -d /newroot/mnt/checkpoint/dev_shm ]; then
     echo "[GUEST] Restoring /dev/shm from host..."
-    /bin/busybox cp -a /mnt/checkpoint/dev_shm/* /dev/shm/ 2>/dev/null || true
-    /bin/busybox chmod 1777 /dev/shm
+    /bin/busybox cp -a /newroot/mnt/checkpoint/dev_shm/* /newroot/dev/shm/ 2>/dev/null || true
+    /bin/busybox chmod 1777 /newroot/dev/shm
 fi
 
-# Populate host /tmp if needed (excluding any stale socket files)
-if [ -d /mnt/checkpoint/host_tmp ]; then
-    echo "[GUEST] Restoring /tmp from host..."
-    /bin/busybox cp -a /mnt/checkpoint/host_tmp/* /tmp/ 2>/dev/null || true
-fi
-
-# Ensure diagnostic socket path is clean for CRIU bind
-/bin/busybox rm -f /tmp/dotnet-diagnostic-*
-
-# Inspect checkpoint share (restore is invoked later over SSH, not from PID 1)
-echo "[GUEST] Inspecting /mnt/checkpoint contents:"
-/bin/busybox ls -lh /mnt/checkpoint 2>&1 || true
-
-/bin/busybox mkdir -p /tmp/restore
-echo "[GUEST] Copying checkpoint images to local tmpfs..."
-/bin/busybox cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>/dev/null || true
-/bin/busybox chmod -R 777 /tmp/restore 2>/dev/null || true
-/bin/busybox chmod 755 /
-echo "[GUEST] Testing CRIU binary..."
-/bin/busybox ls -la /usr/sbin/criu /usr/sbin/dropbear /lib64/ld-linux-x86-64.so.2 2>&1 || true
-/usr/sbin/criu --version 2>&1 || echo "[GUEST] Warning: /usr/sbin/criu failed"
-progress "appliance criu ok"
-
-echo "[GUEST] Starting dropbear SSH on :22"
-/bin/busybox mkdir -p /var/run /var/log /etc/dropbear /root/.ssh
-# initramfs was packed as the host runner user; dropbear requires uid 0 and mode 755.
-/bin/busybox chown -R 0:0 /root /etc/dropbear 2>/dev/null || true
-/bin/busybox chmod 755 /root
-/bin/busybox chmod 700 /root/.ssh
-/bin/busybox chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
-/bin/busybox ls -ld / /root /root/.ssh
-/usr/sbin/dropbear -R -E -s -p 22 2>&1 || /usr/sbin/dropbear -R -E -p 22 2>&1 || echo "[GUEST] [FAIL] dropbear"
+# 8. Start early Dropbear SSH server directly before switch_root
+echo "[GUEST] Starting early Dropbear SSH server..."
+/bin/busybox chroot /newroot /usr/sbin/dropbear -R -E -s -p 22 2>&1 || /usr/sbin/dropbear -R -E -s -p 22 2>&1 || echo "[GUEST] [FAIL] dropbear start failed"
 progress "dropbear started"
 echo SSH_READY
-echo "[GUEST] SSH_READY — waiting for host to run /usr/sbin/t9_restore.sh"
+echo "[GUEST] SSH_READY — Dropbear listening on port 22 before systemd handoff"
 progress "SSH_READY"
 
-# Stay up. Host helper logs in and runs restore. Poweroff is host-driven.
-while true; do
-    /bin/busybox sleep 30
-    progress "appliance still up"
-done
+# 9. Unmount temporary filesystems in early initramfs
+/bin/busybox umount /dev/pts /dev/shm /tmp /mnt/checkpoint /mnt 2>/dev/null || true
+/bin/busybox umount /sys /proc /dev 2>/dev/null || true
+
+# 10. Switch root and hand off PID 1 to systemd via run-init
+echo "[GUEST] Switching root to systemd PID 1 via run-init..."
+if [ -x /sbin/run-init ]; then
+    exec /sbin/run-init -p -c /dev/console /newroot /sbin/init
+fi
+exec /bin/busybox switch_root /newroot /sbin/init
+echo "[GUEST] [FATAL] switch_root returned: $?"
 EOF
 chmod 755 "${STAGING}/init"
 
@@ -696,8 +792,14 @@ if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
     esac
 fi
 echo "[GUEST] t9_restore: criu restore ${TCP_FLAG}"
-export PATH="/sbin:/usr/sbin:/bin:/usr/bin:${PATH:-}"
-/sbin/criu restore -d -D /tmp/restore \
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+CRIU_BIN=""
+for candidate in /usr/local/sbin/criu /usr/sbin/criu /sbin/criu /bin/criu; do
+    if [ -x "$candidate" ]; then CRIU_BIN="$candidate"; break; fi
+done
+[ -n "$CRIU_BIN" ] || CRIU_BIN="$(command -v criu || echo /usr/sbin/criu)"
+echo "[GUEST] Using CRIU binary: ${CRIU_BIN}"
+"${CRIU_BIN}" restore -d -D /tmp/restore \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check "${TCP_FLAG}" \
     --ghost-limit 32M \
     -v4 -o /mnt/checkpoint/restore_log.txt
