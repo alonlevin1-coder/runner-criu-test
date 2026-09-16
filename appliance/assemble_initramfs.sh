@@ -441,6 +441,7 @@ for svc in ssh.service ssh.socket sshd.service \
            NetworkManager.service; do
     ln -sf /dev/null "${STAGING}/etc/systemd/system/${svc}"
 done
+ln -sf /usr/lib/systemd/system/multi-user.target "${STAGING}/etc/systemd/system/default.target"
 cat << 'EOF' > "${STAGING}/etc/systemd/network/99-unmanaged-all.network"
 [Match]
 Name=eth* tap* lo
@@ -606,6 +607,7 @@ FSTABEOF
 rm -f /newroot/etc/machine-id 2>/dev/null || true
 touch /newroot/etc/machine-id
 rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
+/bin/busybox ln -sf /usr/lib/systemd/system/multi-user.target /newroot/etc/systemd/system/default.target 2>/dev/null || true
 
 /bin/busybox chown 0:0 /newroot/etc/sudoers 2>/dev/null || true
 /bin/busybox chmod 0440 /newroot/etc/sudoers 2>/dev/null || true
@@ -622,8 +624,11 @@ rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
 # Copy Dropbear binary, BusyBox, and restore script into newroot
 /bin/busybox cp -a /usr/sbin/dropbear /newroot/usr/sbin/dropbear 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/usr/sbin/dropbear 2>/dev/null || true
-/bin/busybox cp -a /usr/sbin/t9_restore.sh /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
-/bin/busybox chmod 755 /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
+/bin/busybox cp -a /usr/sbin/t9_restore.sh /newroot/t9_restore.sh 2>/dev/null || true
+/bin/busybox chmod 755 /newroot/t9_restore.sh 2>/dev/null || true
+if [ -f /newroot/usr/sbin/t9_restore.sh ]; then
+    /bin/busybox mount --bind /newroot/t9_restore.sh /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
+fi
 /bin/busybox cp -a /bin/busybox /newroot/bin/busybox 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/bin/busybox 2>/dev/null || true
 
