@@ -72,6 +72,19 @@ jobs:
           fi
           echo "CONFIRMED: guest /var has dpkg status ($(wc -l < /var/lib/dpkg/status) lines)"
 
+          echo "--- Guest apt-get install (hello) ---"
+          export DEBIAN_FRONTEND=noninteractive
+          if dpkg -s hello >/dev/null 2>&1; then
+            echo "hello already installed; reinstalling to prove dpkg writes"
+            sudo apt-get install -y --no-install-recommends --reinstall hello
+          else
+            sudo apt-get install -y --no-install-recommends hello
+          fi
+          hello
+          command -v hello
+          echo "hello" > /tmp/vm_step1_apt_ok.txt
+          echo "CONFIRMED: apt-get install hello succeeded in guest"
+
           echo "--- Checking guest identity in /etc ---"
           echo "Guest Machine ID: $(cat /etc/machine-id)"
           if [ -z "$(cat /etc/machine-id 2>/dev/null)" ]; then
@@ -132,6 +145,13 @@ jobs:
             exit 1
           fi
           echo "CONFIRMED: guest /etc write persisted across steps: $(cat /etc/vm_etc_overlay_test.txt)"
+
+          if [ ! -f /tmp/vm_step1_apt_ok.txt ]; then
+            echo "FAIL: apt install marker missing in Step 2"
+            exit 1
+          fi
+          hello
+          echo "CONFIRMED: hello binary still works in Step 2"
 
           echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
           echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"
