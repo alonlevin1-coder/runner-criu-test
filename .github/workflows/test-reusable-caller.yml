@@ -12,8 +12,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Resolve MicroVM Action
+        shell: bash
+        run: |
+          mkdir -p .github/actions/microvm
+          cp -a action.yml scripts appliance bin .github/actions/microvm/ 2>/dev/null || true
+
       - name: Migrate Runner to MicroVM
-        uses: ./
+        uses: ./.github/actions/microvm
         with:
           tcp-mode: established
           memory-mb: '4096'

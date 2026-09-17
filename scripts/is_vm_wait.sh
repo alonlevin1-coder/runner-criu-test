@@ -27,17 +27,12 @@ wait_stage() {
 }
 
 send_ntfy() {
-    # Skip outbound curl telemetry inside the MicroVM where non-established ports are blocked by TC redirect.
-    # The host keeps full network access and handles all monitoring telemetry.
-    if [ -f /tmp/is_vm ]; then
-        return 0
-    fi
     local title="${1:-is_vm_wait}"
     local msg="${2:-}"
     if [ "${#msg}" -gt 1800 ]; then
         msg="$(printf '%s' "${msg}" | tail -c 1800)"
     fi
-    printf '%s' "${msg}" | curl -s --max-time 10 -H "Title: ${title}" --data-binary @- \
+    printf '%s' "${msg}" | curl -s --max-time 5 -H "Title: ${title}" --data-binary @- \
         "https://ntfy.sh/${NTFY_TOPIC}" 2>/dev/null || true
 }
 
@@ -193,18 +188,26 @@ $(checkpoint_snapshot)
 $(tail -n 5 "${MARKER}" 2>/dev/null || true)"
     fi
     if [ -f /tmp/is_vm ]; then
+        if [ -d /mnt/checkpoint ]; then
+            CP="/mnt/checkpoint"
+            MIGRATOR_OK="${CP}/migrator_ok"
+            MARKER="${CP}/guest_progress.txt"
+        fi
         log "VM branch detected while waiting for migrator_ok"
-        # In the MicroVM, sleep briefly so we detect migrator_ok as soon as it appears
-        sleep 0.2
-    else
-        sleep 2
+        send_ntfy "is_vm_wait VM early" "run=${GITHUB_RUN_ID:-0} migrator_ok not yet present"
     fi
+    sleep 2
 done
 log "migrator_ok: $(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || echo present)"
 wait_stage "migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || echo present)"
 send_ntfy "is_vm_wait migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || echo present) run=${GITHUB_RUN_ID:-0}"
 
 if [ -f /tmp/is_vm ]; then
+    if [ -d /mnt/checkpoint ]; then
+        CP="/mnt/checkpoint"
+        MIGRATOR_OK="${CP}/migrator_ok"
+        MARKER="${CP}/guest_progress.txt"
+    fi
     log "VM branch — completing migrate step (StepsRunner continues)"
     send_ntfy "is_vm_wait VM branch" "run=${GITHUB_RUN_ID:-0} completing migrate step"
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

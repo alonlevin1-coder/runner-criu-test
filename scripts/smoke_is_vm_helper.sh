@@ -491,15 +491,15 @@ ls -lh "${CHECKPOINT_DIR}"/*.img 2>/dev/null | tee -a "${HELPER_LOG}" || true
 if [ "${RESTORE_RC}" -eq 0 ]; then
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     chmod -R a+rwX "${CHECKPOINT_DIR}" 2>/dev/null || true
-    echo "migrator_ok ts=${TS} restore_rc=0" > "${CHECKPOINT_DIR}/migrator_ok"
-    chmod a+rw "${CHECKPOINT_DIR}/migrator_ok" 2>/dev/null || true
-    stage_mark "migrator_ok" "restore_rc=0"
-
-    # Activate TC redirect and remove CRIU drop rules now that guest sockets are restored
+    # Activate TC redirect and remove CRIU drop rules FIRST so guest network is fully live before migrator_ok
     if [ -x "${SCRIPT_DIR}/host_tap_activate.sh" ]; then
         log "running host_tap_activate.sh to enable TC redirect and remove DROP rules"
         "${SCRIPT_DIR}/host_tap_activate.sh" "${CHECKPOINT_DIR}" 2>&1 | tee -a "${HELPER_LOG}" || true
     fi
+
+    echo "migrator_ok ts=${TS} restore_rc=0" > "${CHECKPOINT_DIR}/migrator_ok"
+    chmod a+rw "${CHECKPOINT_DIR}/migrator_ok" 2>/dev/null || true
+    stage_mark "migrator_ok" "restore_rc=0"
 
     if [ "${CRIU_TCP_MODE}" = "established" ]; then
         log "wrote migrator_ok — host Worker stays frozen (GHA: never kill/unfreeze)"
