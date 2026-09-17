@@ -612,22 +612,69 @@ else
         || echo "[GUEST] [FAIL] checkpoint mount in /newroot failed"
 fi
 
-# 4. Share /etc simply by copying staged /etc from initramfs
-echo "[GUEST] Copying staged /etc into /newroot..."
-/bin/busybox cp -a /etc/* /newroot/etc/ 2>/dev/null || true
+# 4. Mount host_etc 9p read-only and OverlayFS into newroot
+echo "[GUEST] Mounting host_etc 9p and OverlayFS into /newroot/etc..."
+/bin/busybox mkdir -p /newroot/.overlay/lower_etc /newroot/.overlay/etc_upper /newroot/.overlay/etc_work
 
-# Identity & config requirements for systemd PID 1
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /newroot/.overlay/lower_etc 2>&1 \
+    && echo "[GUEST] [OK] Mounted host_etc at /newroot/.overlay/lower_etc" \
+    || echo "[GUEST] [FAIL] host_etc mount failed!"
+
+/bin/busybox mount -t overlay overlay -o lowerdir=/newroot/.overlay/lower_etc,upperdir=/newroot/.overlay/etc_upper,workdir=/newroot/.overlay/etc_work /newroot/etc 2>&1 \
+    && echo "[GUEST] [OK] Mounted overlayfs on /newroot/etc" \
+    || echo "[GUEST] [FAIL] overlayfs on /newroot/etc failed!"
+
+# Identity & config requirements for systemd PID 1 on /newroot/etc overlay
 cat << 'FSTABEOF' > /newroot/etc/fstab
 # /etc/fstab: MicroVM guest filesystem table (rootfs mounted by initramfs)
 FSTABEOF
 
-rm -f /newroot/etc/machine-id 2>/dev/null || true
-touch /newroot/etc/machine-id
-rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
-/bin/busybox ln -sf /usr/lib/systemd/system/multi-user.target /newroot/etc/systemd/system/default.target 2>/dev/null || true
+# Truncate machine-id so systemd-machine-id-setup generates a fresh guest ID
+: > /newroot/etc/machine-id
 
-/bin/busybox chown 0:0 /newroot/etc/sudoers 2>/dev/null || true
-/bin/busybox chmod 0440 /newroot/etc/sudoers 2>/dev/null || true
+# Clear host SSH host keys from guest overlay
+rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
+
+# Systemd target and service masking on guest overlay
+/bin/busybox mkdir -p /newroot/etc/systemd/system /newroot/etc/systemd/network
+for svc in ssh.service ssh.socket sshd.service \
+           walinuxagent.service cloud-init.service cloud-init-local.service \
+           cloud-config.service cloud-final.service azure-setup.service \
+           unattended-upgrades.service apt-daily.service apt-daily.timer \
+           apt-daily-upgrade.service apt-daily-upgrade.timer \
+           snapd.service snapd.socket snapd.seeded.service \
+           systemd-udev-settle.service \
+           systemd-networkd.service systemd-networkd-wait-online.service \
+           NetworkManager.service; do
+    /bin/busybox ln -sf /dev/null "/newroot/etc/systemd/system/${svc}"
+done
+/bin/busybox ln -sf /usr/lib/systemd/system/multi-user.target /newroot/etc/systemd/system/default.target 2>/dev/null || true
+cat << 'NETEOF' > /newroot/etc/systemd/network/99-unmanaged-all.network
+[Match]
+Name=eth* tap* lo
+
+[Link]
+Unmanaged=yes
+NETEOF
+
+# Copy Dropbear host keys and config from initramfs to /newroot/etc/dropbear/
+/bin/busybox mkdir -p /newroot/etc/dropbear
+/bin/busybox cp -a /etc/dropbear/* /newroot/etc/dropbear/ 2>/dev/null || true
+/bin/busybox chown -R 0:0 /newroot/etc/dropbear 2>/dev/null || true
+/bin/busybox chmod 700 /newroot/etc/dropbear 2>/dev/null || true
+
+# Sudo configuration for runner and root
+/bin/busybox mkdir -p /newroot/etc/sudoers.d
+cat << 'SUDOEOF' > /newroot/etc/sudoers.d/99-runner-nopasswd
+runner ALL=(ALL:ALL) NOPASSWD: ALL
+root ALL=(ALL:ALL) ALL
+SUDOEOF
+/bin/busybox chmod 0440 /newroot/etc/sudoers.d/99-runner-nopasswd 2>/dev/null || true
+/bin/busybox chown -R 0:0 /newroot/etc/sudoers.d 2>/dev/null || true
+
+# Pre-populate VM markers on /newroot/etc/is_vm
+/bin/busybox touch /newroot/etc/is_vm
+/bin/busybox echo "is_vm" > /newroot/etc/is_vm
 
 # 5. Root & Dropbear auth setup in /newroot
 /bin/busybox mkdir -p /newroot/root/.ssh /newroot/etc/dropbear /newroot/var/run /newroot/var/log

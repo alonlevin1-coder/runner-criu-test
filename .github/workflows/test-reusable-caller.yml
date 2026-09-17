@@ -45,15 +45,38 @@ jobs:
           echo "${UPTIME}" > /tmp/vm_step1_uptime.txt
           echo "step1_completed" > /tmp/vm_step1_marker.txt
           
-          echo "--- Checking /usr OverlayFS mount ---"
+          echo "--- Checking /usr & /etc OverlayFS mounts ---"
           if ! mount | grep -E "on /usr type overlay"; then
             echo "FAIL: /usr is not mounted as overlay!"
             mount
             exit 1
           fi
           echo "CONFIRMED: /usr is mounted as overlay"
+
+          if ! mount | grep -E "on /etc type overlay"; then
+            echo "FAIL: /etc is not mounted as overlay!"
+            mount
+            exit 1
+          fi
+          echo "CONFIRMED: /etc is mounted as overlay"
+
+          echo "--- Checking guest identity exclusions in /etc ---"
+          echo "Guest Machine ID: $(cat /etc/machine-id)"
+          if [ -z "$(cat /etc/machine-id 2>/dev/null)" ]; then
+            echo "FAIL: /etc/machine-id is empty!"
+            exit 1
+          fi
+          if ! grep -q "MicroVM guest filesystem table" /etc/fstab; then
+            echo "FAIL: /etc/fstab is not the guest stub!"
+            cat /etc/fstab
+            exit 1
+          fi
+          echo "CONFIRMED: /etc/fstab is guest stub"
+
           echo "Writing test file into /usr/local/bin/..."
           echo "step1_usr_overlay_verified" > /usr/local/bin/vm_usr_overlay_test.txt
+          echo "Writing test file into /etc/..."
+          echo "step1_etc_overlay_verified" > /etc/vm_etc_overlay_test.txt
 
           echo "PASS: Confirmed execution inside MicroVM Step 1!"
 
@@ -85,12 +108,18 @@ jobs:
             exit 1
           fi
 
-          echo "--- Verifying /usr OverlayFS persistence ---"
+          echo "--- Verifying /usr & /etc OverlayFS persistence ---"
           if [ ! -f /usr/local/bin/vm_usr_overlay_test.txt ]; then
             echo "FAIL: /usr/local/bin/vm_usr_overlay_test.txt not found in Step 2!"
             exit 1
           fi
           echo "CONFIRMED: /usr overlay write persisted across steps: $(cat /usr/local/bin/vm_usr_overlay_test.txt)"
+
+          if [ ! -f /etc/vm_etc_overlay_test.txt ]; then
+            echo "FAIL: /etc/vm_etc_overlay_test.txt not found in Step 2!"
+            exit 1
+          fi
+          echo "CONFIRMED: /etc overlay write persisted across steps: $(cat /etc/vm_etc_overlay_test.txt)"
 
           echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
           echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"
