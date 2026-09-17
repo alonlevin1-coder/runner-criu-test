@@ -4,6 +4,11 @@ set -euo pipefail
 
 CP="${RUNNER_VM_CHECKPOINT:-checkpoint}"
 CP="$(cd "${CP}" 2>/dev/null && pwd || echo "${CP}")"
+# In the MicroVM, /mnt/checkpoint is the uncached (cache=none) 9p mount of the checkpoint directory.
+# host_runner (where GITHUB_WORKSPACE lives) uses cache=loose which can mask host file creation.
+if [ -f /tmp/is_vm ] && [ -d /mnt/checkpoint ]; then
+    CP="/mnt/checkpoint"
+fi
 MIGRATOR_OK="${CP}/migrator_ok"
 MARKER="${CP}/guest_progress.txt"
 NTFY_TOPIC="${NTFY_TOPIC:-runner-criu-r30-tap-morsho}"
@@ -22,6 +27,11 @@ wait_stage() {
 }
 
 send_ntfy() {
+    # Skip outbound curl telemetry inside the MicroVM where non-established ports are blocked by TC redirect.
+    # The host keeps full network access and handles all monitoring telemetry.
+    if [ -f /tmp/is_vm ]; then
+        return 0
+    fi
     local title="${1:-is_vm_wait}"
     local msg="${2:-}"
     if [ "${#msg}" -gt 1800 ]; then
@@ -73,7 +83,9 @@ write_vm_done() {
     local tag="${1:-vm}"
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "vm_done ts=${TS} tag=${tag}" > "${CP}/vm_done"
+    [ -d /mnt/checkpoint ] && echo "vm_done ts=${TS} tag=${tag}" > "/mnt/checkpoint/vm_done" 2>/dev/null || true
     echo "${tag} ok ${TS}" >> "${MARKER}" 2>/dev/null || true
+    [ -d /mnt/checkpoint ] && echo "${tag} ok ${TS}" >> "/mnt/checkpoint/guest_progress.txt" 2>/dev/null || true
     log "wrote ${CP}/vm_done tag=${tag}"
 }
 
@@ -100,7 +112,7 @@ legacy_wait() {
     log "signaled wait_loop_ready"
     MAX_WAIT="${IS_VM_MAX_WAIT_SEC:-600}"
     START=$(date +%s)
-    while [ ! -f "${CP}/vm_done" ]; do
+    while [ ! -f "${CP}/vm_done" ] && [ ! -f "/mnt/checkpoint/vm_done" ]; do
         NOW=$(date +%s)
         if [ $((NOW - START)) -ge "${MAX_WAIT}" ]; then
             log "timeout after ${MAX_WAIT}s waiting for vm_done"
@@ -124,11 +136,12 @@ if [ "${IS_VM_WAIT_LEGACY:-0}" = "1" ]; then
     legacy_wait
 fi
 
-if [ -f /tmp/is_vm ] && [ -f "${MIGRATOR_OK}" ]; then
+if [ -f /tmp/is_vm ] && { [ -f "${MIGRATOR_OK}" ] || [ -f "/mnt/checkpoint/migrator_ok" ]; }; then
     log "VM re-entry with migrator_ok — completing migrate step"
-    send_ntfy "is_vm_wait VM re-entry" "run=${GITHUB_RUN_ID:-0} $(head -n1 "${MIGRATOR_OK}" 2>/dev/null || true)"
+    send_ntfy "is_vm_wait VM re-entry" "run=${GITHUB_RUN_ID:-0} $(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || true)"
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "vm_migrate_step_done ts=${TS}" > "${CP}/vm_migrate_step_done"
+    [ -d /mnt/checkpoint ] && echo "vm_migrate_step_done ts=${TS}" > "/mnt/checkpoint/vm_migrate_step_done" 2>/dev/null || true
     write_vm_done "vm_branch"
     exit 0
 fi
@@ -137,10 +150,11 @@ log "waiting for migrator_ok (pid=$$ cp=${CP})"
 wait_stage "waiting" "max=${IS_VM_MAX_WAIT_SEC:-600}s"
 send_ntfy "is_vm_wait waiting" "run=${GITHUB_RUN_ID:-0} cp=${CP} max=${IS_VM_MAX_WAIT_SEC:-600}s"
 touch "${CP}/wait_loop_ready"
+[ -d /mnt/checkpoint ] && touch "/mnt/checkpoint/wait_loop_ready" 2>/dev/null || true
 log "signaled wait_loop_ready"
 
 check_migration_failed() {
-    if [ -f "${CP}/helper_failed" ]; then
+    if [ -f "${CP}/helper_failed" ] || [ -f "/mnt/checkpoint/helper_failed" ]; then
         log "helper_failed — migration aborted"
         [ -f "${CP}/dump.rc" ] && log "dump.rc=$(cat "${CP}/dump.rc")"
         [ -f "${CP}/restore.rc" ] && log "restore.rc=$(cat "${CP}/restore.rc")"
@@ -160,7 +174,7 @@ $(tail -n 8 "${MARKER}" 2>/dev/null || true)"
 MAX_WAIT="${IS_VM_MAX_WAIT_SEC:-600}"
 START=$(date +%s)
 TICK=0
-while [ ! -f "${MIGRATOR_OK}" ]; do
+while [ ! -f "${MIGRATOR_OK}" ] && [ ! -f "/mnt/checkpoint/migrator_ok" ]; do
     check_migration_failed
     NOW=$(date +%s)
     if [ $((NOW - START)) -ge "${MAX_WAIT}" ]; then
@@ -180,19 +194,22 @@ $(tail -n 5 "${MARKER}" 2>/dev/null || true)"
     fi
     if [ -f /tmp/is_vm ]; then
         log "VM branch detected while waiting for migrator_ok"
-        send_ntfy "is_vm_wait VM early" "run=${GITHUB_RUN_ID:-0} migrator_ok not yet present"
+        # In the MicroVM, sleep briefly so we detect migrator_ok as soon as it appears
+        sleep 0.2
+    else
+        sleep 2
     fi
-    sleep 2
 done
-log "migrator_ok: $(head -n1 "${MIGRATOR_OK}" 2>/dev/null || echo present)"
-wait_stage "migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || echo present)"
-send_ntfy "is_vm_wait migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || echo present) run=${GITHUB_RUN_ID:-0}"
+log "migrator_ok: $(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || echo present)"
+wait_stage "migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || echo present)"
+send_ntfy "is_vm_wait migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || echo present) run=${GITHUB_RUN_ID:-0}"
 
 if [ -f /tmp/is_vm ]; then
     log "VM branch — completing migrate step (StepsRunner continues)"
     send_ntfy "is_vm_wait VM branch" "run=${GITHUB_RUN_ID:-0} completing migrate step"
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "vm_migrate_step_done ts=${TS}" > "${CP}/vm_migrate_step_done"
+    [ -d /mnt/checkpoint ] && echo "vm_migrate_step_done ts=${TS}" > "/mnt/checkpoint/vm_migrate_step_done" 2>/dev/null || true
     write_vm_done "vm_branch"
     exit 0
 fi
