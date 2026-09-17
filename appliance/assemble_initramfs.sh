@@ -795,29 +795,27 @@ RESOLVEOF
 
 echo "[GUEST] Seeding guest-private /var (post-SSH)..."
 progress "var_seed_start"
-/bin/busybox mkdir -p /mnt/host_var
-if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_var /mnt/host_var 2>/dev/null; then
-    echo "[GUEST] [OK] Mounted host_var (temporary, copy-only)"
-    for item in lib/dpkg lib/apt; do
-        if [ -e "/mnt/host_var/${item}" ]; then
-            /bin/busybox mkdir -p "/newroot/var/$(/bin/busybox dirname "${item}")"
-            /bin/busybox rm -rf "/newroot/var/${item}" 2>/dev/null || true
-            /bin/busybox cp -a "/mnt/host_var/${item}" "/newroot/var/${item}" 2>/dev/null \
-                && echo "[GUEST] [OK] copied /var/${item}" \
-                || echo "[GUEST] [WARN] copy /var/${item} failed"
-        fi
-    done
-    /bin/busybox umount /mnt/host_var 2>/dev/null \
-        && echo "[GUEST] [OK] Unmounted host_var (no live /var share)" \
-        || echo "[GUEST] [WARN] host_var umount failed"
-else
-    echo "[GUEST] [WARN] host_var 9p unavailable; using empty /var"
-    if [ -d /var/lib/dpkg ]; then
-        /bin/busybox mkdir -p /newroot/var/lib
-        /bin/busybox cp -a /var/lib/dpkg /newroot/var/lib/dpkg 2>/dev/null || true
+/bin/busybox mkdir -p /newroot/var/lib
+for spec in "host_var_dpkg:dpkg" "host_var_apt:apt"; do
+    tag="${spec%%:*}"
+    name="${spec##*:}"
+    mnt="/mnt/${tag}"
+    /bin/busybox mkdir -p "${mnt}"
+    if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro "${tag}" "${mnt}" 2>/dev/null; then
+        echo "[GUEST] [OK] Mounted ${tag} (copy-only)"
+        /bin/busybox rm -rf "/newroot/var/lib/${name}" 2>/dev/null || true
+        /bin/busybox cp -a "${mnt}" "/newroot/var/lib/${name}" 2>/dev/null \
+            && echo "[GUEST] [OK] copied /var/lib/${name}" \
+            || echo "[GUEST] [WARN] copy /var/lib/${name} failed"
+        /bin/busybox umount "${mnt}" 2>/dev/null || true
+    else
+        echo "[GUEST] [WARN] ${tag} 9p unavailable"
     fi
+    /bin/busybox rmdir "${mnt}" 2>/dev/null || true
+done
+if [ ! -d /newroot/var/lib/dpkg ] && [ -d /var/lib/dpkg ]; then
+    /bin/busybox cp -a /var/lib/dpkg /newroot/var/lib/dpkg 2>/dev/null || true
 fi
-/bin/busybox rmdir /mnt/host_var 2>/dev/null || true
 progress "var_seed_done"
 
 # 9. Unmount temporary filesystems in early initramfs

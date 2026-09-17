@@ -373,8 +373,9 @@ VIRTFS_ARGS=(
     -virtfs "local,path=${DOTNET_DIR},mount_tag=dotnet,security_model=none,id=dotnet"
     -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
 )
-# host_etc / host_var are mounted only long enough for an allowlist copy in guest /init.
-for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt" "host_etc:/etc" "host_var:/var"; do
+# host_etc is copy-only. Export only the dpkg/apt slices of /var (full /var 9p stalls boot).
+for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt" "host_etc:/etc" \
+            "host_var_dpkg:/var/lib/dpkg" "host_var_apt:/var/lib/apt"; do
     tag="${spec%%:*}"
     path="${spec##*:}"
     if [ -d "${path}" ]; then
