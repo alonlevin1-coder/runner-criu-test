@@ -491,6 +491,25 @@ ls -lh "${CHECKPOINT_DIR}"/*.img 2>/dev/null | tee -a "${HELPER_LOG}" || true
 if [ "${RESTORE_RC}" -eq 0 ]; then
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     chmod -R a+rwX "${CHECKPOINT_DIR}" 2>/dev/null || true
+    # Restored tasks often remain SIGSTOP'd (dump --leave-stopped). Repeat CONT
+    # from the host SSH session in case t9_restore's in-guest pass missed them.
+    log "SIGCONT restored guest tasks via SSH"
+    set +e
+    "${SSH[@]}" 'for pass in 1 2 3 4 5; do
+        for pid in $(ls /proc | grep -E "^[0-9]+$"); do
+            [ "$pid" = "1" ] && continue
+            kill -CONT "$pid" 2>/dev/null || true
+        done
+        sleep 1
+    done
+    echo guest_restore_ok > /mnt/checkpoint/guest_restore_ok 2>/dev/null || true
+    chmod a+rw /mnt/checkpoint/guest_restore_ok /tmp/is_vm /run/is_vm /etc/is_vm 2>/dev/null || true
+    echo is_vm | tee /run/is_vm /tmp/is_vm /etc/is_vm >/dev/null 2>&1 || true
+    ps 2>/dev/null | head -n 40
+    ' >> "${HELPER_LOG}" 2>&1
+    set -e
+    send_ntfy "is_vm SIGCONT" "run=${GITHUB_RUN_ID:-0}
+$(tail -n 25 "${CHECKPOINT_DIR}/post_restore_diag.txt" 2>/dev/null || tail -n 20 "${HELPER_LOG}" 2>/dev/null || true)"
     # Activate TC redirect and remove CRIU drop rules FIRST so guest network is fully live before migrator_ok
     if [ -x "${SCRIPT_DIR}/host_tap_activate.sh" ]; then
         log "running host_tap_activate.sh to enable TC redirect and remove DROP rules"
