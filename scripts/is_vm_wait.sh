@@ -5,7 +5,7 @@ set -euo pipefail
 CP="${RUNNER_VM_CHECKPOINT:-checkpoint}"
 CP="$(cd "${CP}" 2>/dev/null && pwd || echo "${CP}")"
 is_in_vm() {
-    [ -f /run/is_vm ] || [ -f /tmp/is_vm ] || [ -f /etc/is_vm ] || [ "$(hostname 2>/dev/null)" = "qemu-restore-vm" ]
+    [ -f /run/is_vm ] || [ -f /tmp/is_vm ] || [ -f /etc/is_vm ] || [ -d /mnt/checkpoint ] || grep -q '6.17' /proc/version 2>/dev/null || [ "$(hostname 2>/dev/null)" = "qemu-restore-vm" ]
 }
 
 refresh_cp() {

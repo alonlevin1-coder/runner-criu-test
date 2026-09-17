@@ -657,7 +657,18 @@ for svc in ssh.service ssh.socket sshd.service \
            NetworkManager.service; do
     /bin/busybox ln -sf /dev/null "/newroot/etc/systemd/system/${svc}"
 done
-/bin/busybox ln -sf /usr/lib/systemd/system/multi-user.target /newroot/etc/systemd/system/default.target 2>/dev/null || true
+if [ -f /newroot/lib/systemd/system/multi-user.target ]; then
+    /bin/busybox ln -sf /lib/systemd/system/multi-user.target /newroot/etc/systemd/system/default.target 2>/dev/null || true
+elif [ -f /newroot/usr/lib/systemd/system/multi-user.target ]; then
+    /bin/busybox ln -sf /usr/lib/systemd/system/multi-user.target /newroot/etc/systemd/system/default.target 2>/dev/null || true
+fi
+cat << 'RESOLVEOF' > /newroot/etc/resolv.conf
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+nameserver 168.63.129.16
+RESOLVEOF
+/bin/busybox chmod 644 /newroot/etc/resolv.conf 2>/dev/null || true
+
 cat << 'NETEOF' > /newroot/etc/systemd/network/99-unmanaged-all.network
 [Match]
 Name=eth* tap* lo
@@ -684,6 +695,7 @@ SUDOEOF
 # Pre-populate VM markers on /newroot/etc/is_vm
 /bin/busybox touch /newroot/etc/is_vm
 /bin/busybox echo "is_vm" > /newroot/etc/is_vm
+/bin/busybox chmod 666 /newroot/etc/is_vm
 
 # 5. Root & Dropbear auth setup in /newroot
 /bin/busybox mkdir -p /newroot/root/.ssh /newroot/etc/dropbear /newroot/var/run /newroot/var/log
@@ -781,6 +793,7 @@ chmod 755 / 2>/dev/null || true
 echo "[GUEST] Marking VM environment for restored processes"
 /bin/busybox touch /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox echo "is_vm" | /bin/busybox tee /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
+/bin/busybox chmod 666 /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 echo "is_vm marker created" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 echo "[GUEST] Binding host /usr /bin /lib for criu path fidelity"
 for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64 /host_opt:/opt; do
@@ -916,6 +929,7 @@ echo "sigcont_count=${CONT_COUNT}" >> "${DIAG}"
 echo "guest_sigcont count=${CONT_COUNT}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 /bin/busybox touch /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox echo "is_vm" | /bin/busybox tee /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
+/bin/busybox chmod 666 /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 
 echo "--- process scan ---" >> "${DIAG}"
 /bin/busybox ps 2>/dev/null | /bin/busybox head -n 30 >> "${DIAG}" || true
