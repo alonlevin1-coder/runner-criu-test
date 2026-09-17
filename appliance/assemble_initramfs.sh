@@ -608,6 +608,7 @@ rm -f /newroot/etc/machine-id 2>/dev/null || true
 touch /newroot/etc/machine-id
 rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
 /bin/busybox ln -sf /usr/lib/systemd/system/multi-user.target /newroot/etc/systemd/system/default.target 2>/dev/null || true
+/bin/busybox ln -sf /dev/null /newroot/etc/systemd/system/tmp.mount 2>/dev/null || true
 
 /bin/busybox chown 0:0 /newroot/etc/sudoers 2>/dev/null || true
 /bin/busybox chmod 0440 /newroot/etc/sudoers 2>/dev/null || true
@@ -646,15 +647,7 @@ for candidate in /usr/sbin/criu /sbin/criu /usr/local/sbin/criu; do
     fi
 done
 
-# 6. Checkpoint images and VM marker staging
-/bin/busybox mkdir -p /newroot/tmp/restore
-/bin/busybox cp -a /newroot/mnt/checkpoint/*.img /newroot/mnt/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
-/bin/busybox chmod -R 777 /newroot/tmp/restore 2>/dev/null || true
-/bin/busybox touch /newroot/tmp/is_vm
-/bin/busybox echo "is_vm" > /newroot/tmp/is_vm
-/bin/busybox ln -sf /mnt/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
-
-# 7. Mount pristine virtual kernel filesystems in /newroot
+# 6. Mount pristine virtual kernel filesystems in /newroot
 /bin/busybox mount -t proc proc /newroot/proc 2>/dev/null || true
 /bin/busybox mount -t sysfs sysfs /newroot/sys 2>/dev/null || true
 /bin/busybox mount -t devtmpfs devtmpfs /newroot/dev 2>/dev/null || true
@@ -668,6 +661,22 @@ if [ -d /newroot/mnt/checkpoint/dev_shm ]; then
     /bin/busybox cp -a /newroot/mnt/checkpoint/dev_shm/* /newroot/dev/shm/ 2>/dev/null || true
     /bin/busybox chmod 1777 /newroot/dev/shm
 fi
+if [ -d /newroot/mnt/checkpoint/host_tmp ]; then
+    echo "[GUEST] Restoring /tmp from host checkpoint..."
+    /bin/busybox cp -a /newroot/mnt/checkpoint/host_tmp/* /newroot/tmp/ 2>/dev/null || true
+    /bin/busybox chmod 1777 /newroot/tmp
+fi
+
+# 7. Checkpoint images and VM marker staging (populated AFTER tmpfs mounts)
+/bin/busybox mkdir -p /newroot/run/restore /newroot/tmp/restore
+/bin/busybox cp -a /newroot/mnt/checkpoint/*.img /newroot/mnt/checkpoint/*.txt /newroot/run/restore/ 2>/dev/null || true
+/bin/busybox cp -a /newroot/mnt/checkpoint/*.img /newroot/mnt/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
+/bin/busybox chmod -R 777 /newroot/run/restore /newroot/tmp/restore 2>/dev/null || true
+/bin/busybox touch /newroot/tmp/is_vm /newroot/run/is_vm
+/bin/busybox echo "is_vm" > /newroot/tmp/is_vm
+/bin/busybox echo "is_vm" > /newroot/run/is_vm
+/bin/busybox ln -sf /mnt/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
+/bin/busybox ln -sf /mnt/checkpoint /newroot/run/runner_checkpoint 2>/dev/null || true
 
 # 8. Start early Dropbear SSH server directly before switch_root
 echo "[GUEST] Starting early Dropbear SSH server..."
@@ -698,13 +707,19 @@ set +e
 if [ -f /mnt/checkpoint/state.txt ]; then
     echo "t9_restore start" >> /mnt/checkpoint/guest_progress.txt
 fi
-if [ ! -f /tmp/restore/inventory.img ]; then
-    echo "[GUEST] t9_restore: copying images"
-    mkdir -p /tmp/restore
-    cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /tmp/restore/ 2>/dev/null || true
-    chmod -R 777 /tmp/restore 2>/dev/null || true
-else
+RESTORE_DIR=""
+if [ -f /run/restore/inventory.img ]; then
+    RESTORE_DIR="/run/restore"
+    echo "[GUEST] t9_restore: images already present in /run/restore (skipping redundant copy)"
+elif [ -f /tmp/restore/inventory.img ]; then
+    RESTORE_DIR="/tmp/restore"
     echo "[GUEST] t9_restore: images already present in /tmp/restore (skipping redundant copy)"
+else
+    echo "[GUEST] t9_restore: copying images from /mnt/checkpoint to /run/restore"
+    mkdir -p /run/restore
+    cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /run/restore/ 2>/dev/null || true
+    chmod -R 777 /run/restore 2>/dev/null || true
+    RESTORE_DIR="/run/restore"
 fi
 chmod 755 / 2>/dev/null || true
 echo "[GUEST] Marking VM environment for restored processes"
@@ -803,8 +818,8 @@ for candidate in /usr/local/sbin/criu /usr/sbin/criu /sbin/criu /bin/criu; do
     if [ -x "$candidate" ]; then CRIU_BIN="$candidate"; break; fi
 done
 [ -n "$CRIU_BIN" ] || CRIU_BIN="$(command -v criu || echo /usr/sbin/criu)"
-echo "[GUEST] Using CRIU binary: ${CRIU_BIN}"
-"${CRIU_BIN}" restore -d -D /tmp/restore \
+echo "[GUEST] Using CRIU binary: ${CRIU_BIN} with restore directory: ${RESTORE_DIR}"
+"${CRIU_BIN}" restore -d -D "${RESTORE_DIR}" \
     --shell-job --file-locks --ext-unix-sk --skip-file-rwx-check "${TCP_FLAG}" \
     --ghost-limit 32M \
     -v4 -o /mnt/checkpoint/restore_log.txt
