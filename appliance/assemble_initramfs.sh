@@ -378,16 +378,23 @@ fi
 # Users and groups
 cat << 'EOF' > "${STAGING}/etc/passwd"
 root:x:0:0:root:/root:/bin/sh
-runner:x:1001:1001:runner:/home/runner:/bin/bash
 EOF
-grep -E "^runner:" /etc/passwd >> "${STAGING}/etc/passwd" 2>/dev/null || true
+if grep -E "^runner:" /etc/passwd >> "${STAGING}/etc/passwd" 2>/dev/null; then
+    :
+else
+    echo "runner:x:1001:1001:runner:/home/runner:/bin/bash" >> "${STAGING}/etc/passwd"
+fi
 grep -E "^$(whoami):" /etc/passwd >> "${STAGING}/etc/passwd" 2>/dev/null || true
 
 cat << 'EOF' > "${STAGING}/etc/group"
 root:x:0:
-runner:x:1001:
 EOF
-grep -E "^runner:" /etc/group >> "${STAGING}/etc/group" 2>/dev/null || true
+if grep -E "^runner:" /etc/group >> "${STAGING}/etc/group" 2>/dev/null; then
+    :
+else
+    echo "runner:x:1001:" >> "${STAGING}/etc/group"
+fi
+grep -E "^$(whoami):" /etc/group >> "${STAGING}/etc/group" 2>/dev/null || true
 
 cat << 'EOF' > "${STAGING}/etc/hosts"
 127.0.0.1   localhost qemu-restore-vm
