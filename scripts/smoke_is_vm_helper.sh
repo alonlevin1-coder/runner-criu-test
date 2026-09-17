@@ -456,6 +456,22 @@ $(tail -n 15 "${HELPER_LOG}" 2>/dev/null || true)"
 fi
 
 stage_mark "ssh_ok" "port=${SSH_PORT}"
+send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} waiting var_seed_done"
+log "waiting for guest var_seed_done before t9_restore"
+VAR_SEED_OK=0
+for i in $(seq 1 180); do
+    if grep -q 'var_seed_done' "${CHECKPOINT_DIR}/guest_progress.txt" 2>/dev/null; then
+        VAR_SEED_OK=1
+        break
+    fi
+    kill -0 "${QEMU_PID}" 2>/dev/null || break
+    sleep 1
+done
+if [ "${VAR_SEED_OK}" -ne 1 ]; then
+    log "WARN: var_seed_done not seen; continuing restore anyway"
+fi
+# /init switch_root's immediately after var_seed_done; give systemd a moment.
+sleep 3
 send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} running t9_restore.sh"
 log "running t9_restore.sh"
 stage_mark "restore_start" ""
