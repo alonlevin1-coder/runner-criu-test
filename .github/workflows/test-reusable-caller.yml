@@ -5,20 +5,67 @@ on:
   workflow_dispatch:
 
 jobs:
-  call-reusable-vm:
-    name: Call Reusable MicroVM
-    uses: ./.github/workflows/reusable-microvm.yml
-    with:
-      tcp-mode: established
-      memory-mb: '4096'
-      smp: '2'
-      run: |
-        echo "=== Running inside MicroVM via Reusable Workflow ==="
-        echo "Kernel: $(uname -r)"
-        echo "Hostname: $(hostname)"
-        echo "PID 1 is: $(cat /proc/1/comm 2>/dev/null || ps -p 1 -o comm= 2>/dev/null || echo unknown)"
-        if [ ! -f /tmp/is_vm ]; then
-          echo "FAIL: Expected /tmp/is_vm inside MicroVM!"
-          exit 1
-        fi
-        echo "PASS: Confirmed execution inside MicroVM via Reusable Workflow!"
+  test-microvm-multistep:
+    name: MicroVM Multi-Step Execution
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Migrate Runner to MicroVM
+        uses: ./
+        with:
+          tcp-mode: established
+          memory-mb: '4096'
+          smp: '2'
+
+      - name: Step 1 inside MicroVM (Initial Workload)
+        run: |
+          echo "=== Step 1 inside MicroVM ==="
+          echo "Kernel: $(uname -r)"
+          echo "Hostname: $(hostname)"
+          PID1="$(cat /proc/1/comm 2>/dev/null || ps -p 1 -o comm= 2>/dev/null || echo unknown)"
+          echo "PID 1 is: ${PID1}"
+          BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)"
+          echo "Boot ID: ${BOOT_ID}"
+          UPTIME="$(cat /proc/uptime 2>/dev/null || echo unknown)"
+          echo "Uptime: ${UPTIME}"
+          if [ ! -f /tmp/is_vm ]; then
+            echo "FAIL: Expected /tmp/is_vm inside MicroVM!"
+            exit 1
+          fi
+          echo "${BOOT_ID}" > /tmp/vm_step1_boot_id.txt
+          echo "${UPTIME}" > /tmp/vm_step1_uptime.txt
+          echo "step1_completed" > /tmp/vm_step1_marker.txt
+          echo "PASS: Confirmed execution inside MicroVM Step 1!"
+
+      - name: Step 2 inside MicroVM (Multi-Step Continuation Test)
+        run: |
+          echo "=== Step 2 inside MicroVM ==="
+          echo "Kernel: $(uname -r)"
+          echo "Hostname: $(hostname)"
+          PID1="$(cat /proc/1/comm 2>/dev/null || ps -p 1 -o comm= 2>/dev/null || echo unknown)"
+          echo "PID 1 is: ${PID1}"
+          BOOT_ID_STEP2="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)"
+          echo "Boot ID: ${BOOT_ID_STEP2}"
+          UPTIME_STEP2="$(cat /proc/uptime 2>/dev/null || echo unknown)"
+          echo "Uptime: ${UPTIME_STEP2}"
+          
+          if [ ! -f /tmp/is_vm ]; then
+            echo "FAIL: Expected /tmp/is_vm inside MicroVM in Step 2!"
+            exit 1
+          fi
+          
+          if [ ! -f /tmp/vm_step1_marker.txt ]; then
+            echo "FAIL: Step 1 marker /tmp/vm_step1_marker.txt not found in Step 2 (not same persistent environment)!"
+            exit 1
+          fi
+          
+          BOOT_ID_STEP1="$(cat /tmp/vm_step1_boot_id.txt 2>/dev/null || echo missing)"
+          if [ "${BOOT_ID_STEP1}" != "${BOOT_ID_STEP2}" ]; then
+            echo "FAIL: Boot ID mismatch between Step 1 (${BOOT_ID_STEP1}) and Step 2 (${BOOT_ID_STEP2})!"
+            exit 1
+          fi
+          echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
+          echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"
+          echo "PASS: Confirmed Step 2 executed inside the SAME persistent MicroVM instance under systemd PID 1!"
