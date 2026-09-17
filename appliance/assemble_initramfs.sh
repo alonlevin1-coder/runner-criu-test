@@ -626,9 +626,6 @@ rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/usr/sbin/dropbear 2>/dev/null || true
 /bin/busybox cp -a /usr/sbin/t9_restore.sh /newroot/t9_restore.sh 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/t9_restore.sh 2>/dev/null || true
-if [ -f /newroot/usr/sbin/t9_restore.sh ]; then
-    /bin/busybox mount --bind /newroot/t9_restore.sh /newroot/usr/sbin/t9_restore.sh 2>/dev/null || true
-fi
 /bin/busybox cp -a /bin/busybox /newroot/bin/busybox 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/bin/busybox 2>/dev/null || true
 

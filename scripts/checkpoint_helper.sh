@@ -293,9 +293,9 @@ done
 
 if [ "${SSH_OK}" -eq 1 ]; then
     send_ntfy "SSH Ready" "appliance ssh up; running t9_restore.sh"
-    log "Running /usr/sbin/t9_restore.sh over SSH"
+    log "Running /t9_restore.sh over SSH"
     set +e
-    "${SSH[@]}" '/usr/sbin/t9_restore.sh' | tee "${CHECKPOINT_DIR}/ssh_restore.txt" | tee -a "${HELPER_LOG}"
+    "${SSH[@]}" '/t9_restore.sh' | tee "${CHECKPOINT_DIR}/ssh_restore.txt" | tee -a "${HELPER_LOG}"
     RESTORE_RC=${PIPESTATUS[0]}
     set -e
     echo "${RESTORE_RC}" > "${CHECKPOINT_DIR}/restore.rc"

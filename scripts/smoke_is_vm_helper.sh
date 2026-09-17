@@ -455,7 +455,7 @@ send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} running t9_restore.sh"
 log "running t9_restore.sh"
 stage_mark "restore_start" ""
 set +e
-run_with_timeout "${RESTORE_TIMEOUT_SEC:-300}" "${SSH[@]}" '/usr/sbin/t9_restore.sh' >> "${HELPER_LOG}" 2>&1
+run_with_timeout "${RESTORE_TIMEOUT_SEC:-300}" "${SSH[@]}" '/t9_restore.sh' >> "${HELPER_LOG}" 2>&1
 RESTORE_RC=$?
 set -e
 echo "${RESTORE_RC}" > "${CHECKPOINT_DIR}/restore.rc"

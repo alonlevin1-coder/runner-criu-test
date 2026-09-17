@@ -203,7 +203,7 @@ boot_qemu_and_restore() {
         exit 1
     }
     "${ssh[@]}" "/bin/busybox mkdir -p ${WORK_DIR} && /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L workdir ${WORK_DIR}"
-    "${ssh[@]}" '/usr/sbin/t9_restore.sh'
+    "${ssh[@]}" '/t9_restore.sh'
     grep -q "network_reconstruct ok" "${CHECKPOINT_DIR}/guest_progress.txt"
 }
 
