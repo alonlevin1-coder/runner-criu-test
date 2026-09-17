@@ -16,6 +16,7 @@ jobs:
         echo "=== Running inside MicroVM via Reusable Workflow ==="
         echo "Kernel: $(uname -r)"
         echo "Hostname: $(hostname)"
+        echo "PID 1 is: $(cat /proc/1/comm 2>/dev/null || ps -p 1 -o comm= 2>/dev/null || echo unknown)"
         if [ ! -f /tmp/is_vm ]; then
           echo "FAIL: Expected /tmp/is_vm inside MicroVM!"
           exit 1
