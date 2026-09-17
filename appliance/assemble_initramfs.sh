@@ -608,7 +608,6 @@ rm -f /newroot/etc/machine-id 2>/dev/null || true
 touch /newroot/etc/machine-id
 rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
 /bin/busybox ln -sf /usr/lib/systemd/system/multi-user.target /newroot/etc/systemd/system/default.target 2>/dev/null || true
-/bin/busybox ln -sf /dev/null /newroot/etc/systemd/system/tmp.mount 2>/dev/null || true
 
 /bin/busybox chown 0:0 /newroot/etc/sudoers 2>/dev/null || true
 /bin/busybox chmod 0440 /newroot/etc/sudoers 2>/dev/null || true
@@ -661,21 +660,13 @@ if [ -d /newroot/mnt/checkpoint/dev_shm ]; then
     /bin/busybox cp -a /newroot/mnt/checkpoint/dev_shm/* /newroot/dev/shm/ 2>/dev/null || true
     /bin/busybox chmod 1777 /newroot/dev/shm
 fi
-if [ -d /newroot/mnt/checkpoint/host_tmp ]; then
-    echo "[GUEST] Restoring /tmp from host checkpoint..."
-    /bin/busybox cp -a /newroot/mnt/checkpoint/host_tmp/* /newroot/tmp/ 2>/dev/null || true
-    /bin/busybox chmod 1777 /newroot/tmp
-fi
 
-# 7. Checkpoint images and VM marker staging (populated AFTER tmpfs mounts)
-/bin/busybox mkdir -p /newroot/run/restore /newroot/tmp/restore
+# 7. Checkpoint images and VM marker staging (populated in /run/restore only)
+/bin/busybox mkdir -p /newroot/run/restore
 /bin/busybox cp -a /newroot/mnt/checkpoint/*.img /newroot/mnt/checkpoint/*.txt /newroot/run/restore/ 2>/dev/null || true
-/bin/busybox cp -a /newroot/mnt/checkpoint/*.img /newroot/mnt/checkpoint/*.txt /newroot/tmp/restore/ 2>/dev/null || true
-/bin/busybox chmod -R 777 /newroot/run/restore /newroot/tmp/restore 2>/dev/null || true
-/bin/busybox touch /newroot/tmp/is_vm /newroot/run/is_vm
-/bin/busybox echo "is_vm" > /newroot/tmp/is_vm
+/bin/busybox chmod -R 777 /newroot/run/restore 2>/dev/null || true
+/bin/busybox touch /newroot/run/is_vm
 /bin/busybox echo "is_vm" > /newroot/run/is_vm
-/bin/busybox ln -sf /mnt/checkpoint /newroot/tmp/runner_checkpoint 2>/dev/null || true
 /bin/busybox ln -sf /mnt/checkpoint /newroot/run/runner_checkpoint 2>/dev/null || true
 
 # 8. Start early Dropbear SSH server directly before switch_root
@@ -707,19 +698,14 @@ set +e
 if [ -f /mnt/checkpoint/state.txt ]; then
     echo "t9_restore start" >> /mnt/checkpoint/guest_progress.txt
 fi
-RESTORE_DIR=""
-if [ -f /run/restore/inventory.img ]; then
-    RESTORE_DIR="/run/restore"
-    echo "[GUEST] t9_restore: images already present in /run/restore (skipping redundant copy)"
-elif [ -f /tmp/restore/inventory.img ]; then
-    RESTORE_DIR="/tmp/restore"
-    echo "[GUEST] t9_restore: images already present in /tmp/restore (skipping redundant copy)"
-else
+RESTORE_DIR="/run/restore"
+if [ ! -f "${RESTORE_DIR}/inventory.img" ]; then
     echo "[GUEST] t9_restore: copying images from /mnt/checkpoint to /run/restore"
     mkdir -p /run/restore
     cp -a /mnt/checkpoint/*.img /mnt/checkpoint/*.txt /run/restore/ 2>/dev/null || true
     chmod -R 777 /run/restore 2>/dev/null || true
-    RESTORE_DIR="/run/restore"
+else
+    echo "[GUEST] t9_restore: images already present in /run/restore (skipping redundant copy)"
 fi
 chmod 755 / 2>/dev/null || true
 echo "[GUEST] Marking VM environment for restored processes"
