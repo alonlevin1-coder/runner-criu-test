@@ -780,6 +780,10 @@ set +e
 if [ -f /mnt/checkpoint/state.txt ]; then
     echo "t9_restore start" >> /mnt/checkpoint/guest_progress.txt
 fi
+# Shared 9p flag: restored host-namespace tasks cannot see guest /tmp|/run|/mnt
+# but they can still read the original checkpoint dir (same files as migrator_ok).
+echo "guest_restore_ok" > /mnt/checkpoint/guest_restore_ok 2>/dev/null || true
+/bin/busybox chmod a+rw /mnt/checkpoint/guest_restore_ok 2>/dev/null || true
 RESTORE_DIR="/run/restore"
 if [ ! -f "${RESTORE_DIR}/inventory.img" ]; then
     echo "[GUEST] t9_restore: copying images from /mnt/checkpoint to /run/restore"
