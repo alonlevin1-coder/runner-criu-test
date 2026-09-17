@@ -76,3 +76,20 @@ jobs:
           echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
           echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"
           echo "PASS: Confirmed Step 2 executed inside the SAME persistent MicroVM instance under systemd PID 1!"
+
+      - name: Step 3 inside MicroVM (Live Log Streaming Test)
+        run: |
+          echo "=== Step 3: Live Log Streaming Test ==="
+          echo "Guest Hostname: $(hostname)"
+          echo "PID 1 is: $(cat /proc/1/comm 2>/dev/null || ps -p 1 -o comm= 2>/dev/null || echo unknown)"
+          echo "Step 3 start time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Waiting 10 seconds before streaming..."
+          sleep 10
+          echo "Starting 10-message live log stream at $(date -u +%Y-%m-%dT%H:%M:%SZ):"
+          for i in $(seq 1 10); do
+            echo "[$(date -u +%T)] Live log stream message ${i}/10 from MicroVM ($(hostname))"
+            sleep 1
+          done
+          echo "Step 3 end time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "PASS: Successfully streamed 10 messages from inside MicroVM in Step 3!"
+
