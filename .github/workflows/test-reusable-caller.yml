@@ -74,9 +74,9 @@ jobs:
           echo "CONFIRMED: /etc/fstab is guest stub"
 
           echo "Writing test file into /usr/local/bin/..."
-          echo "step1_usr_overlay_verified" > /usr/local/bin/vm_usr_overlay_test.txt
+          sudo sh -c 'echo "step1_usr_overlay_verified" > /usr/local/bin/vm_usr_overlay_test.txt'
           echo "Writing test file into /etc/..."
-          echo "step1_etc_overlay_verified" > /etc/vm_etc_overlay_test.txt
+          sudo sh -c 'echo "step1_etc_overlay_verified" > /etc/vm_etc_overlay_test.txt'
 
           echo "PASS: Confirmed execution inside MicroVM Step 1!"
 

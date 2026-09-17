@@ -635,6 +635,15 @@ FSTABEOF
 # Clear host SSH host keys from guest overlay
 rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
 
+# Clear host enabled service links in /etc/systemd/system so guest microVM boots instantly
+/bin/busybox rm -rf /newroot/etc/systemd/system/multi-user.target.wants/* 2>/dev/null || true
+/bin/busybox rm -rf /newroot/etc/systemd/system/default.target.wants/* 2>/dev/null || true
+/bin/busybox rm -rf /newroot/etc/systemd/system/timers.target.wants/* 2>/dev/null || true
+/bin/busybox rm -rf /newroot/etc/systemd/system/sockets.target.wants/* 2>/dev/null || true
+
+# Ensure /usr/local is writable for workflow tools
+/bin/busybox chmod 1777 /newroot/usr/local/bin /newroot/usr/local 2>/dev/null || true
+
 # Systemd target and service masking on guest overlay
 /bin/busybox mkdir -p /newroot/etc/systemd/system /newroot/etc/systemd/network
 for svc in ssh.service ssh.socket sshd.service \
@@ -643,7 +652,7 @@ for svc in ssh.service ssh.socket sshd.service \
            unattended-upgrades.service apt-daily.service apt-daily.timer \
            apt-daily-upgrade.service apt-daily-upgrade.timer \
            snapd.service snapd.socket snapd.seeded.service \
-           systemd-udev-settle.service \
+           systemd-udev-settle.service apparmor.service \
            systemd-networkd.service systemd-networkd-wait-online.service \
            NetworkManager.service; do
     /bin/busybox ln -sf /dev/null "/newroot/etc/systemd/system/${svc}"
