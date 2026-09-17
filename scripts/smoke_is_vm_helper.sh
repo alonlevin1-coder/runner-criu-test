@@ -433,7 +433,7 @@ SSH=(ssh -i "${SSH_KEY}" -p "${SSH_PORT}" -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o BatchMode=yes root@127.0.0.1)
 
 SSH_OK=0
-for i in $(seq 1 90); do
+for i in $(seq 1 180); do
     if "${SSH[@]}" 'echo SSH_OK' >/dev/null 2>> "${HELPER_LOG}"; then
         SSH_OK=1
         break

@@ -651,7 +651,7 @@ fi
 /bin/busybox mkdir -p /mnt/host_var
 if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_var /mnt/host_var 2>/dev/null; then
     echo "[GUEST] [OK] Mounted host_var (temporary, copy-only)"
-    for item in lib/dpkg lib/apt cache/apt cache/debconf; do
+    for item in lib/dpkg lib/apt; do
         if [ -e "/mnt/host_var/${item}" ]; then
             /bin/busybox mkdir -p "/newroot/var/$(/bin/busybox dirname "${item}")"
             /bin/busybox rm -rf "/newroot/var/${item}" 2>/dev/null || true
