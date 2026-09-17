@@ -760,91 +760,11 @@ echo SSH_READY
 echo "[GUEST] SSH_READY — Dropbear listening on port 22 before systemd handoff"
 progress "SSH_READY"
 
-# Do not copy host passwd/dpkg until the helper has actually logged in.
-# A long 9p copy plus switch_root races SSH; host passwd often has root nologin.
-echo "[GUEST] Waiting for host helper SSH before seeding /etc and /var..."
-progress "wait_ssh_connected"
-w=0
-while [ "${w}" -lt 180 ]; do
-    if [ -f /newroot/mnt/checkpoint/ssh_connected ] || [ -f /mnt/checkpoint/ssh_connected ]; then
-        echo "[GUEST] [OK] host helper SSH connected"
-        progress "ssh_connected"
-        break
-    fi
-    w=$((w + 1))
-    /bin/busybox sleep 1
-done
-
-# Host /etc allowlist + /var dpkg after SSH is up (ssl/certs and lib/dpkg are slow on 9p).
-echo "[GUEST] Copying host /etc allowlist (post-SSH)..."
-/bin/busybox mkdir -p /mnt/host_etc
-if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
-    echo "[GUEST] [OK] Mounted host_etc (temporary, copy-only)"
-    # Do not copy passwd/group/shadow/nss/pam before CRIU restore: replacing
-    # them left restore_rc=0 but the worker never re-entered is_vm_wait.
-    for item in alternatives \
-                ld.so.cache ld.so.conf ld.so.conf.d \
-                apt os-release environment mime.types magic; do
-        if [ -e "/mnt/host_etc/${item}" ]; then
-            /bin/busybox rm -rf "/newroot/etc/${item}" 2>/dev/null || true
-            /bin/busybox cp -a "/mnt/host_etc/${item}" "/newroot/etc/${item}" 2>/dev/null \
-                && echo "[GUEST] [OK] copied /etc/${item}" \
-                || echo "[GUEST] [WARN] copy /etc/${item} failed"
-        fi
-    done
-    if [ -f /mnt/host_etc/group ]; then
-        for g in crontab shadow systemd-journal messagebus; do
-            if ! /bin/busybox grep -q "^${g}:" /newroot/etc/group 2>/dev/null; then
-                /bin/busybox grep "^${g}:" /mnt/host_etc/group >> /newroot/etc/group 2>/dev/null \
-                    && echo "[GUEST] [OK] merged group ${g}" || true
-            fi
-        done
-    fi
-    /bin/busybox umount /mnt/host_etc 2>/dev/null \
-        && echo "[GUEST] [OK] Unmounted host_etc (no live /etc share)" \
-        || echo "[GUEST] [WARN] host_etc umount failed"
-else
-    echo "[GUEST] [WARN] host_etc 9p unavailable; using initramfs /etc only"
-fi
-/bin/busybox rmdir /mnt/host_etc 2>/dev/null || true
-cat << 'FSTABEOF' > /newroot/etc/fstab
-# /etc/fstab: MicroVM guest filesystem table (rootfs mounted by initramfs)
-FSTABEOF
-: > /newroot/etc/machine-id
-echo "qemu-restore-vm" > /newroot/etc/hostname
-cat << 'RESOLVEOF' > /newroot/etc/resolv.conf
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-nameserver 168.63.129.16
-RESOLVEOF
-
-echo "[GUEST] Seeding guest-private /var (post-SSH)..."
-progress "var_seed_start"
-/bin/busybox mkdir -p /newroot/var/lib
-for spec in "host_var_dpkg:dpkg" "host_var_apt:apt"; do
-    tag="${spec%%:*}"
-    name="${spec##*:}"
-    mnt="/mnt/${tag}"
-    /bin/busybox mkdir -p "${mnt}"
-    if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro "${tag}" "${mnt}" 2>/dev/null; then
-        echo "[GUEST] [OK] Mounted ${tag} (copy-only)"
-        /bin/busybox rm -rf "/newroot/var/lib/${name}" 2>/dev/null || true
-        /bin/busybox cp -a "${mnt}" "/newroot/var/lib/${name}" 2>/dev/null \
-            && echo "[GUEST] [OK] copied /var/lib/${name}" \
-            || echo "[GUEST] [WARN] copy /var/lib/${name} failed"
-        /bin/busybox umount "${mnt}" 2>/dev/null || true
-    else
-        echo "[GUEST] [WARN] ${tag} 9p unavailable"
-    fi
-    /bin/busybox rmdir "${mnt}" 2>/dev/null || true
-done
-if [ ! -d /newroot/var/lib/dpkg ] && [ -d /var/lib/dpkg ]; then
-    /bin/busybox cp -a /var/lib/dpkg /newroot/var/lib/dpkg 2>/dev/null || true
-fi
-progress "var_seed_done"
+# Apt/dpkg seed is done in t9_restore after CRIU. Copying it here delayed
+# restore long enough that the worker never re-entered is_vm_wait.
 
 # 9. Unmount temporary filesystems in early initramfs
-/bin/busybox umount /dev/pts /dev/shm /tmp /mnt/checkpoint /mnt 2>/dev/null || true
+/bin/busybox umount /dev/pts /dev/shm /tmp /mnt 2>/dev/null || true
 /bin/busybox umount /sys /proc /dev 2>/dev/null || true
 
 # 10. Switch root and hand off PID 1 to systemd via run-init
@@ -1008,6 +928,43 @@ for pass in 1 2 3; do
 done
 echo "sigcont_count=${CONT_COUNT}" >> "${DIAG}"
 echo "guest_sigcont count=${CONT_COUNT}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+
+echo "[GUEST] Seeding guest apt/dpkg after restore..."
+echo "apt_seed_start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+/bin/busybox mkdir -p /var/lib /mnt/host_etc /mnt/host_var_dpkg /mnt/host_var_apt
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
+    if [ -d /mnt/host_etc/apt ]; then
+        /bin/busybox rm -rf /etc/apt
+        /bin/busybox cp -a /mnt/host_etc/apt /etc/apt \
+            && echo "[GUEST] [OK] copied /etc/apt" || echo "[GUEST] [WARN] /etc/apt copy failed"
+    fi
+    if [ -f /mnt/host_etc/group ]; then
+        for g in crontab shadow systemd-journal messagebus; do
+            if ! /bin/busybox grep -q "^${g}:" /etc/group 2>/dev/null; then
+                /bin/busybox grep "^${g}:" /mnt/host_etc/group >> /etc/group 2>/dev/null \
+                    && echo "[GUEST] [OK] merged group ${g}" || true
+            fi
+        done
+    fi
+    /bin/busybox umount /mnt/host_etc 2>/dev/null || true
+fi
+for spec in "host_var_dpkg:dpkg" "host_var_apt:apt"; do
+    tag="${spec%%:*}"
+    name="${spec##*:}"
+    mnt="/mnt/${tag}"
+    /bin/busybox mkdir -p "${mnt}"
+    if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro "${tag}" "${mnt}" 2>/dev/null; then
+        /bin/busybox rm -rf "/var/lib/${name}"
+        /bin/busybox cp -a "${mnt}" "/var/lib/${name}" \
+            && echo "[GUEST] [OK] copied /var/lib/${name}" || echo "[GUEST] [WARN] copy /var/lib/${name} failed"
+        /bin/busybox umount "${mnt}" 2>/dev/null || true
+    else
+        echo "[GUEST] [WARN] ${tag} 9p unavailable"
+    fi
+    /bin/busybox rmdir "${mnt}" 2>/dev/null || true
+done
+echo "apt_seed_done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+
 /bin/busybox touch /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox echo "is_vm" | /bin/busybox tee /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox chmod 666 /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
