@@ -4,13 +4,8 @@ set -euo pipefail
 
 CP="${RUNNER_VM_CHECKPOINT:-checkpoint}"
 CP="$(cd "${CP}" 2>/dev/null && pwd || echo "${CP}")"
-is_in_vm() {
-    [ -f /run/is_vm ] || [ -f /tmp/is_vm ] || [ -f /etc/is_vm ] \
-        || [ -d /mnt/checkpoint ] || [ -L /run/runner_checkpoint ] \
-        || [ -f "${CP}/guest_restore_ok" ] \
-        || [ "$(hostname 2>/dev/null)" = "qemu-restore-vm" ] \
-        || grep -q 't9_is_vm=1' /proc/cmdline 2>/dev/null
-}
+# shellcheck source=is_in_vm.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/is_in_vm.sh"
 
 refresh_cp() {
     if is_in_vm; then

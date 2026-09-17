@@ -10,12 +10,12 @@ ACTION_DIR="$(cd "${ACTION_DIR:-${SCRIPT_DIR}/..}" && pwd)"
 
 log() { echo "[setup_microvm_action] $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 
+# shellcheck source=is_in_vm.sh
+. "${SCRIPT_DIR}/is_in_vm.sh"
+
 # 1. If already executing inside the microVM, no-op immediately
-if [ -f /run/is_vm ] || [ -f /tmp/is_vm ] || [ -f /etc/is_vm ] \
-   || [ -d /mnt/checkpoint ] || [ -L /run/runner_checkpoint ] \
-   || [ "$(hostname 2>/dev/null)" = "qemu-restore-vm" ] \
-   || grep -q 't9_is_vm=1' /proc/cmdline 2>/dev/null; then
-    log "Already executing inside MicroVM (VM environment detected). Succeeded."
+if is_in_vm; then
+    log "Already executing inside MicroVM (procfs/hostname guest signal). Succeeded."
     exit 0
 fi
 
@@ -76,7 +76,10 @@ chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true
 CHECKPOINT_DIR="${RUNNER_VM_CHECKPOINT:-${CHECKPOINT_DIR:-${GITHUB_WORKSPACE:-/tmp}/checkpoint}}"
 LOG_DIR="${LOG_DIR:-${GITHUB_WORKSPACE:-/tmp}/smoke-logs}"
 mkdir -p "${CHECKPOINT_DIR}" "${LOG_DIR}"
-log "Checkpoint dir: ${CHECKPOINT_DIR}"
+tr -d '[:space:]' < /proc/sys/kernel/random/boot_id > "${CHECKPOINT_DIR}/host_boot_id"
+cat /proc/cmdline > "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
+chmod a+rw "${CHECKPOINT_DIR}/host_boot_id" "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
+log "Checkpoint dir: ${CHECKPOINT_DIR} host_boot_id=$(cat "${CHECKPOINT_DIR}/host_boot_id")"
 
 # 8. Configure TCP migration mode
 CRIU_TCP_MODE="${INPUT_TCP_MODE:-${CRIU_TCP_MODE:-established}}"

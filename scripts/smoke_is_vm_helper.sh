@@ -196,7 +196,11 @@ while [ ! -f "${STEP2_READY}" ] && [ ! -f "${WAIT_LOOP_READY}" ]; do
     WAIT=$((WAIT + 1))
     [ "${WAIT}" -le 300 ] || exit 1
 done
-log "dump gate open (step2_ready=$([ -f "${STEP2_READY}" ] && echo yes || echo no) wait_loop_ready=$([ -f "${WAIT_LOOP_READY}" ] && echo yes || echo no))"
+if [ ! -s "${CHECKPOINT_DIR}/host_boot_id" ]; then
+    tr -d '[:space:]' < /proc/sys/kernel/random/boot_id > "${CHECKPOINT_DIR}/host_boot_id"
+    chmod a+rw "${CHECKPOINT_DIR}/host_boot_id" 2>/dev/null || true
+fi
+log "dump gate open (step2_ready=$([ -f "${STEP2_READY}" ] && echo yes || echo no) wait_loop_ready=$([ -f "${WAIT_LOOP_READY}" ] && echo yes || echo no)) host_boot_id=$(cat "${CHECKPOINT_DIR}/host_boot_id" 2>/dev/null || true)"
 stage_mark "started" "kind=${TARGET_KIND} target_pid=${TARGET_PID} tcp_mode=${CRIU_TCP_MODE}"
 send_ntfy "is_vm Started" "run=${GITHUB_RUN_ID:-0} kind=${TARGET_KIND} pid=${TARGET_PID} tcp_mode=${CRIU_TCP_MODE} tcp_flag=${CRIU_TCP_FLAG}"
 
