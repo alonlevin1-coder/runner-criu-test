@@ -466,11 +466,13 @@ set +e
 progress() {
     msg="$*"
     echo "[GUEST] ${msg}"
-    # Only the 9p checkpoint share is visible on the host helper.
-    if [ -f /mnt/checkpoint/state.txt ]; then
-        echo "${msg}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-        /bin/busybox sync 2>/dev/null || true
-    fi
+    # Checkpoint 9p moves to /newroot/mnt/checkpoint before Dropbear.
+    for d in /newroot/mnt/checkpoint /mnt/checkpoint; do
+        if [ -d "${d}" ]; then
+            echo "${msg}" >> "${d}/guest_progress.txt" 2>/dev/null || true
+        fi
+    done
+    /bin/busybox sync 2>/dev/null || true
 }
 
 # Mount pseudo-filesystems
@@ -758,6 +760,21 @@ echo SSH_READY
 echo "[GUEST] SSH_READY — Dropbear listening on port 22 before systemd handoff"
 progress "SSH_READY"
 
+# Do not copy host passwd/dpkg until the helper has actually logged in.
+# A long 9p copy plus switch_root races SSH; host passwd often has root nologin.
+echo "[GUEST] Waiting for host helper SSH before seeding /etc and /var..."
+progress "wait_ssh_connected"
+w=0
+while [ "${w}" -lt 180 ]; do
+    if [ -f /newroot/mnt/checkpoint/ssh_connected ] || [ -f /mnt/checkpoint/ssh_connected ]; then
+        echo "[GUEST] [OK] host helper SSH connected"
+        progress "ssh_connected"
+        break
+    fi
+    w=$((w + 1))
+    /bin/busybox sleep 1
+done
+
 # Host /etc allowlist + /var dpkg after SSH is up (ssl/certs and lib/dpkg are slow on 9p).
 echo "[GUEST] Copying host /etc allowlist (post-SSH)..."
 /bin/busybox mkdir -p /mnt/host_etc
@@ -775,6 +792,10 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
                 || echo "[GUEST] [WARN] copy /etc/${item} failed"
         fi
     done
+    # Host images use nologin for root; Dropbear key auth needs a real shell.
+    if [ -f /newroot/etc/passwd ]; then
+        /bin/busybox sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/sh|' /newroot/etc/passwd 2>/dev/null || true
+    fi
     /bin/busybox umount /mnt/host_etc 2>/dev/null \
         && echo "[GUEST] [OK] Unmounted host_etc (no live /etc share)" \
         || echo "[GUEST] [WARN] host_etc umount failed"

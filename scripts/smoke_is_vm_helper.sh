@@ -457,6 +457,9 @@ $(tail -n 15 "${HELPER_LOG}" 2>/dev/null || true)"
 fi
 
 stage_mark "ssh_ok" "port=${SSH_PORT}"
+# Guest /init waits for this before the slow /etc+/var copy and switch_root.
+touch "${CHECKPOINT_DIR}/ssh_connected"
+sync || true
 send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} waiting var_seed_done"
 log "waiting for guest var_seed_done before t9_restore"
 VAR_SEED_OK=0
