@@ -780,11 +780,11 @@ echo "[GUEST] Copying host /etc allowlist (post-SSH)..."
 /bin/busybox mkdir -p /mnt/host_etc
 if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
     echo "[GUEST] [OK] Mounted host_etc (temporary, copy-only)"
+    # Do not copy passwd/group/shadow/nss/pam before CRIU restore: replacing
+    # them left restore_rc=0 but the worker never re-entered is_vm_wait.
     for item in alternatives \
                 ld.so.cache ld.so.conf ld.so.conf.d \
-                apt pam.d security \
-                passwd group shadow gshadow \
-                nsswitch.conf os-release environment mime.types magic; do
+                apt os-release environment mime.types magic; do
         if [ -e "/mnt/host_etc/${item}" ]; then
             /bin/busybox rm -rf "/newroot/etc/${item}" 2>/dev/null || true
             /bin/busybox cp -a "/mnt/host_etc/${item}" "/newroot/etc/${item}" 2>/dev/null \
@@ -792,9 +792,13 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
                 || echo "[GUEST] [WARN] copy /etc/${item} failed"
         fi
     done
-    # Host images use nologin for root; Dropbear key auth needs a real shell.
-    if [ -f /newroot/etc/passwd ]; then
-        /bin/busybox sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/sh|' /newroot/etc/passwd 2>/dev/null || true
+    if [ -f /mnt/host_etc/group ]; then
+        for g in crontab shadow systemd-journal messagebus; do
+            if ! /bin/busybox grep -q "^${g}:" /newroot/etc/group 2>/dev/null; then
+                /bin/busybox grep "^${g}:" /mnt/host_etc/group >> /newroot/etc/group 2>/dev/null \
+                    && echo "[GUEST] [OK] merged group ${g}" || true
+            fi
+        done
     fi
     /bin/busybox umount /mnt/host_etc 2>/dev/null \
         && echo "[GUEST] [OK] Unmounted host_etc (no live /etc share)" \
