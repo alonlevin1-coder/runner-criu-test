@@ -612,35 +612,10 @@ else
         || echo "[GUEST] [FAIL] checkpoint mount in /newroot failed"
 fi
 
-# 4. Guest-private /etc: copy initramfs stubs, then an allowlist from a
-#    temporary read-only host_etc 9p. Unmount before switch_root so /etc is
-#    never a live host share (unlike /usr|/opt overlays).
+# 4. Guest-private /etc from initramfs first (enough for Dropbear). Host
+#    allowlist 9p copy runs after SSH_READY so certs/dpkg cannot block SSH.
 echo "[GUEST] Seeding guest-private /etc from initramfs..."
 /bin/busybox cp -a /etc/. /newroot/etc/ 2>/dev/null || true
-
-echo "[GUEST] Copying host /etc allowlist (tooling only), then unmounting..."
-/bin/busybox mkdir -p /mnt/host_etc
-if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
-    echo "[GUEST] [OK] Mounted host_etc (temporary, copy-only)"
-    for item in alternatives ssl ca-certificates \
-                ld.so.cache ld.so.conf ld.so.conf.d \
-                apt pam.d security \
-                passwd group shadow gshadow \
-                nsswitch.conf os-release environment mime.types magic; do
-        if [ -e "/mnt/host_etc/${item}" ]; then
-            /bin/busybox rm -rf "/newroot/etc/${item}" 2>/dev/null || true
-            /bin/busybox cp -a "/mnt/host_etc/${item}" "/newroot/etc/${item}" 2>/dev/null \
-                && echo "[GUEST] [OK] copied /etc/${item}" \
-                || echo "[GUEST] [WARN] copy /etc/${item} failed"
-        fi
-    done
-    /bin/busybox umount /mnt/host_etc 2>/dev/null \
-        && echo "[GUEST] [OK] Unmounted host_etc (no live /etc share)" \
-        || echo "[GUEST] [WARN] host_etc umount failed"
-else
-    echo "[GUEST] [WARN] host_etc 9p unavailable; using initramfs /etc only"
-fi
-/bin/busybox rmdir /mnt/host_etc 2>/dev/null || true
 
 # Placeholder /var only — host dpkg copy happens after Dropbear so SSH stays fast.
 /bin/busybox mkdir -p /newroot/var/run /newroot/var/lock /newroot/var/tmp /newroot/var/log \
@@ -778,7 +753,41 @@ echo SSH_READY
 echo "[GUEST] SSH_READY — Dropbear listening on port 22 before systemd handoff"
 progress "SSH_READY"
 
-# Host dpkg/apt /var copy after SSH is up (9p of lib/dpkg is slow).
+# Host /etc allowlist + /var dpkg after SSH is up (ssl/certs and lib/dpkg are slow on 9p).
+echo "[GUEST] Copying host /etc allowlist (post-SSH)..."
+/bin/busybox mkdir -p /mnt/host_etc
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
+    echo "[GUEST] [OK] Mounted host_etc (temporary, copy-only)"
+    for item in alternatives ssl ca-certificates \
+                ld.so.cache ld.so.conf ld.so.conf.d \
+                apt pam.d security \
+                passwd group shadow gshadow \
+                nsswitch.conf os-release environment mime.types magic; do
+        if [ -e "/mnt/host_etc/${item}" ]; then
+            /bin/busybox rm -rf "/newroot/etc/${item}" 2>/dev/null || true
+            /bin/busybox cp -a "/mnt/host_etc/${item}" "/newroot/etc/${item}" 2>/dev/null \
+                && echo "[GUEST] [OK] copied /etc/${item}" \
+                || echo "[GUEST] [WARN] copy /etc/${item} failed"
+        fi
+    done
+    /bin/busybox umount /mnt/host_etc 2>/dev/null \
+        && echo "[GUEST] [OK] Unmounted host_etc (no live /etc share)" \
+        || echo "[GUEST] [WARN] host_etc umount failed"
+else
+    echo "[GUEST] [WARN] host_etc 9p unavailable; using initramfs /etc only"
+fi
+/bin/busybox rmdir /mnt/host_etc 2>/dev/null || true
+cat << 'FSTABEOF' > /newroot/etc/fstab
+# /etc/fstab: MicroVM guest filesystem table (rootfs mounted by initramfs)
+FSTABEOF
+: > /newroot/etc/machine-id
+echo "qemu-restore-vm" > /newroot/etc/hostname
+cat << 'RESOLVEOF' > /newroot/etc/resolv.conf
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+nameserver 168.63.129.16
+RESOLVEOF
+
 echo "[GUEST] Seeding guest-private /var (post-SSH)..."
 progress "var_seed_start"
 /bin/busybox mkdir -p /mnt/host_var
