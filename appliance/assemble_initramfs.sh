@@ -612,34 +612,47 @@ else
         || echo "[GUEST] [FAIL] checkpoint mount in /newroot failed"
 fi
 
-# 4. Mount host_etc 9p read-only and OverlayFS into newroot
-echo "[GUEST] Mounting host_etc 9p and OverlayFS into /newroot/etc..."
-/bin/busybox mkdir -p /newroot/.overlay/lower_etc /newroot/.overlay/etc_upper /newroot/.overlay/etc_work
+# 4. Guest-private /etc: copy initramfs stubs, then an allowlist from a
+#    temporary read-only host_etc 9p. Unmount before switch_root so /etc is
+#    never a live host share (unlike /usr|/opt overlays).
+echo "[GUEST] Seeding guest-private /etc from initramfs..."
+/bin/busybox cp -a /etc/. /newroot/etc/ 2>/dev/null || true
 
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /newroot/.overlay/lower_etc 2>&1 \
-    && echo "[GUEST] [OK] Mounted host_etc at /newroot/.overlay/lower_etc" \
-    || echo "[GUEST] [FAIL] host_etc mount failed!"
+echo "[GUEST] Copying host /etc allowlist (tooling only), then unmounting..."
+/bin/busybox mkdir -p /mnt/host_etc
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
+    echo "[GUEST] [OK] Mounted host_etc (temporary, copy-only)"
+    for item in alternatives ssl ca-certificates \
+                ld.so.cache ld.so.conf ld.so.conf.d \
+                apt pam.d security \
+                nsswitch.conf os-release environment mime.types magic; do
+        if [ -e "/mnt/host_etc/${item}" ]; then
+            /bin/busybox rm -rf "/newroot/etc/${item}" 2>/dev/null || true
+            /bin/busybox cp -a "/mnt/host_etc/${item}" "/newroot/etc/${item}" 2>/dev/null \
+                && echo "[GUEST] [OK] copied /etc/${item}" \
+                || echo "[GUEST] [WARN] copy /etc/${item} failed"
+        fi
+    done
+    /bin/busybox umount /mnt/host_etc 2>/dev/null \
+        && echo "[GUEST] [OK] Unmounted host_etc (no live /etc share)" \
+        || echo "[GUEST] [WARN] host_etc umount failed"
+else
+    echo "[GUEST] [WARN] host_etc 9p unavailable; using initramfs /etc only"
+fi
+/bin/busybox rmdir /mnt/host_etc 2>/dev/null || true
 
-/bin/busybox mount -t overlay overlay -o lowerdir=/newroot/.overlay/lower_etc,upperdir=/newroot/.overlay/etc_upper,workdir=/newroot/.overlay/etc_work /newroot/etc 2>&1 \
-    && echo "[GUEST] [OK] Mounted overlayfs on /newroot/etc" \
-    || echo "[GUEST] [FAIL] overlayfs on /newroot/etc failed!"
-
-# Identity & config requirements for systemd PID 1 on /newroot/etc overlay
+# Guest identity — never imported from host /etc
 cat << 'FSTABEOF' > /newroot/etc/fstab
 # /etc/fstab: MicroVM guest filesystem table (rootfs mounted by initramfs)
 FSTABEOF
 
-# Truncate machine-id so systemd-machine-id-setup generates a fresh guest ID
 : > /newroot/etc/machine-id
-
-# Clear host SSH host keys from guest overlay
+echo "qemu-restore-vm" > /newroot/etc/hostname
 rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
-
-# Clear host enabled service links in /etc/systemd/system so guest microVM boots instantly
-/bin/busybox rm -rf /newroot/etc/systemd/system/multi-user.target.wants/* 2>/dev/null || true
-/bin/busybox rm -rf /newroot/etc/systemd/system/default.target.wants/* 2>/dev/null || true
-/bin/busybox rm -rf /newroot/etc/systemd/system/timers.target.wants/* 2>/dev/null || true
-/bin/busybox rm -rf /newroot/etc/systemd/system/sockets.target.wants/* 2>/dev/null || true
+/bin/busybox rm -rf /newroot/etc/systemd/system/multi-user.target.wants 2>/dev/null || true
+/bin/busybox rm -rf /newroot/etc/systemd/system/default.target.wants 2>/dev/null || true
+/bin/busybox rm -rf /newroot/etc/systemd/system/timers.target.wants 2>/dev/null || true
+/bin/busybox rm -rf /newroot/etc/systemd/system/sockets.target.wants 2>/dev/null || true
 
 # Ensure /usr/local is writable for workflow tools
 /bin/busybox chmod 1777 /newroot/usr/local/bin /newroot/usr/local 2>/dev/null || true

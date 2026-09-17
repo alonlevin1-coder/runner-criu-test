@@ -45,7 +45,7 @@ jobs:
           echo "${UPTIME}" > /tmp/vm_step1_uptime.txt
           echo "step1_completed" > /tmp/vm_step1_marker.txt
           
-          echo "--- Checking /usr & /etc OverlayFS mounts ---"
+          echo "--- Checking /usr overlay and private /etc ---"
           if ! mount | grep -E "on /usr type overlay"; then
             echo "FAIL: /usr is not mounted as overlay!"
             mount
@@ -53,14 +53,14 @@ jobs:
           fi
           echo "CONFIRMED: /usr is mounted as overlay"
 
-          if ! mount | grep -E "on /etc type overlay"; then
-            echo "FAIL: /etc is not mounted as overlay!"
-            mount
+          if mount | grep -E "on /etc type (overlay|9p)"; then
+            echo "FAIL: /etc must be a guest-private copy, not a live host share!"
+            mount | grep " /etc "
             exit 1
           fi
-          echo "CONFIRMED: /etc is mounted as overlay"
+          echo "CONFIRMED: /etc is not a host 9p/overlay share"
 
-          echo "--- Checking guest identity exclusions in /etc ---"
+          echo "--- Checking guest identity in /etc ---"
           echo "Guest Machine ID: $(cat /etc/machine-id)"
           if [ -z "$(cat /etc/machine-id 2>/dev/null)" ]; then
             echo "FAIL: /etc/machine-id is empty!"
@@ -108,7 +108,7 @@ jobs:
             exit 1
           fi
 
-          echo "--- Verifying /usr & /etc OverlayFS persistence ---"
+          echo "--- Verifying /usr overlay and private /etc persistence ---"
           if [ ! -f /usr/local/bin/vm_usr_overlay_test.txt ]; then
             echo "FAIL: /usr/local/bin/vm_usr_overlay_test.txt not found in Step 2!"
             exit 1
@@ -119,7 +119,7 @@ jobs:
             echo "FAIL: /etc/vm_etc_overlay_test.txt not found in Step 2!"
             exit 1
           fi
-          echo "CONFIRMED: /etc overlay write persisted across steps: $(cat /etc/vm_etc_overlay_test.txt)"
+          echo "CONFIRMED: guest /etc write persisted across steps: $(cat /etc/vm_etc_overlay_test.txt)"
 
           echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
           echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"

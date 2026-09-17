@@ -373,6 +373,7 @@ VIRTFS_ARGS=(
     -virtfs "local,path=${DOTNET_DIR},mount_tag=dotnet,security_model=none,id=dotnet"
     -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
 )
+# host_etc is mounted only long enough for an allowlist copy in guest /init.
 for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt" "host_etc:/etc"; do
     tag="${spec%%:*}"
     path="${spec##*:}"
