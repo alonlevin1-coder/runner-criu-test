@@ -373,7 +373,7 @@ for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" 
     tag="${spec%%:*}"
     path="${spec##*:}"
     if [ -d "${path}" ]; then
-        VIRTFS_ARGS+=(-virtfs "local,path=${path},mount_tag=${tag},security_model=none,id=${tag}")
+        VIRTFS_ARGS+=(-virtfs "local,path=${path},mount_tag=${tag},security_model=none,readonly=on,id=${tag}")
     fi
 done
 

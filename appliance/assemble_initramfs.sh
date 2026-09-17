@@ -509,8 +509,8 @@ for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetli
     fi
 done
 
-# Load 9p virtio filesystem modules in dependency order
-for mod in netfs 9pnet 9pnet_virtio 9p; do
+# Load 9p virtio filesystem modules and overlayfs in dependency order
+for mod in netfs 9pnet 9pnet_virtio 9p overlay; do
     if [ -f "/modules/${mod}.ko" ]; then
         if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
             echo "[GUEST] [OK] Loaded module ${mod}"
@@ -518,7 +518,7 @@ for mod in netfs 9pnet 9pnet_virtio 9p; do
             echo "[GUEST] [FAIL] Failed to load 9p module ${mod}"
         fi
     else
-        echo "[GUEST] [FAIL] 9p module /modules/${mod}.ko not found!"
+        echo "[GUEST] [FAIL] module /modules/${mod}.ko not found!"
     fi
 done
 
@@ -573,14 +573,24 @@ echo "=========================================================="
 /bin/busybox ln -sf usr/lib /newroot/lib
 /bin/busybox ln -sf usr/lib64 /newroot/lib64
 
-# 3. Mount 9p shares into newroot
-echo "[GUEST] Mounting 9p shares into /newroot..."
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_usr /newroot/usr 2>&1 \
-    && echo "[GUEST] [OK] Mounted host_usr at /newroot/usr" \
+# 3. Mount 9p shares and OverlayFS into newroot
+echo "[GUEST] Mounting 9p shares and overlays into /newroot..."
+/bin/busybox mkdir -p /newroot/.overlay/lower_usr /newroot/.overlay/usr_upper /newroot/.overlay/usr_work
+/bin/busybox mkdir -p /newroot/.overlay/lower_opt /newroot/.overlay/opt_upper /newroot/.overlay/opt_work
+
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_usr /newroot/.overlay/lower_usr 2>&1 \
+    && echo "[GUEST] [OK] Mounted host_usr at /newroot/.overlay/lower_usr" \
     || echo "[GUEST] [FAIL] host_usr mount failed!"
 
-if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_opt /newroot/opt 2>/dev/null; then
-    echo "[GUEST] [OK] Mounted host_opt at /newroot/opt"
+/bin/busybox mount -t overlay overlay -o lowerdir=/newroot/.overlay/lower_usr,upperdir=/newroot/.overlay/usr_upper,workdir=/newroot/.overlay/usr_work /newroot/usr 2>&1 \
+    && echo "[GUEST] [OK] Mounted overlayfs on /newroot/usr" \
+    || echo "[GUEST] [FAIL] overlayfs on /newroot/usr failed!"
+
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_opt /newroot/.overlay/lower_opt 2>/dev/null; then
+    echo "[GUEST] [OK] Mounted host_opt at /newroot/.overlay/lower_opt"
+    /bin/busybox mount -t overlay overlay -o lowerdir=/newroot/.overlay/lower_opt,upperdir=/newroot/.overlay/opt_upper,workdir=/newroot/.overlay/opt_work /newroot/opt 2>&1 \
+        && echo "[GUEST] [OK] Mounted overlayfs on /newroot/opt" \
+        || echo "[GUEST] [FAIL] overlayfs on /newroot/opt failed!"
 fi
 
 /bin/busybox mkdir -p /newroot/home/runner

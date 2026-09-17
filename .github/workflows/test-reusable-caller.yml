@@ -44,6 +44,17 @@ jobs:
           echo "${BOOT_ID}" > /tmp/vm_step1_boot_id.txt
           echo "${UPTIME}" > /tmp/vm_step1_uptime.txt
           echo "step1_completed" > /tmp/vm_step1_marker.txt
+          
+          echo "--- Checking /usr OverlayFS mount ---"
+          if ! mount | grep -E "on /usr type overlay"; then
+            echo "FAIL: /usr is not mounted as overlay!"
+            mount
+            exit 1
+          fi
+          echo "CONFIRMED: /usr is mounted as overlay"
+          echo "Writing test file into /usr/local/bin/..."
+          echo "step1_usr_overlay_verified" > /usr/local/bin/vm_usr_overlay_test.txt
+
           echo "PASS: Confirmed execution inside MicroVM Step 1!"
 
       - name: Step 2 inside MicroVM (Multi-Step Continuation Test)
@@ -73,6 +84,14 @@ jobs:
             echo "FAIL: Boot ID mismatch between Step 1 (${BOOT_ID_STEP1}) and Step 2 (${BOOT_ID_STEP2})!"
             exit 1
           fi
+
+          echo "--- Verifying /usr OverlayFS persistence ---"
+          if [ ! -f /usr/local/bin/vm_usr_overlay_test.txt ]; then
+            echo "FAIL: /usr/local/bin/vm_usr_overlay_test.txt not found in Step 2!"
+            exit 1
+          fi
+          echo "CONFIRMED: /usr overlay write persisted across steps: $(cat /usr/local/bin/vm_usr_overlay_test.txt)"
+
           echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
           echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"
           echo "PASS: Confirmed Step 2 executed inside the SAME persistent MicroVM instance under systemd PID 1!"
