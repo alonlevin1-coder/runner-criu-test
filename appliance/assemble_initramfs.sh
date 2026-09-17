@@ -813,18 +813,10 @@ echo "[GUEST] Marking VM environment for restored processes"
 /bin/busybox chmod 666 /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox ln -sfn /mnt/checkpoint /run/runner_checkpoint 2>/dev/null || true
 echo "is_vm marker created" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-echo "[GUEST] Binding host /usr /bin /lib for criu path fidelity"
-for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64 /host_opt:/opt; do
-    src="${pair%%:*}"
-    dst="${pair##*:}"
-    if [ -d "${src}" ]; then
-        /bin/busybox mkdir -p "${dst}"
-        /bin/busybox mount --bind "${src}" "${dst}" 2>/dev/null \
-            && echo "[GUEST] bind ${dst}" \
-            || echo "[GUEST] WARN bind ${dst} failed"
-    fi
-done
-echo "host_rootfs_bind done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+# /usr and /opt are already the host trees via 9p+overlay from /init.
+# Do not bind-mount host_usr over them — that hid the overlay and guest writes.
+echo "[GUEST] Skipping host /usr bind; overlay remains in place"
+echo "host_rootfs_bind skipped overlay_ok" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 
 
 if [ -f /opt_sudo_shim ]; then
