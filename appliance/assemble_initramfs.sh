@@ -612,10 +612,15 @@ else
         || echo "[GUEST] [FAIL] checkpoint mount in /newroot failed"
 fi
 
-# 4. Guest-private /etc from initramfs first (enough for Dropbear). Host
-#    allowlist 9p copy runs after SSH_READY so certs/dpkg cannot block SSH.
-echo "[GUEST] Seeding guest-private /etc from initramfs..."
-/bin/busybox cp -a /etc/. /newroot/etc/ 2>/dev/null || true
+# 4. Minimal guest /etc for Dropbear/systemd. Full tooling allowlist is copied after SSH.
+echo "[GUEST] Seeding minimal guest /etc (no bulky ssl tree yet)..."
+/bin/busybox mkdir -p /newroot/etc
+for item in passwd group shadow sudoers sudoers.d nsswitch.conf hostname fstab machine-id \
+            systemd pam.d security dropbear os-release; do
+    if [ -e "/etc/${item}" ]; then
+        /bin/busybox cp -a "/etc/${item}" "/newroot/etc/${item}" 2>/dev/null || true
+    fi
+done
 
 # Placeholder /var only — host dpkg copy happens after Dropbear so SSH stays fast.
 /bin/busybox mkdir -p /newroot/var/run /newroot/var/lock /newroot/var/tmp /newroot/var/log \
