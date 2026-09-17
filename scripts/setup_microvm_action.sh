@@ -11,7 +11,10 @@ ACTION_DIR="$(cd "${ACTION_DIR:-${SCRIPT_DIR}/..}" && pwd)"
 log() { echo "[setup_microvm_action] $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 
 # 1. If already executing inside the microVM, no-op immediately
-if [ -f /run/is_vm ] || [ -f /tmp/is_vm ] || [ -f /etc/is_vm ] || [ -d /mnt/checkpoint ] || grep -q '6.17' /proc/version 2>/dev/null || [ "$(hostname 2>/dev/null)" = "qemu-restore-vm" ]; then
+if [ -f /run/is_vm ] || [ -f /tmp/is_vm ] || [ -f /etc/is_vm ] \
+   || [ -d /mnt/checkpoint ] || [ -L /run/runner_checkpoint ] \
+   || [ "$(hostname 2>/dev/null)" = "qemu-restore-vm" ] \
+   || grep -q 't9_is_vm=1' /proc/cmdline 2>/dev/null; then
     log "Already executing inside MicroVM (VM environment detected). Succeeded."
     exit 0
 fi

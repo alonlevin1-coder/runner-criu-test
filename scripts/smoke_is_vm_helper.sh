@@ -411,7 +411,7 @@ qemu-system-x86_64 \
     -display none -monitor none \
     -kernel "${KERNEL_BIN}" \
     -initrd "${INITRD_BIN}" \
-    -append "earlyprintk=ttyS0 console=ttyS0 panic=1 loglevel=7 net.ifnames=0 biosdevname=0 rdinit=/init" \
+    -append "earlyprintk=ttyS0 console=ttyS0 panic=1 loglevel=7 net.ifnames=0 biosdevname=0 rdinit=/init t9_is_vm=1" \
     -no-reboot \
     "${NETDEV_ARGS[@]}" \
     "${VIRTFS_ARGS[@]}" \

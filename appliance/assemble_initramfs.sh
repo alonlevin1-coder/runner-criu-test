@@ -35,7 +35,7 @@ BB_APPLETS=(
     sh mount umount mkdir rm cp mv ln ls ps cat echo grep egrep sed awk
     sleep sync date hostname uname ifconfig ip route insmod modprobe rmmod
     poweroff reboot tr find chmod chown test kill killall tail head vi readlink
-    pivot_root switch_root
+    pivot_root switch_root nsenter
 )
 for applet in "${BB_APPLETS[@]}"; do
     ln -sf /bin/busybox "${STAGING}/bin/${applet}"
@@ -794,6 +794,7 @@ echo "[GUEST] Marking VM environment for restored processes"
 /bin/busybox touch /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox echo "is_vm" | /bin/busybox tee /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox chmod 666 /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
+/bin/busybox ln -sfn /mnt/checkpoint /run/runner_checkpoint 2>/dev/null || true
 echo "is_vm marker created" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 echo "[GUEST] Binding host /usr /bin /lib for criu path fidelity"
 for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64 /host_opt:/opt; do
@@ -930,6 +931,7 @@ echo "guest_sigcont count=${CONT_COUNT}" >> /mnt/checkpoint/guest_progress.txt 2
 /bin/busybox touch /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox echo "is_vm" | /bin/busybox tee /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox chmod 666 /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
+/bin/busybox ln -sfn /mnt/checkpoint /run/runner_checkpoint 2>/dev/null || true
 
 echo "--- process scan ---" >> "${DIAG}"
 /bin/busybox ps 2>/dev/null | /bin/busybox head -n 30 >> "${DIAG}" || true
@@ -939,6 +941,19 @@ for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'
     state="$(/bin/busybox awk '/^State:/ {print $2; exit}' /proc/${pid}/status 2>/dev/null || true)"
     echo "pid=${pid} state=${state} cmd=${cmd}" >> "${DIAG}"
     /bin/busybox ls -la "/proc/${pid}/fd" 2>/dev/null | /bin/busybox head -n 15 >> "${DIAG}" || true
+    # Restored tasks keep the dumped host mount/UTS ns, so guest /run /tmp
+    # markers are invisible to them. Write into each restored ns directly.
+    ROOT="/proc/${pid}/root"
+    /bin/busybox mkdir -p "${ROOT}/run" "${ROOT}/tmp" "${ROOT}/mnt/checkpoint" 2>/dev/null || true
+    /bin/busybox echo "is_vm" | /bin/busybox tee "${ROOT}/run/is_vm" "${ROOT}/tmp/is_vm" "${ROOT}/etc/is_vm" >/dev/null 2>&1 || true
+    /bin/busybox chmod 666 "${ROOT}/run/is_vm" "${ROOT}/tmp/is_vm" "${ROOT}/etc/is_vm" 2>/dev/null || true
+    /bin/busybox ln -sfn /mnt/checkpoint "${ROOT}/run/runner_checkpoint" 2>/dev/null || true
+    /bin/busybox mount --bind /mnt/checkpoint "${ROOT}/mnt/checkpoint" 2>/dev/null \
+        && echo "bind_checkpoint pid=${pid} ok" >> "${DIAG}" \
+        || echo "bind_checkpoint pid=${pid} skip" >> "${DIAG}"
+    /bin/busybox nsenter -t "${pid}" -u /bin/busybox hostname qemu-restore-vm 2>/dev/null \
+        && echo "uts_hostname pid=${pid} ok" >> "${DIAG}" \
+        || echo "uts_hostname pid=${pid} skip" >> "${DIAG}"
 done
 echo "post_restore_diag written" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 

@@ -5,12 +5,19 @@ set -euo pipefail
 CP="${RUNNER_VM_CHECKPOINT:-checkpoint}"
 CP="$(cd "${CP}" 2>/dev/null && pwd || echo "${CP}")"
 is_in_vm() {
-    [ -f /run/is_vm ] || [ -f /tmp/is_vm ] || [ -f /etc/is_vm ] || [ -d /mnt/checkpoint ] || grep -q '6.17' /proc/version 2>/dev/null || [ "$(hostname 2>/dev/null)" = "qemu-restore-vm" ]
+    [ -f /run/is_vm ] || [ -f /tmp/is_vm ] || [ -f /etc/is_vm ] \
+        || [ -d /mnt/checkpoint ] || [ -L /run/runner_checkpoint ] \
+        || [ "$(hostname 2>/dev/null)" = "qemu-restore-vm" ] \
+        || grep -q 't9_is_vm=1' /proc/cmdline 2>/dev/null
 }
 
 refresh_cp() {
-    if is_in_vm && [ -d /mnt/checkpoint ]; then
-        CP="/mnt/checkpoint"
+    if is_in_vm; then
+        if [ -d /mnt/checkpoint ]; then
+            CP="/mnt/checkpoint"
+        elif [ -d /run/runner_checkpoint ]; then
+            CP="/run/runner_checkpoint"
+        fi
         MIGRATOR_OK="${CP}/migrator_ok"
         MARKER="${CP}/guest_progress.txt"
     fi
