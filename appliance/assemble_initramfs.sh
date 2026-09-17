@@ -625,6 +625,7 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
     for item in alternatives ssl ca-certificates \
                 ld.so.cache ld.so.conf ld.so.conf.d \
                 apt pam.d security \
+                passwd group shadow gshadow \
                 nsswitch.conf os-release environment mime.types magic; do
         if [ -e "/mnt/host_etc/${item}" ]; then
             /bin/busybox rm -rf "/newroot/etc/${item}" 2>/dev/null || true
