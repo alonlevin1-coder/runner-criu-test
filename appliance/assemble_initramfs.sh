@@ -758,7 +758,7 @@ echo "[GUEST] Copying host /etc allowlist (post-SSH)..."
 /bin/busybox mkdir -p /mnt/host_etc
 if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
     echo "[GUEST] [OK] Mounted host_etc (temporary, copy-only)"
-    for item in alternatives ssl ca-certificates \
+    for item in alternatives \
                 ld.so.cache ld.so.conf ld.so.conf.d \
                 apt pam.d security \
                 passwd group shadow gshadow \

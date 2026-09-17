@@ -468,7 +468,11 @@ for i in $(seq 1 180); do
     sleep 1
 done
 if [ "${VAR_SEED_OK}" -ne 1 ]; then
-    log "WARN: var_seed_done not seen; continuing restore anyway"
+    log "ERROR: var_seed_done not seen after SSH"
+    send_ntfy "is_vm FAIL" "var_seed_done missing run=${GITHUB_RUN_ID:-0}"
+    touch "${CHECKPOINT_DIR}/helper_failed"
+    HELPER_EXIT_RC=1
+    exit 1
 fi
 # /init switch_root's immediately after var_seed_done; give systemd a moment.
 sleep 3
