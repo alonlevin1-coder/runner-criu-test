@@ -7,7 +7,7 @@ on:
 jobs:
   test-microvm-multistep:
     name: MicroVM Multi-Step Execution
-    runs-on: [self-hosted, microvm-host]
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
