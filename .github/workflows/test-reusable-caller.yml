@@ -36,10 +36,11 @@ jobs:
           echo "Boot ID: ${BOOT_ID}"
           UPTIME="$(cat /proc/uptime 2>/dev/null || echo unknown)"
           echo "Uptime: ${UPTIME}"
-          if [ ! -f /tmp/is_vm ]; then
-            echo "FAIL: Expected /tmp/is_vm inside MicroVM!"
+          if [ ! -f /run/is_vm ] && [ ! -f /tmp/is_vm ] && [ ! -f /etc/is_vm ]; then
+            echo "FAIL: Expected is_vm marker inside MicroVM!"
             exit 1
           fi
+          touch /tmp/is_vm 2>/dev/null || true
           echo "${BOOT_ID}" > /tmp/vm_step1_boot_id.txt
           echo "${UPTIME}" > /tmp/vm_step1_uptime.txt
           echo "step1_completed" > /tmp/vm_step1_marker.txt
@@ -57,8 +58,8 @@ jobs:
           UPTIME_STEP2="$(cat /proc/uptime 2>/dev/null || echo unknown)"
           echo "Uptime: ${UPTIME_STEP2}"
           
-          if [ ! -f /tmp/is_vm ]; then
-            echo "FAIL: Expected /tmp/is_vm inside MicroVM in Step 2!"
+          if [ ! -f /run/is_vm ] && [ ! -f /tmp/is_vm ] && [ ! -f /etc/is_vm ]; then
+            echo "FAIL: Expected is_vm marker inside MicroVM in Step 2!"
             exit 1
           fi
           

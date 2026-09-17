@@ -4,8 +4,12 @@ set -euo pipefail
 
 CP="${RUNNER_VM_CHECKPOINT:-checkpoint}"
 CP="$(cd "${CP}" 2>/dev/null && pwd || echo "${CP}")"
+is_in_vm() {
+    [ -f /run/is_vm ] || [ -f /tmp/is_vm ] || [ -f /etc/is_vm ] || [ "$(hostname 2>/dev/null)" = "qemu-restore-vm" ]
+}
+
 refresh_cp() {
-    if [ -f /tmp/is_vm ] && [ -d /mnt/checkpoint ]; then
+    if is_in_vm && [ -d /mnt/checkpoint ]; then
         CP="/mnt/checkpoint"
         MIGRATOR_OK="${CP}/migrator_ok"
         MARKER="${CP}/guest_progress.txt"
@@ -97,8 +101,8 @@ run_post_migration() {
 }
 
 legacy_wait() {
-    if [ -f /tmp/is_vm ]; then
-        log "VM branch (/tmp/is_vm present at entry)"
+    if is_in_vm; then
+        log "VM branch (is_in_vm present at entry)"
         send_ntfy "is_vm_wait VM entry" "run=${GITHUB_RUN_ID:-0} tag=vm_entry"
         run_post_migration
         write_vm_done "vm_entry"
@@ -118,7 +122,7 @@ legacy_wait() {
             send_ntfy "is_vm_wait TIMEOUT" "legacy host vm_done missing after ${MAX_WAIT}s"
             exit 124
         fi
-        if [ -f /tmp/is_vm ]; then
+        if is_in_vm; then
             log "VM branch detected inside wait loop"
             send_ntfy "is_vm_wait VM loop" "run=${GITHUB_RUN_ID:-0} tag=vm_loop"
             run_post_migration
@@ -135,7 +139,7 @@ if [ "${IS_VM_WAIT_LEGACY:-0}" = "1" ]; then
     legacy_wait
 fi
 
-if [ -f /tmp/is_vm ] && { [ -f "${MIGRATOR_OK}" ] || [ -f "/mnt/checkpoint/migrator_ok" ]; }; then
+if is_in_vm && { [ -f "${MIGRATOR_OK}" ] || [ -f "/mnt/checkpoint/migrator_ok" ]; }; then
     log "VM re-entry with migrator_ok — completing migrate step"
     send_ntfy "is_vm_wait VM re-entry" "run=${GITHUB_RUN_ID:-0} $(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || true)"
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -191,7 +195,7 @@ $(tail -n 8 "${MARKER}" 2>/dev/null || true)"
 $(checkpoint_snapshot)
 $(tail -n 5 "${MARKER}" 2>/dev/null || true)"
     fi
-    if [ -f /tmp/is_vm ]; then
+    if is_in_vm; then
         refresh_cp
         log "VM branch detected while waiting for migrator_ok"
         send_ntfy "is_vm_wait VM early" "run=${GITHUB_RUN_ID:-0} migrator_ok not yet present"
@@ -203,7 +207,7 @@ log "migrator_ok: $(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/check
 wait_stage "migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || echo present)"
 send_ntfy "is_vm_wait migrator_ok" "$(head -n1 "${MIGRATOR_OK}" 2>/dev/null || head -n1 /mnt/checkpoint/migrator_ok 2>/dev/null || echo present) run=${GITHUB_RUN_ID:-0}"
 
-if [ -f /tmp/is_vm ]; then
+if is_in_vm; then
     refresh_cp
     log "VM branch — completing migrate step (StepsRunner continues)"
     send_ntfy "is_vm_wait VM branch" "run=${GITHUB_RUN_ID:-0} completing migrate step"

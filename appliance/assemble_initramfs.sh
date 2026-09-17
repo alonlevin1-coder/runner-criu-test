@@ -713,8 +713,8 @@ else
 fi
 chmod 755 / 2>/dev/null || true
 echo "[GUEST] Marking VM environment for restored processes"
-touch /tmp/is_vm
-echo "is_vm" > /tmp/is_vm
+/bin/busybox touch /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
+/bin/busybox echo "is_vm" | /bin/busybox tee /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 echo "is_vm marker created" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 echo "[GUEST] Binding host /usr /bin /lib for criu path fidelity"
 for pair in /host_usr:/usr /host_bin:/bin /host_lib:/lib /host_lib64:/lib64 /host_opt:/opt; do
@@ -829,7 +829,7 @@ fi
 
 DIAG=/mnt/checkpoint/post_restore_diag.txt
 echo "=== post-restore diagnostics ===" >> "${DIAG}"
-echo "is_vm=$(/bin/busybox cat /tmp/is_vm 2>/dev/null || echo missing)" >> "${DIAG}"
+echo "is_vm=$(/bin/busybox cat /run/is_vm 2>/dev/null || /bin/busybox cat /tmp/is_vm 2>/dev/null || echo missing)" >> "${DIAG}"
 
 # Dump-time SIGSTOP leaves restored tasks stopped (T) in the guest; resume them.
 echo "[GUEST] SIGCONT stopped restored processes" >> "${DIAG}"
@@ -848,6 +848,8 @@ for pass in 1 2 3; do
 done
 echo "sigcont_count=${CONT_COUNT}" >> "${DIAG}"
 echo "guest_sigcont count=${CONT_COUNT}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+/bin/busybox touch /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
+/bin/busybox echo "is_vm" | /bin/busybox tee /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 
 echo "--- process scan ---" >> "${DIAG}"
 /bin/busybox ps 2>/dev/null | /bin/busybox head -n 30 >> "${DIAG}" || true
