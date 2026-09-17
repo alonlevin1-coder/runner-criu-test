@@ -641,6 +641,35 @@ else
 fi
 /bin/busybox rmdir /mnt/host_etc 2>/dev/null || true
 
+# Guest-private /var: dpkg/apt state only. No live host share.
+echo "[GUEST] Seeding guest-private /var..."
+/bin/busybox mkdir -p /newroot/var
+if [ -d /var ]; then
+    /bin/busybox cp -a /var/. /newroot/var/ 2>/dev/null || true
+fi
+/bin/busybox mkdir -p /mnt/host_var
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_var /mnt/host_var 2>/dev/null; then
+    echo "[GUEST] [OK] Mounted host_var (temporary, copy-only)"
+    for item in lib/dpkg lib/apt cache/apt cache/debconf; do
+        if [ -e "/mnt/host_var/${item}" ]; then
+            /bin/busybox mkdir -p "/newroot/var/$(/bin/busybox dirname "${item}")"
+            /bin/busybox rm -rf "/newroot/var/${item}" 2>/dev/null || true
+            /bin/busybox cp -a "/mnt/host_var/${item}" "/newroot/var/${item}" 2>/dev/null \
+                && echo "[GUEST] [OK] copied /var/${item}" \
+                || echo "[GUEST] [WARN] copy /var/${item} failed"
+        fi
+    done
+    /bin/busybox umount /mnt/host_var 2>/dev/null \
+        && echo "[GUEST] [OK] Unmounted host_var (no live /var share)" \
+        || echo "[GUEST] [WARN] host_var umount failed"
+else
+    echo "[GUEST] [WARN] host_var 9p unavailable; using initramfs /var only"
+fi
+/bin/busybox rmdir /mnt/host_var 2>/dev/null || true
+/bin/busybox mkdir -p /newroot/var/run /newroot/var/lock /newroot/var/tmp /newroot/var/log \
+    /newroot/var/cache/apt/archives/partial /newroot/var/lib/apt/lists/partial
+/bin/busybox chmod 1777 /newroot/var/tmp 2>/dev/null || true
+
 # Guest identity — never imported from host /etc
 cat << 'FSTABEOF' > /newroot/etc/fstab
 # /etc/fstab: MicroVM guest filesystem table (rootfs mounted by initramfs)

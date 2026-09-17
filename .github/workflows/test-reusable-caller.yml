@@ -60,6 +60,18 @@ jobs:
           fi
           echo "CONFIRMED: /etc is not a host 9p/overlay share"
 
+          if mount | grep -E "on /var type (overlay|9p)"; then
+            echo "FAIL: /var must be a guest-private copy, not a live host share!"
+            mount | grep " /var "
+            exit 1
+          fi
+          if [ ! -s /var/lib/dpkg/status ]; then
+            echo "FAIL: /var/lib/dpkg/status missing; apt/dpkg state was not copied"
+            ls -la /var/lib 2>/dev/null || true
+            exit 1
+          fi
+          echo "CONFIRMED: guest /var has dpkg status ($(wc -l < /var/lib/dpkg/status) lines)"
+
           echo "--- Checking guest identity in /etc ---"
           echo "Guest Machine ID: $(cat /etc/machine-id)"
           if [ -z "$(cat /etc/machine-id 2>/dev/null)" ]; then
