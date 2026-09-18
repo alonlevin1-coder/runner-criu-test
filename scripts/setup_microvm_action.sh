@@ -154,51 +154,38 @@ ensure_daemonize() {
 
 ensure_initramfs() {
     local dest="${ACTION_DIR}/appliance/initramfs.cpio.gz"
-    local stamp="${ACTION_DIR}/bin/initramfs.release.txt"
-    local url sha tmp got
     if [ -s "${dest}" ]; then
         log "initramfs already present $(ls -lh "${dest}" | awk '{print $5}')"
         stage "initramfs"
         return 0
     fi
-    url="${T9_INITRAMFS_URL:-}"
-    sha="${T9_INITRAMFS_SHA256:-}"
-    if [ -z "${url}" ] && [ -f "${stamp}" ]; then
-        url="$(awk -F= '/^url=/{print substr($0,5)}' "${stamp}")"
-        sha="$(awk -F= '/^sha256=/{print substr($0,8)}' "${stamp}")"
-    fi
-    url="${url:-https://github.com/alonlevin1-coder/runner-criu-test/releases/download/jammy-appliance-v1/initramfs.cpio.gz}"
-    sha="${sha:-3a0ce9cb734eb9f00659b9f0d332e9c64a479e97e0a3882693ebe6cda58d8591}"
-    tmp="${dest}.part"
-    mkdir -p "$(dirname "${dest}")"
-    log "Downloading initramfs from ${url}"
-    rm -f "${tmp}" "${dest}"
-    if command -v gh >/dev/null 2>&1 && [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
-        log "trying gh release download (authenticated)"
-        if timeout -k 5 90 gh release download jammy-appliance-v1 \
-            --repo alonlevin1-coder/runner-criu-test \
-            --pattern initramfs.cpio.gz \
-            --dir "$(dirname "${dest}")" \
-            --clobber; then
-            tmp="${dest}"
+    # Network fetch is opt-in: GH release pulls hung the migrate step.
+    if [ -n "${T9_INITRAMFS_URL:-}" ]; then
+        local url sha tmp got
+        local stamp="${ACTION_DIR}/bin/initramfs.release.txt"
+        url="${T9_INITRAMFS_URL}"
+        sha="${T9_INITRAMFS_SHA256:-}"
+        if [ -z "${sha}" ] && [ -f "${stamp}" ]; then
+            sha="$(awk -F= '/^sha256=/{print substr($0,8)}' "${stamp}")"
         fi
-    fi
-    if [ ! -s "${dest}" ]; then
         tmp="${dest}.part"
-        curl -fsSL --connect-timeout 15 --max-time 90 --retry 2 --retry-delay 1 -o "${tmp}" "${url}" || true
-        [ -s "${tmp}" ] && mv -f "${tmp}" "${dest}" || rm -f "${tmp}"
-    fi
-    if [ -s "${dest}" ]; then
-        got="$(sha256sum "${dest}" | awk '{print $1}')"
-        if [ "${got}" = "${sha}" ]; then
-            log "initramfs download ok $(ls -lh "${dest}" | awk '{print $5}')"
-            stage "initramfs"
-            return 0
+        mkdir -p "$(dirname "${dest}")"
+        log "Downloading initramfs from ${url}"
+        if curl -fsSL --connect-timeout 15 --max-time 60 -o "${tmp}" "${url}"; then
+            got="$(sha256sum "${tmp}" | awk '{print $1}')"
+            if [ -n "${sha}" ] && [ "${got}" != "${sha}" ]; then
+                log "initramfs checksum mismatch; assembling"
+                rm -f "${tmp}"
+            else
+                mv -f "${tmp}" "${dest}"
+                log "initramfs download ok $(ls -lh "${dest}" | awk '{print $5}')"
+                stage "initramfs"
+                return 0
+            fi
+        else
+            log "initramfs download failed; assembling"
+            rm -f "${tmp}"
         fi
-        log "initramfs checksum mismatch got=${got} want=${sha}; assembling"
-        rm -f "${dest}"
-    else
-        log "initramfs download failed; assembling"
     fi
     chmod +x "${ACTION_DIR}/appliance/assemble_initramfs.sh"
     "${ACTION_DIR}/appliance/assemble_initramfs.sh"
@@ -218,26 +205,6 @@ pack_var_seed() {
     stage "var_seed"
 }
 
-wait_bg() {
-    local name="$1" pid="$2" max="${3:-120}" rc=0 elapsed=0
-    while kill -0 "${pid}" 2>/dev/null; do
-        if [ "${elapsed}" -ge "${max}" ]; then
-            log "ERROR: background ${name} pid=${pid} exceeded ${max}s; killing"
-            kill -9 "${pid}" 2>/dev/null || true
-            wait "${pid}" 2>/dev/null || true
-            return 124
-        fi
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    if ! wait "${pid}"; then
-        rc=$?
-        log "ERROR: background ${name} pid=${pid} exited ${rc}"
-        return "${rc}"
-    fi
-    log "background ${name} pid=${pid} ok"
-}
-
 chmod +x "${ACTION_DIR}"/scripts/*.sh "${ACTION_DIR}"/appliance/*.sh 2>/dev/null || true
 chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true
 
@@ -249,27 +216,17 @@ cat /proc/cmdline > "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 chmod a+rw "${CHECKPOINT_DIR}/host_boot_id" "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 log "Checkpoint dir: ${CHECKPOINT_DIR} host_boot_id=$(cat "${CHECKPOINT_DIR}/host_boot_id")"
 
-# Initramfs download is unprivileged. /var pack uses sudo tar and must not
-# overlap QEMU dpkg (sudo/dpkg lock deadlock on GH).
-log "Fetching initramfs in parallel with QEMU/CRIU install"
-ensure_initramfs &
-PID_INITRAMFS=$!
+log "Host setup (QEMU/CRIU, then initramfs, then /var pack)"
 ensure_qemu
 ensure_criu
 ensure_daemonize
-wait_bg initramfs "${PID_INITRAMFS}" 100 || true
-if [ ! -s "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
-    log "initramfs missing after fetch; assembling"
-    chmod +x "${ACTION_DIR}/appliance/assemble_initramfs.sh"
-    "${ACTION_DIR}/appliance/assemble_initramfs.sh"
-    stage "initramfs"
-fi
+ensure_initramfs
 pack_var_seed
 if [ ! -s "${CHECKPOINT_DIR}/var_seed.tar" ]; then
     log "ERROR: var_seed.tar missing"
     exit 1
 fi
-stage "host_setup_parallel"
+stage "host_setup"
 
 CRIU_TCP_MODE="${INPUT_TCP_MODE:-${CRIU_TCP_MODE:-established}}"
 echo "${CRIU_TCP_MODE}" > "${CHECKPOINT_DIR}/criu_tcp_mode.txt"
