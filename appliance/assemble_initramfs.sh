@@ -614,17 +614,36 @@ else
         || echo "[GUEST] [FAIL] checkpoint mount in /newroot failed"
 fi
 
-# 4. Minimal guest /etc for Dropbear/systemd. Full tooling allowlist is copied after SSH.
-echo "[GUEST] Seeding minimal guest /etc (no bulky ssl tree yet)..."
-/bin/busybox mkdir -p /newroot/etc
-for item in passwd group shadow sudoers sudoers.d nsswitch.conf hostname fstab machine-id \
-            systemd pam.d security dropbear os-release; do
-    if [ -e "/etc/${item}" ]; then
-        /bin/busybox cp -a "/etc/${item}" "/newroot/etc/${item}" 2>/dev/null || true
-    fi
-done
+# 4. Guest-private /etc: copy initramfs stubs, then an allowlist from a
+#    temporary read-only host_etc 9p. Unmount before switch_root so /etc is
+#    never a live host share (unlike /usr|/opt overlays).
+echo "[GUEST] Seeding guest-private /etc from initramfs..."
+/bin/busybox cp -a /etc/. /newroot/etc/ 2>/dev/null || true
 
-# Placeholder /var only — host dpkg copy happens after Dropbear so SSH stays fast.
+echo "[GUEST] Copying host /etc allowlist (tooling only), then unmounting..."
+/bin/busybox mkdir -p /mnt/host_etc
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
+    echo "[GUEST] [OK] Mounted host_etc (temporary, copy-only)"
+    for item in alternatives ssl ca-certificates \
+                ld.so.cache ld.so.conf ld.so.conf.d \
+                apt pam.d security \
+                nsswitch.conf os-release environment mime.types magic; do
+        if [ -e "/mnt/host_etc/${item}" ]; then
+            /bin/busybox rm -rf "/newroot/etc/${item}" 2>/dev/null || true
+            /bin/busybox cp -a "/mnt/host_etc/${item}" "/newroot/etc/${item}" 2>/dev/null \
+                && echo "[GUEST] [OK] copied /etc/${item}" \
+                || echo "[GUEST] [WARN] copy /etc/${item} failed"
+        fi
+    done
+    /bin/busybox umount /mnt/host_etc 2>/dev/null \
+        && echo "[GUEST] [OK] Unmounted host_etc (no live /etc share)" \
+        || echo "[GUEST] [WARN] host_etc umount failed"
+else
+    echo "[GUEST] [WARN] host_etc 9p unavailable; using initramfs /etc only"
+fi
+/bin/busybox rmdir /mnt/host_etc 2>/dev/null || true
+
+# Placeholder /var only — dpkg copy is a later step after 3-step is green again.
 /bin/busybox mkdir -p /newroot/var/run /newroot/var/lock /newroot/var/tmp /newroot/var/log \
     /newroot/var/cache/apt/archives/partial /newroot/var/lib/apt/lists/partial
 /bin/busybox chmod 1777 /newroot/var/tmp 2>/dev/null || true
@@ -760,23 +779,8 @@ echo SSH_READY
 echo "[GUEST] SSH_READY — Dropbear listening on port 22 before systemd handoff"
 progress "SSH_READY"
 
-# Keep Dropbear as PID 1's child until the helper logs in. Immediate
-# switch_root (no copy window) lets systemd take the box before SSH.
-echo "[GUEST] Waiting for host helper SSH before switch_root..."
-progress "wait_ssh_connected"
-w=0
-while [ "${w}" -lt 180 ]; do
-    if [ -f /newroot/mnt/checkpoint/ssh_connected ] || [ -f /mnt/checkpoint/ssh_connected ]; then
-        echo "[GUEST] [OK] host helper SSH connected"
-        progress "ssh_connected"
-        break
-    fi
-    w=$((w + 1))
-    /bin/busybox sleep 1
-done
-
 # 9. Unmount temporary filesystems in early initramfs
-/bin/busybox umount /dev/pts /dev/shm /tmp /mnt 2>/dev/null || true
+/bin/busybox umount /dev/pts /dev/shm /tmp /mnt/checkpoint /mnt 2>/dev/null || true
 /bin/busybox umount /sys /proc /dev 2>/dev/null || true
 
 # 10. Switch root and hand off PID 1 to systemd via run-init
