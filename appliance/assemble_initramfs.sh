@@ -671,7 +671,6 @@ for svc in ssh.service ssh.socket sshd.service \
            cloud-config.service cloud-final.service azure-setup.service \
            unattended-upgrades.service apt-daily.service apt-daily.timer \
            apt-daily-upgrade.service apt-daily-upgrade.timer \
-           snapd.service snapd.socket snapd.seeded.service \
            systemd-udev-settle.service apparmor.service \
            systemd-networkd.service systemd-networkd-wait-online.service \
            NetworkManager.service; do
@@ -996,6 +995,14 @@ for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'
         || echo "uts_hostname pid=${pid} skip" >> "${DIAG}"
 done
 echo "post_restore_diag written" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+
+echo "[GUEST] Starting snapd after CRIU restore..."
+if [ -d /var/lib/snapd ] && [ -x /usr/bin/systemctl ]; then
+    /usr/bin/systemctl start snapd.socket snapd.service 2>>"${DIAG}" \
+        && echo "[GUEST] [OK] snapd start" \
+        || echo "[GUEST] [WARN] snapd start failed"
+    echo "snapd_start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+fi
 
 # Host helper writes migrator_ok after this script returns; restored bash waits on that.
 # Give restored VM processes time to reach vm_migrate_step_done (branch mode) or vm_done (legacy).

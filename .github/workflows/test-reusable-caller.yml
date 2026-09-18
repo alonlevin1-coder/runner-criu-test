@@ -108,6 +108,18 @@ jobs:
             exit 1
           fi
           echo "CONFIRMED: /var/lib/snapd present ($(du -sh /var/lib/snapd 2>/dev/null | awk '{print $1}'))"
+          if ! sudo systemctl start snapd.socket snapd.service; then
+            echo "FAIL: could not start snapd"
+            systemctl status snapd.service --no-pager || true
+            exit 1
+          fi
+          if ! systemctl is-active --quiet snapd.socket && ! systemctl is-active --quiet snapd.service; then
+            echo "FAIL: snapd socket/service not active"
+            systemctl status snapd.socket snapd.service --no-pager || true
+            exit 1
+          fi
+          snap version || true
+          echo "CONFIRMED: snapd is running"
 
           echo "--- Checking guest identity in /etc ---"
           echo "Guest Machine ID: $(cat /etc/machine-id)"
