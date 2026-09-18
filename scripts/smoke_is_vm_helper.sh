@@ -344,8 +344,7 @@ boot_qemu() {
         -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
     )
     local spec tag path
-    for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt" "host_etc:/etc" \
-                "host_var_dpkg:/var/lib/dpkg" "host_var_apt:/var/lib/apt"; do
+    for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt" "host_etc:/etc"; do
         tag="${spec%%:*}"
         path="${spec##*:}"
         if [ -d "${path}" ]; then
@@ -499,8 +498,6 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
     send_ntfy "is_vm TAP steal OK" "$(tail -n 15 "${CHECKPOINT_DIR}/host_tap_cutover.log" 2>/dev/null || true)"
 fi
 
-# /init switch_root's right after Dropbear; give systemd a moment.
-sleep 1
 log "running t9_restore.sh"
 stage_mark "restore_start" "dump_rc=${DUMP_RC}"
 set +e

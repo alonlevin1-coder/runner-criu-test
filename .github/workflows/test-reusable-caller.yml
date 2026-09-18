@@ -60,11 +60,18 @@ jobs:
           fi
           echo "CONFIRMED: /etc is not a host 9p/overlay share"
 
-          if mount | grep -E "on /var type (overlay|9p)"; then
-            echo "FAIL: /var must be a guest-private copy, not a live host share!"
+          if ! mount | grep -E "on /var type overlay"; then
+            echo "FAIL: /var must be an overlay (9p COPY snapshot + guest tmpfs upper)!"
+            mount | grep " /var " || mount
+            exit 1
+          fi
+          if mount | grep -E "on /var type 9p"; then
+            echo "FAIL: /var must not be a live host 9p mount!"
             mount | grep " /var "
             exit 1
           fi
+          echo "CONFIRMED: /var is overlay (guest-private upper)"
+          echo "var_overlay_ok" > /var/tmp/t9_var_overlay_test.txt
           if [ ! -s /var/lib/dpkg/status ]; then
             echo "FAIL: /var/lib/dpkg/status missing; apt/dpkg state was not copied"
             ls -la /var/lib 2>/dev/null || true
@@ -182,6 +189,12 @@ jobs:
             exit 1
           fi
           echo "CONFIRMED: guest /etc write persisted across steps: $(cat /etc/vm_etc_overlay_test.txt)"
+
+          if [ ! -f /var/tmp/t9_var_overlay_test.txt ]; then
+            echo "FAIL: /var/tmp/t9_var_overlay_test.txt not found in Step 2"
+            exit 1
+          fi
+          echo "CONFIRMED: /var overlay write persisted: $(cat /var/tmp/t9_var_overlay_test.txt)"
 
           if [ ! -f /tmp/vm_step1_apt_ok.txt ]; then
             echo "FAIL: apt install marker missing in Step 2"

@@ -201,7 +201,7 @@ pack_var_seed() {
     chmod +x "${ACTION_DIR}/scripts/map_host_var.sh" "${ACTION_DIR}/scripts/pack_host_var.sh"
     log "Mapping host /var (deny runtime/cache/images, copy remaining tool state)..."
     "${ACTION_DIR}/scripts/map_host_var.sh" "${CHECKPOINT_DIR}/var_map.txt" || true
-    log "Packing COPY /var trees into checkpoint for the guest..."
+    log "Exploding COPY /var trees into checkpoint/var_seed for the guest overlay..."
     if [ "$(id -u)" -eq 0 ]; then
         "${ACTION_DIR}/scripts/pack_host_var.sh" "${CHECKPOINT_DIR}"
     else
@@ -274,8 +274,8 @@ if [ ! -s "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
     log "ERROR: initramfs.cpio.gz missing"
     exit 1
 fi
-if [ ! -s "${CHECKPOINT_DIR}/var_seed.tar" ]; then
-    log "ERROR: var_seed.tar missing"
+if [ ! -s "${CHECKPOINT_DIR}/var_seed/var/lib/dpkg/status" ]; then
+    log "ERROR: var_seed/var/lib/dpkg/status missing"
     exit 1
 fi
 stage "host_setup"

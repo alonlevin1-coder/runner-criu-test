@@ -639,10 +639,33 @@ else
 fi
 /bin/busybox rmdir /mnt/host_etc 2>/dev/null || true
 
-# Placeholder /var only — dpkg copy is a later step after 3-step is green again.
+# Guest /var: 9p snapshot of COPY set as overlay lower, tmpfs upper (not live host /var).
+/bin/busybox mkdir -p /newroot/.overlay/lower_var /newroot/.overlay/var_upper /newroot/.overlay/var_work
+VAR_SEED=""
+if [ -d /newroot/mnt/checkpoint/var_seed/var ]; then
+    VAR_SEED="/newroot/mnt/checkpoint/var_seed/var"
+elif [ -d /mnt/checkpoint/var_seed/var ]; then
+    VAR_SEED="/mnt/checkpoint/var_seed/var"
+fi
+if [ -n "${VAR_SEED}" ] && [ -s "${VAR_SEED}/lib/dpkg/status" ]; then
+    if /bin/busybox mount -t overlay overlay \
+        -o "lowerdir=${VAR_SEED},upperdir=/newroot/.overlay/var_upper,workdir=/newroot/.overlay/var_work" \
+        /newroot/var 2>&1; then
+        echo "[GUEST] [OK] overlay /var from ${VAR_SEED}"
+        progress "var overlay ok"
+    else
+        echo "[GUEST] [FAIL] overlay /var failed; using empty tmpfs /var"
+        progress "var overlay fail"
+    fi
+else
+    echo "[GUEST] [WARN] var_seed missing; placeholder /var"
+    progress "var overlay missing seed"
+fi
 /bin/busybox mkdir -p /newroot/var/run /newroot/var/lock /newroot/var/tmp /newroot/var/log \
-    /newroot/var/cache/apt/archives/partial /newroot/var/lib/apt/lists/partial
+    /newroot/var/cache/apt/archives/partial /newroot/var/lib/apt/lists/partial \
+    /newroot/var/lib/dpkg/updates /newroot/var/lib/dpkg/tmp.ci
 /bin/busybox chmod 1777 /newroot/var/tmp 2>/dev/null || true
+/bin/busybox rm -f /newroot/var/lib/dpkg/lock /newroot/var/lib/dpkg/lock-frontend 2>/dev/null || true
 
 # Guest identity — never imported from host /etc
 cat << 'FSTABEOF' > /newroot/etc/fstab
@@ -890,20 +913,11 @@ if [ -f /mnt/checkpoint/network_spec.env ]; then
     echo "network_reconstruct ok LOCAL_IP=${LOCAL_IP} GUEST_IP=${GUEST_IP:-none}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 fi
 
-echo "[GUEST] Seeding guest /var (COPY set) and host passwd/group before CRIU..."
+echo "[GUEST] Seeding host passwd/group; /var is overlay from var_seed"
 echo "apt_seed_start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 /bin/busybox mkdir -p /var/lib /mnt/host_etc
-if [ -f /mnt/checkpoint/var_seed.tar ]; then
-    /bin/busybox tar -xf /mnt/checkpoint/var_seed.tar -C / \
-        && echo "[GUEST] [OK] extracted /mnt/checkpoint/var_seed.tar" \
-        || echo "[GUEST] [WARN] var_seed.tar extract failed"
-else
-    echo "[GUEST] [WARN] var_seed.tar missing"
-fi
-# Host pack can race apt/dpkg; drop stale locks so guest apt-get can run.
 /bin/busybox rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend \
     /var/lib/dpkg/lock-frontend.lock /var/lib/apt/lists/lock 2>/dev/null || true
-/bin/busybox rm -rf /var/lib/dpkg/updates /var/lib/dpkg/tmp.ci 2>/dev/null || true
 /bin/busybox mkdir -p /var/lib/dpkg/updates /var/lib/dpkg/tmp.ci
 if [ -x /usr/bin/dpkg ]; then
     /usr/bin/dpkg --configure -a >/mnt/checkpoint/guest_dpkg_configure.log 2>&1 \
@@ -963,7 +977,7 @@ echo "is_vm=$(/bin/busybox cat /run/is_vm 2>/dev/null || /bin/busybox cat /tmp/i
 # Dump-time SIGSTOP leaves restored tasks stopped (T) in the guest; resume them.
 echo "[GUEST] SIGCONT stopped restored processes" >> "${DIAG}"
 CONT_COUNT=0
-for pass in 1 2 3; do
+for pass in 1 2; do
     for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'); do
         [ "${pid}" -eq 1 ] && continue
         state="$(/bin/busybox awk '/^State:/ {print $2; exit}' /proc/${pid}/status 2>/dev/null || true)"
@@ -973,7 +987,6 @@ for pass in 1 2 3; do
         /bin/busybox kill -CONT "${pid}" 2>/dev/null || true
         CONT_COUNT=$((CONT_COUNT + 1))
     done
-    /bin/busybox sleep 1
 done
 echo "sigcont_count=${CONT_COUNT}" >> "${DIAG}"
 echo "guest_sigcont count=${CONT_COUNT}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
@@ -1005,33 +1018,6 @@ for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'
         || echo "uts_hostname pid=${pid} skip" >> "${DIAG}"
 done
 echo "post_restore_diag written" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-
-echo "[GUEST] Starting snapd after CRIU restore..."
-if [ -d /var/lib/snapd ] && [ -x /usr/bin/systemctl ]; then
-    /usr/bin/systemctl unmask snapd.socket snapd.service snapd.seeded.service 2>>"${DIAG}" || true
-    /usr/bin/systemctl start snapd.socket snapd.service 2>>"${DIAG}" \
-        && echo "[GUEST] [OK] snapd start" \
-        || echo "[GUEST] [WARN] snapd start failed"
-    echo "snapd_start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-fi
-
-# Host helper writes migrator_ok after this script returns; restored bash waits on that.
-# Give restored VM processes time to reach vm_migrate_step_done (branch mode) or vm_done (legacy).
-WAIT_VM=0
-while [ ! -f /mnt/checkpoint/vm_migrate_step_done ] \
-    && [ ! -f /mnt/checkpoint/vm_done ] \
-    && [ "${WAIT_VM}" -lt 5 ]; do
-    /bin/busybox sleep 1
-    WAIT_VM=$((WAIT_VM + 1))
-done
-echo "vm_branch_wait_s=${WAIT_VM}" >> "${DIAG}"
-if [ -f /mnt/checkpoint/vm_migrate_step_done ]; then
-    echo "vm_migrate_step_done=$(/bin/busybox cat /mnt/checkpoint/vm_migrate_step_done)" >> "${DIAG}"
-elif [ -f /mnt/checkpoint/vm_done ]; then
-    echo "vm_done tag=$(/bin/busybox cat /mnt/checkpoint/vm_done)" >> "${DIAG}"
-else
-    echo "[GUEST] branch markers not yet present (host will write migrator_ok next)" >> "${DIAG}"
-fi
 sync
 exit 0
 RESTOREEOF
