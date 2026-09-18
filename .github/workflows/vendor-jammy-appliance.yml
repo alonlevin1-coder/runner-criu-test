@@ -1,0 +1,29 @@
+name: Vendor Jammy appliance
+
+# Builds CRIU, QEMU/dropbear debs, daemonize, and initramfs on ubuntu-22.04.
+# Download the artifact and commit it onto rebuild/step-1-systemd-pid1.
+on:
+  workflow_dispatch:
+
+jobs:
+  vendor:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build reusable Jammy artifacts
+        run: |
+          chmod +x scripts/vendor_jammy_appliance.sh
+          ./scripts/vendor_jammy_appliance.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jammy-appliance
+          path: |
+            bin/criu
+            bin/criu.ldd.txt
+            bin/criu.pkgs.txt
+            bin/vendor-stamp.txt
+            scripts/daemonize
+            appliance/initramfs.cpio.gz
+            appliance/debs/*.deb
+          if-no-files-found: error
+          compression-level: 0

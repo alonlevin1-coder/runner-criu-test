@@ -1,4 +1,3 @@
-appliance/initramfs.cpio.gz
 appliance/staging/
 checkpoint/
 output/
@@ -6,6 +5,5 @@ diagnostics/
 debug_logs/
 *.log
 vm_serial.log
-scripts/daemonize
 appliance/ssh_id_ed25519
 appliance/ssh_id_ed25519.pub

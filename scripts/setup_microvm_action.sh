@@ -29,13 +29,41 @@ fi
 
 log "Initializing MicroVM migration from ${ACTION_DIR}..."
 
-# 2. Check and install system packages if missing
-NEEDED_PACKAGES=()
-for pkg in qemu-system-x86 cpio gcc dropbear-bin openssh-client iproute2; do
-    if ! dpkg -s "${pkg}" >/dev/null 2>&1; then
-        NEEDED_PACKAGES+=("${pkg}")
+run_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
     fi
-done
+}
+
+# 2. QEMU/dropbear/CRIU libs: prefer debs shipped with the action (already
+#    fetched by `uses:`). Fall back to apt on self-hosted/non-Jammy hosts.
+DEB_DIR="${ACTION_DIR}/appliance/debs"
+INSTALLED_FROM_DEBS=0
+shopt -s nullglob
+VENDOR_DEBS=("${DEB_DIR}"/*.deb)
+shopt -u nullglob
+if [ "${#VENDOR_DEBS[@]}" -gt 0 ]; then
+    log "Installing ${#VENDOR_DEBS[@]} vendored Jammy debs from ${DEB_DIR}"
+    if run_root dpkg -i "${VENDOR_DEBS[@]}" \
+        || run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -q -f --no-install-recommends \
+            -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"; then
+        INSTALLED_FROM_DEBS=1
+        stage "vendor_debs"
+    else
+        log "Vendored debs failed (wrong distro?); falling back to apt"
+    fi
+fi
+
+NEEDED_PACKAGES=()
+if [ "${INSTALLED_FROM_DEBS}" -eq 0 ]; then
+    for pkg in qemu-system-x86 cpio gcc dropbear-bin openssh-client iproute2; do
+        if ! dpkg -s "${pkg}" >/dev/null 2>&1; then
+            NEEDED_PACKAGES+=("${pkg}")
+        fi
+    done
+fi
 
 if [ "${#NEEDED_PACKAGES[@]}" -gt 0 ]; then
     log "Installing missing system packages: ${NEEDED_PACKAGES[*]}"
