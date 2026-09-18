@@ -124,16 +124,13 @@ if [ -d "${SCRIPT_DIR}/modules" ]; then
     cp -a "${SCRIPT_DIR}/modules"/* "${STAGING}/modules/" 2>/dev/null || true
 fi
 BZ_KVER="$(file -b "${SCRIPT_DIR}/bzImage" 2>/dev/null | sed -n 's/.*version \([^ ]*\).*/\1/p' || true)"
-KMOD_VER=""
+# Must match appliance/bzImage. Do not fall back to uname -r (GH is 6.8-azure;
+# guest kernel is 6.17 — mismatched .ko fail insmod and dockerd loses xt_addrtype).
 if [ -n "${BZ_KVER}" ] && [ -d "/lib/modules/${BZ_KVER}" ]; then
     KMOD_VER="${BZ_KVER}"
-elif [ -d "/lib/modules/$(uname -r)" ]; then
-    KMOD_VER="$(uname -r)"
-fi
-if [ -n "${KMOD_VER}" ]; then
-    echo "Packing netfilter/bridge modules from /lib/modules/${KMOD_VER} for dockerd"
+    echo "Packing extra netfilter/bridge modules from /lib/modules/${KMOD_VER}"
     for name in x_tables ip_tables iptable_filter iptable_nat iptable_mangle \
-                nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
+                nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat nft_compat \
                 xt_nat xt_MASQUERADE xt_addrtype xt_conntrack \
                 llc stp bridge br_netfilter; do
         src="$(find "/lib/modules/${KMOD_VER}" \( -name "${name}.ko.zst" -o -name "${name}.ko" \) 2>/dev/null | head -n 1 || true)"
@@ -149,6 +146,8 @@ if [ -n "${KMOD_VER}" ]; then
                 ;;
         esac
     done
+else
+    echo "Using checked-in appliance/modules (no /lib/modules/${BZ_KVER:-unknown} on this host)"
 fi
 chmod 644 "${STAGING}/modules/"* 2>/dev/null || true
 echo "Installed $(ls -1 "${STAGING}/modules" 2>/dev/null | wc -l) modules to /modules/"
@@ -529,7 +528,7 @@ echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 
 # Load diagnostic kernel modules, then iptables-nat/bridge for guest dockerd.
 for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables \
-           x_tables ip_tables iptable_filter nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
+           x_tables nft_compat ip_tables iptable_filter nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
            iptable_nat xt_nat xt_MASQUERADE xt_addrtype xt_conntrack llc stp bridge br_netfilter; do
 
     if [ -f "/modules/${mod}.ko" ]; then
@@ -780,6 +779,8 @@ SUDOEOF
 /bin/busybox chmod 755 /newroot/t9_restore.sh 2>/dev/null || true
 /bin/busybox cp -a /bin/busybox /newroot/bin/busybox 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/bin/busybox 2>/dev/null || true
+/bin/busybox mkdir -p /newroot/modules
+/bin/busybox cp -a /modules/*.ko /newroot/modules/ 2>/dev/null || true
 
 if [ -f /opt_sudo_shim ]; then
     /bin/busybox cp -a /opt_sudo_shim /newroot/opt_sudo_shim 2>/dev/null || true
@@ -1125,10 +1126,14 @@ fi
 if [ -x /usr/sbin/modprobe ] || [ -x /sbin/modprobe ]; then
     MP=/usr/sbin/modprobe
     [ -x /sbin/modprobe ] && MP=/sbin/modprobe
-    for mod in overlay iptable_nat br_netfilter xt_MASQUERADE xt_conntrack xt_addrtype; do
+    for mod in overlay iptable_nat br_netfilter xt_MASQUERADE xt_conntrack xt_addrtype nft_compat; do
         "${MP}" "${mod}" 2>>"${DIAG}" || true
     done
 fi
+for mod in nft_compat xt_addrtype iptable_nat xt_MASQUERADE br_netfilter; do
+    [ -f "/modules/${mod}.ko" ] || continue
+    /bin/busybox insmod "/modules/${mod}.ko" 2>>"${DIAG}" || true
+done
 if [ -x /usr/bin/systemctl ]; then
     /usr/bin/systemctl unmask containerd.service docker.socket docker.service 2>>"${DIAG}" || true
     /usr/bin/systemctl reset-failed docker.service docker.socket 2>>"${DIAG}" || true
