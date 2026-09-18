@@ -117,15 +117,41 @@ rm -f /tmp/sudo_shim.c
 
 
 
-# 3. Install kernel modules for Linux 6.17.0-40-generic (bzImage)
+# 3. Install kernel modules for Linux matching appliance/bzImage
 echo "[3/7] Packaging guest kernel modules..."
+mkdir -p "${STAGING}/modules"
 if [ -d "${SCRIPT_DIR}/modules" ]; then
-    cp -a "${SCRIPT_DIR}/modules"/* "${STAGING}/modules/"
-    chmod 644 "${STAGING}/modules"/*
-    echo "Installed $(ls -1 "${STAGING}/modules" | wc -l) modules to /modules/"
-else
-    echo "WARNING: ${SCRIPT_DIR}/modules not found!"
+    cp -a "${SCRIPT_DIR}/modules"/* "${STAGING}/modules/" 2>/dev/null || true
 fi
+BZ_KVER="$(file -b "${SCRIPT_DIR}/bzImage" 2>/dev/null | sed -n 's/.*version \([^ ]*\).*/\1/p' || true)"
+KMOD_VER=""
+if [ -n "${BZ_KVER}" ] && [ -d "/lib/modules/${BZ_KVER}" ]; then
+    KMOD_VER="${BZ_KVER}"
+elif [ -d "/lib/modules/$(uname -r)" ]; then
+    KMOD_VER="$(uname -r)"
+fi
+if [ -n "${KMOD_VER}" ]; then
+    echo "Packing netfilter/bridge modules from /lib/modules/${KMOD_VER} for dockerd"
+    for name in x_tables ip_tables iptable_filter iptable_nat iptable_mangle \
+                nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
+                xt_nat xt_MASQUERADE xt_addrtype xt_conntrack \
+                llc stp bridge br_netfilter; do
+        src="$(find "/lib/modules/${KMOD_VER}" \( -name "${name}.ko.zst" -o -name "${name}.ko" \) 2>/dev/null | head -n 1 || true)"
+        [ -n "${src}" ] || continue
+        case "${src}" in
+            *.zst)
+                if command -v zstd >/dev/null 2>&1; then
+                    zstd -d -f -q -o "${STAGING}/modules/${name}.ko" "${src}" 2>/dev/null || true
+                fi
+                ;;
+            *)
+                cp -a "${src}" "${STAGING}/modules/${name}.ko"
+                ;;
+        esac
+    done
+fi
+chmod 644 "${STAGING}/modules/"* 2>/dev/null || true
+echo "Installed $(ls -1 "${STAGING}/modules" 2>/dev/null | wc -l) modules to /modules/"
 
 # 4. Copy host CRIU binary and dynamic dependencies
 echo "[4/7] Packaging CRIU binary and libraries..."
@@ -395,6 +421,11 @@ else
     echo "runner:x:1001:" >> "${STAGING}/etc/group"
 fi
 grep -E "^$(whoami):" /etc/group >> "${STAGING}/etc/group" 2>/dev/null || true
+if grep -E "^docker:" /etc/group >> "${STAGING}/etc/group" 2>/dev/null; then
+    :
+else
+    echo "docker:x:988:" >> "${STAGING}/etc/group"
+fi
 
 cat << 'EOF' > "${STAGING}/etc/hosts"
 127.0.0.1   localhost qemu-restore-vm
@@ -496,8 +527,10 @@ progress() {
 # Set max pid limit
 echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 
-# Load diagnostic kernel modules
-for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables; do
+# Load diagnostic kernel modules, then iptables-nat/bridge for guest dockerd.
+for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables \
+           x_tables ip_tables iptable_filter nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
+           iptable_nat xt_nat xt_MASQUERADE xt_addrtype xt_conntrack llc stp bridge br_netfilter; do
 
     if [ -f "/modules/${mod}.ko" ]; then
         if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
@@ -626,7 +659,8 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
     for item in alternatives ssl ca-certificates \
                 ld.so.cache ld.so.conf ld.so.conf.d \
                 apt pam.d security \
-                nsswitch.conf os-release environment mime.types magic; do
+                nsswitch.conf os-release environment mime.types magic \
+                apparmor apparmor.d; do
         if [ -e "/mnt/host_etc/${item}" ]; then
             /bin/busybox rm -rf "/newroot/etc/${item}" 2>/dev/null || true
             /bin/busybox cp -a "/mnt/host_etc/${item}" "/newroot/etc/${item}" 2>/dev/null \
@@ -641,6 +675,17 @@ else
     echo "[GUEST] [WARN] host_etc 9p unavailable; using initramfs /etc only"
 fi
 /bin/busybox rmdir /mnt/host_etc 2>/dev/null || true
+
+# Guest dockerd needs its own graph dir and a daemon.json without host "hosts".
+/bin/busybox mkdir -p /newroot/var/lib/docker /newroot/var/lib/containerd /newroot/etc/docker
+cat << 'DOCKEREOF' > /newroot/etc/docker/daemon.json
+{
+  "storage-driver": "overlay2",
+  "live-restore": false,
+  "iptables": true,
+  "ip6tables": false
+}
+DOCKEREOF
 
 # Placeholder /var only — dpkg copy is a later step after 3-step is green again.
 /bin/busybox mkdir -p /newroot/var/run /newroot/var/lock /newroot/var/tmp /newroot/var/log \
@@ -1019,6 +1064,8 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
                 return 0 ;;
             systemd-networkd.service|systemd-networkd-wait-online.service|NetworkManager.service|systemd-udev-settle.service)
                 return 0 ;;
+            docker.service|docker.socket)
+                return 0 ;;
         esac
         return 1
     }
@@ -1060,18 +1107,48 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
 fi
 
 echo "[GUEST] Starting guest dockerd (own socket; not host engine)..."
-/bin/busybox mkdir -p /var/lib/docker /var/lib/containerd /run /var/run
+/bin/busybox mkdir -p /var/lib/docker /var/lib/containerd /run /var/run /etc/docker
+if ! /bin/busybox grep -q '^docker:' /etc/group 2>/dev/null; then
+    echo "docker:x:988:" >> /etc/group
+    echo "[GUEST] added docker group" >>"${DIAG}"
+fi
+if [ ! -f /etc/docker/daemon.json ]; then
+    echo '{"storage-driver":"overlay2","live-restore":false,"iptables":true,"ip6tables":false}' > /etc/docker/daemon.json
+fi
+if [ -x /sbin/apparmor_parser ] || [ -x /usr/sbin/apparmor_parser ]; then
+    APPP=/usr/sbin/apparmor_parser
+    [ -x /sbin/apparmor_parser ] && APPP=/sbin/apparmor_parser
+    for prof in /etc/apparmor.d/docker /etc/apparmor.d/docker-default /etc/apparmor.d/usr.sbin.dockerd; do
+        [ -f "${prof}" ] && "${APPP}" -r "${prof}" 2>>"${DIAG}" || true
+    done
+fi
+if [ -x /usr/sbin/modprobe ] || [ -x /sbin/modprobe ]; then
+    MP=/usr/sbin/modprobe
+    [ -x /sbin/modprobe ] && MP=/sbin/modprobe
+    for mod in overlay iptable_nat br_netfilter xt_MASQUERADE xt_conntrack xt_addrtype; do
+        "${MP}" "${mod}" 2>>"${DIAG}" || true
+    done
+fi
 if [ -x /usr/bin/systemctl ]; then
     /usr/bin/systemctl unmask containerd.service docker.socket docker.service 2>>"${DIAG}" || true
-    /usr/bin/systemctl start containerd.service docker.socket docker.service 2>>"${DIAG}" \
+    /usr/bin/systemctl reset-failed docker.service docker.socket 2>>"${DIAG}" || true
+    /usr/bin/systemctl start containerd.service 2>>"${DIAG}" || true
+    /usr/bin/systemctl start docker.socket docker.service 2>>"${DIAG}" \
         && echo "[GUEST] [OK] guest docker start" \
         || echo "[GUEST] [WARN] guest docker start failed"
 fi
 WAIT_DOCK=0
-while [ ! -S /run/docker.sock ] && [ ! -S /var/run/docker.sock ] && [ "${WAIT_DOCK}" -lt 15 ]; do
+while [ "${WAIT_DOCK}" -lt 25 ]; do
+    if [ -x /usr/bin/systemctl ] && /usr/bin/systemctl is-active --quiet docker.service 2>/dev/null; then
+        break
+    fi
     /bin/busybox sleep 1
     WAIT_DOCK=$((WAIT_DOCK + 1))
 done
+if [ -x /usr/bin/journalctl ]; then
+    echo "--- docker journal ---" >>"${DIAG}"
+    /usr/bin/journalctl -u docker -u containerd -n 80 --no-pager >>"${DIAG}" 2>/dev/null || true
+fi
 GUEST_DOCK=""
 [ -S /run/docker.sock ] && GUEST_DOCK=/run/docker.sock
 [ -z "${GUEST_DOCK}" ] && [ -S /var/run/docker.sock ] && GUEST_DOCK=/var/run/docker.sock

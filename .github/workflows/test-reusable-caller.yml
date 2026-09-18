@@ -125,6 +125,7 @@ jobs:
           if ! systemctl is-active --quiet docker.service && ! systemctl is-active --quiet docker.socket; then
             echo "FAIL: guest docker.service/socket not active"
             systemctl status docker.service docker.socket containerd.service --no-pager || true
+            journalctl -u docker -u docker.socket -u containerd -n 80 --no-pager || true
             exit 1
           fi
           if [ ! -S /var/run/docker.sock ] && [ ! -S /run/docker.sock ]; then
