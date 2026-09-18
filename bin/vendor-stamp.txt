@@ -1,0 +1,7 @@
+built=2026-09-18T10:59:29Z
+os=Ubuntu 22.04.5 LTS
+uname=6.8.0-1064-azure
+criu=Version: 4.2.1
+initramfs=129M
+debs=26
+initramfs 129MB exceeds GitHub 100MB file limit; keep assembling on the runner (~9s).

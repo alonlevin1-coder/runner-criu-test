@@ -1,3 +1,4 @@
+appliance/initramfs.cpio.gz
 appliance/staging/
 checkpoint/
 output/
