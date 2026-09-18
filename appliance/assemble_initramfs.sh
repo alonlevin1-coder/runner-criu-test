@@ -891,35 +891,27 @@ if [ -f /mnt/checkpoint/network_spec.env ]; then
     echo "network_reconstruct ok LOCAL_IP=${LOCAL_IP} GUEST_IP=${GUEST_IP:-none}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 fi
 
-echo "[GUEST] Seeding guest apt/dpkg before CRIU restore..."
+echo "[GUEST] Seeding guest /var (COPY set) and host passwd/group before CRIU..."
 echo "apt_seed_start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-/bin/busybox mkdir -p /var/lib /mnt/host_etc /mnt/host_var_dpkg /mnt/host_var_apt
+/bin/busybox mkdir -p /var/lib /mnt/host_etc
+if [ -f /mnt/checkpoint/var_seed.tar ]; then
+    /bin/busybox tar -xf /mnt/checkpoint/var_seed.tar -C / \
+        && echo "[GUEST] [OK] extracted /mnt/checkpoint/var_seed.tar" \
+        || echo "[GUEST] [WARN] var_seed.tar extract failed"
+else
+    echo "[GUEST] [WARN] var_seed.tar missing"
+fi
 if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
-    if [ -f /mnt/host_etc/group ]; then
-        for g in crontab; do
-            if ! /bin/busybox grep -q "^${g}:" /etc/group 2>/dev/null; then
-                /bin/busybox grep "^${g}:" /mnt/host_etc/group >> /etc/group 2>/dev/null \
-                    && echo "[GUEST] [OK] merged group ${g}" || true
-            fi
-        done
-    fi
+    # Host dpkg statoverrides name users like _chrony; keep guest root's shell.
+    for item in passwd group shadow gshadow; do
+        if [ -f "/mnt/host_etc/${item}" ]; then
+            /bin/busybox cp -a "/mnt/host_etc/${item}" "/etc/${item}" \
+                && echo "[GUEST] [OK] copied /etc/${item}" || true
+        fi
+    done
+    /bin/busybox sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/sh|' /etc/passwd 2>/dev/null || true
     /bin/busybox umount /mnt/host_etc 2>/dev/null || true
 fi
-for spec in "host_var_dpkg:dpkg" "host_var_apt:apt"; do
-    tag="${spec%%:*}"
-    name="${spec##*:}"
-    mnt="/mnt/${tag}"
-    /bin/busybox mkdir -p "${mnt}"
-    if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro "${tag}" "${mnt}" 2>/dev/null; then
-        /bin/busybox rm -rf "/var/lib/${name}"
-        /bin/busybox cp -a "${mnt}" "/var/lib/${name}" \
-            && echo "[GUEST] [OK] copied /var/lib/${name}" || echo "[GUEST] [WARN] copy /var/lib/${name} failed"
-        /bin/busybox umount "${mnt}" 2>/dev/null || true
-    else
-        echo "[GUEST] [WARN] ${tag} 9p unavailable"
-    fi
-    /bin/busybox rmdir "${mnt}" 2>/dev/null || true
-done
 echo "apt_seed_done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 
 TCP_FLAG="--tcp-close"

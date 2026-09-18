@@ -5,6 +5,14 @@ set -u
 
 OUT="${1:-}"
 QEMU_MEM="${QEMU_MEM:-4096}"
+if [ -n "${OUT}" ]; then
+    COPY_LIST="${COPY_LIST:-$(dirname "${OUT}")/var_copy.list}"
+else
+    COPY_LIST="${COPY_LIST:-/dev/null}"
+fi
+if [ "${COPY_LIST}" != /dev/null ]; then
+    : > "${COPY_LIST}"
+fi
 
 fmt() {
     awk -v n="${1:-0}" 'BEGIN {
@@ -73,6 +81,9 @@ classify() {
 emit() {
     local action="$1" bytes="$2" path="$3" why="$4"
     printf '%-10s %-10s %-36s %s\n' "${action}" "$(fmt "${bytes}")" "${path}" "${why}"
+    if [ "${action}" = "COPY" ] && [ -e "${path}" ] && [ "${COPY_LIST}" != /dev/null ]; then
+        printf '%s\n' "${path#/}" >> "${COPY_LIST}"
+    fi
 }
 
 {

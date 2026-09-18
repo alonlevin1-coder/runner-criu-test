@@ -80,9 +80,15 @@ tr -d '[:space:]' < /proc/sys/kernel/random/boot_id > "${CHECKPOINT_DIR}/host_bo
 cat /proc/cmdline > "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 chmod a+rw "${CHECKPOINT_DIR}/host_boot_id" "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 log "Checkpoint dir: ${CHECKPOINT_DIR} host_boot_id=$(cat "${CHECKPOINT_DIR}/host_boot_id")"
-chmod +x "${ACTION_DIR}/scripts/map_host_var.sh"
+chmod +x "${ACTION_DIR}/scripts/map_host_var.sh" "${ACTION_DIR}/scripts/pack_host_var.sh"
 log "Mapping host /var (deny runtime/cache/images, copy remaining tool state)..."
 "${ACTION_DIR}/scripts/map_host_var.sh" "${CHECKPOINT_DIR}/var_map.txt" || true
+log "Packing COPY /var trees into checkpoint for the guest..."
+if [ "$(id -u)" -eq 0 ]; then
+    "${ACTION_DIR}/scripts/pack_host_var.sh" "${CHECKPOINT_DIR}"
+else
+    sudo "${ACTION_DIR}/scripts/pack_host_var.sh" "${CHECKPOINT_DIR}"
+fi
 
 # 8. Configure TCP migration mode
 CRIU_TCP_MODE="${INPUT_TCP_MODE:-${CRIU_TCP_MODE:-established}}"
