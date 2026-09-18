@@ -22,6 +22,10 @@ inputs:
     description: 'Optional ntfy.sh topic for migration progress notifications'
     required: false
     default: ''
+  kernel:
+    description: 'Guest kernel: pin (repo bzImage) or host (/boot/vmlinuz-$(uname -r))'
+    required: false
+    default: 'pin'
 
 runs:
   using: 'composite'
@@ -34,6 +38,7 @@ runs:
         INPUT_MEMORY_MB: ${{ inputs.memory-mb }}
         INPUT_SMP: ${{ inputs.smp }}
         INPUT_NTFY_TOPIC: ${{ inputs.ntfy-topic }}
+        T9_KERNEL: ${{ inputs.kernel }}
       run: |
         chmod +x "${ACTION_DIR}/scripts/"*.sh "${ACTION_DIR}/appliance/"*.sh 2>/dev/null || true
         chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true

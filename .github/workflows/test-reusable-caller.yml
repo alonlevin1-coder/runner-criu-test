@@ -24,11 +24,23 @@ jobs:
           tcp-mode: established
           memory-mb: '4096'
           smp: '2'
+          kernel: host
 
       - name: Step 1 inside MicroVM (Initial Workload)
         run: |
           echo "=== Step 1 inside MicroVM ==="
           echo "Kernel: $(uname -r)"
+          HOST_KVER=""
+          for p in /mnt/checkpoint/host_uname_r.txt /run/runner_checkpoint/host_uname_r.txt; do
+            [ -f "${p}" ] && HOST_KVER="$(cat "${p}")" && break
+          done
+          if [ -n "${HOST_KVER}" ]; then
+            if [ "$(uname -r)" != "${HOST_KVER}" ]; then
+              echo "FAIL: guest kernel $(uname -r) != host ${HOST_KVER}"
+              exit 1
+            fi
+            echo "CONFIRMED: guest kernel matches host ${HOST_KVER}"
+          fi
           echo "Hostname: $(hostname)"
           PID1="$(cat /proc/1/comm 2>/dev/null || ps -p 1 -o comm= 2>/dev/null || echo unknown)"
           echo "PID 1 is: ${PID1}"

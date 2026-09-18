@@ -117,38 +117,62 @@ rm -f /tmp/sudo_shim.c
 
 
 
-# 3. Install kernel modules for Linux matching appliance/bzImage
+# 3. Guest kernel modules. T9_KERNEL=host packs $(uname -r) only (must match
+#    /boot/vmlinuz). pin keeps git appliance/modules for the repo bzImage.
 echo "[3/7] Packaging guest kernel modules..."
 mkdir -p "${STAGING}/modules"
-if [ -d "${SCRIPT_DIR}/modules" ]; then
-    cp -a "${SCRIPT_DIR}/modules"/* "${STAGING}/modules/" 2>/dev/null || true
-fi
-BZ_KVER="$(file -b "${SCRIPT_DIR}/bzImage" 2>/dev/null | sed -n 's/.*version \([^ ]*\).*/\1/p' || true)"
-# Must match appliance/bzImage. Do not fall back to uname -r (GH is 6.8-azure;
-# guest kernel is 6.17 — mismatched .ko fail insmod and dockerd loses xt_addrtype).
-if [ -n "${BZ_KVER}" ] && [ -d "/lib/modules/${BZ_KVER}" ]; then
-    KMOD_VER="${BZ_KVER}"
-    echo "Packing extra netfilter/bridge modules from /lib/modules/${KMOD_VER}"
-    for name in x_tables ip_tables iptable_filter iptable_nat iptable_mangle \
-                nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat nft_compat \
-                nft_chain_nat nft_nat nft_masq nft_ct nft_limit \
-                xt_nat xt_MASQUERADE xt_addrtype xt_conntrack \
-                llc stp bridge br_netfilter; do
-        src="$(find "/lib/modules/${KMOD_VER}" \( -name "${name}.ko.zst" -o -name "${name}.ko" \) 2>/dev/null | head -n 1 || true)"
-        [ -n "${src}" ] || continue
-        case "${src}" in
-            *.zst)
-                if command -v zstd >/dev/null 2>&1; then
-                    zstd -d -f -q -o "${STAGING}/modules/${name}.ko" "${src}" 2>/dev/null || true
-                fi
-                ;;
-            *)
-                cp -a "${src}" "${STAGING}/modules/${name}.ko"
-                ;;
-        esac
+T9_KERNEL="${T9_KERNEL:-pin}"
+pack_kmod() {
+    local name="$1" src
+    [ -n "${KMOD_VER:-}" ] || return 0
+    src="$(find "/lib/modules/${KMOD_VER}" \( -name "${name}.ko.zst" -o -name "${name}.ko" \) 2>/dev/null | head -n 1 || true)"
+    [ -n "${src}" ] || return 0
+    case "${src}" in
+        *.zst)
+            command -v zstd >/dev/null 2>&1 || return 0
+            zstd -d -f -q -o "${STAGING}/modules/${name}.ko" "${src}" 2>/dev/null || true
+            ;;
+        *)
+            cp -a "${src}" "${STAGING}/modules/${name}.ko"
+            ;;
+    esac
+}
+
+KMOD_LIST=(
+    netfs 9pnet 9pnet_virtio 9p overlay
+    virtio virtio_ring virtio_pci virtio_net virtio_mmio
+    inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth
+    nfnetlink nf_tables x_tables nft_compat nft_chain_nat nft_nat nft_masq nft_ct nft_limit
+    ip_tables iptable_filter iptable_nat iptable_mangle
+    nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat
+    xt_nat xt_MASQUERADE xt_addrtype xt_conntrack
+    llc stp bridge br_netfilter
+)
+
+if [ "${T9_KERNEL}" = host ]; then
+    KMOD_VER="$(uname -r)"
+    echo "T9_KERNEL=host: packing modules from /lib/modules/${KMOD_VER} (not git 6.17 .ko)"
+    if [ ! -d "/lib/modules/${KMOD_VER}" ]; then
+        echo "ERROR: /lib/modules/${KMOD_VER} missing"
+        exit 1
+    fi
+    for name in "${KMOD_LIST[@]}"; do
+        pack_kmod "${name}"
     done
 else
-    echo "Using checked-in appliance/modules (no /lib/modules/${BZ_KVER:-unknown} on this host)"
+    if [ -d "${SCRIPT_DIR}/modules" ]; then
+        cp -a "${SCRIPT_DIR}/modules"/* "${STAGING}/modules/" 2>/dev/null || true
+    fi
+    BZ_KVER="$(file -b "${SCRIPT_DIR}/bzImage" 2>/dev/null | sed -n 's/.*version \([^ ]*\).*/\1/p' || true)"
+    if [ -n "${BZ_KVER}" ] && [ -d "/lib/modules/${BZ_KVER}" ]; then
+        KMOD_VER="${BZ_KVER}"
+        echo "Packing extra modules from /lib/modules/${KMOD_VER} for pinned bzImage"
+        for name in "${KMOD_LIST[@]}"; do
+            pack_kmod "${name}"
+        done
+    else
+        echo "Using checked-in appliance/modules (no /lib/modules/${BZ_KVER:-unknown})"
+    fi
 fi
 chmod 644 "${STAGING}/modules/"* 2>/dev/null || true
 echo "Installed $(ls -1 "${STAGING}/modules" 2>/dev/null | wc -l) modules to /modules/"
@@ -544,8 +568,8 @@ for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetli
     fi
 done
 
-# Load 9p virtio filesystem modules and overlayfs in dependency order
-for mod in netfs 9pnet 9pnet_virtio 9p overlay; do
+# Load virtio then 9p virtio filesystem modules and overlayfs in dependency order
+for mod in virtio virtio_ring virtio_pci virtio_net virtio_mmio netfs 9pnet 9pnet_virtio 9p overlay; do
     if [ -f "/modules/${mod}.ko" ]; then
         if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
             echo "[GUEST] [OK] Loaded module ${mod}"

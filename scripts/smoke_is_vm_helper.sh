@@ -16,6 +16,18 @@ SSH_KEY="${REPO_DIR}/appliance/ssh_id_ed25519"
 chmod 600 "${SSH_KEY}" 2>/dev/null || true
 KERNEL_BIN="${REPO_DIR}/appliance/bzImage"
 INITRD_BIN="${REPO_DIR}/appliance/initramfs.cpio.gz"
+T9_KERNEL="${T9_KERNEL:-pin}"
+if [ -f "${CHECKPOINT_DIR}/t9_kernel.txt" ]; then
+    T9_KERNEL="$(tr -d '[:space:]' < "${CHECKPOINT_DIR}/t9_kernel.txt")"
+fi
+if [ "${T9_KERNEL}" = host ]; then
+    if [ -f "${CHECKPOINT_DIR}/vmlinuz.host" ]; then
+        KERNEL_BIN="${CHECKPOINT_DIR}/vmlinuz.host"
+    else
+        KERNEL_BIN="/boot/vmlinuz-$(uname -r)"
+    fi
+    log "T9_KERNEL=host kernel=${KERNEL_BIN} uname=$(uname -r)"
+fi
 NTFY_TOPIC="${NTFY_TOPIC:-runner-criu-r30-tap-morsho}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=freeze_snapshot_files.sh

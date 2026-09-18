@@ -23,7 +23,7 @@ log "Initializing MicroVM migration from ${ACTION_DIR}..."
 
 # 2. Check and install system packages if missing
 NEEDED_PACKAGES=()
-for pkg in qemu-system-x86 cpio gcc dropbear-bin openssh-client iproute2; do
+for pkg in qemu-system-x86 cpio gcc dropbear-bin openssh-client iproute2 zstd; do
     if ! dpkg -s "${pkg}" >/dev/null 2>&1; then
         NEEDED_PACKAGES+=("${pkg}")
     fi
@@ -61,11 +61,15 @@ if [ ! -x "${ACTION_DIR}/scripts/daemonize" ]; then
     chmod +x "${ACTION_DIR}/scripts/daemonize"
 fi
 
-# 5. Ensure initramfs is assembled
-if [ ! -f "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
+# 5. Ensure initramfs is assembled (always when using the host kernel so
+#    /modules matches $(uname -r), not git 6.17 .ko files).
+T9_KERNEL="${T9_KERNEL:-pin}"
+export T9_KERNEL
+log "T9_KERNEL=${T9_KERNEL} host=$(uname -r)"
+if [ "${T9_KERNEL}" = host ] || [ ! -f "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
     log "Assembling QEMU MicroVM restore initramfs..."
     chmod +x "${ACTION_DIR}/appliance/assemble_initramfs.sh"
-    "${ACTION_DIR}/appliance/assemble_initramfs.sh"
+    T9_KERNEL="${T9_KERNEL}" "${ACTION_DIR}/appliance/assemble_initramfs.sh"
 fi
 
 # 6. Make all helper scripts executable
@@ -80,6 +84,24 @@ tr -d '[:space:]' < /proc/sys/kernel/random/boot_id > "${CHECKPOINT_DIR}/host_bo
 cat /proc/cmdline > "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 chmod a+rw "${CHECKPOINT_DIR}/host_boot_id" "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 log "Checkpoint dir: ${CHECKPOINT_DIR} host_boot_id=$(cat "${CHECKPOINT_DIR}/host_boot_id")"
+uname -r > "${CHECKPOINT_DIR}/host_uname_r.txt"
+echo "${T9_KERNEL}" > "${CHECKPOINT_DIR}/t9_kernel.txt"
+chmod a+rw "${CHECKPOINT_DIR}/host_uname_r.txt" "${CHECKPOINT_DIR}/t9_kernel.txt" 2>/dev/null || true
+if [ "${T9_KERNEL}" = host ]; then
+    HOST_VMLINUZ="/boot/vmlinuz-$(uname -r)"
+    [ -f "${HOST_VMLINUZ}" ] || HOST_VMLINUZ="/boot/vmlinuz"
+    if [ ! -f "${HOST_VMLINUZ}" ]; then
+        log "ERROR: T9_KERNEL=host but no ${HOST_VMLINUZ}"
+        exit 1
+    fi
+    log "Staging host kernel ${HOST_VMLINUZ}"
+    if [ -r "${HOST_VMLINUZ}" ]; then
+        cp -L "${HOST_VMLINUZ}" "${CHECKPOINT_DIR}/vmlinuz.host"
+    else
+        sudo cp -L "${HOST_VMLINUZ}" "${CHECKPOINT_DIR}/vmlinuz.host"
+        sudo chmod a+r "${CHECKPOINT_DIR}/vmlinuz.host"
+    fi
+fi
 chmod +x "${ACTION_DIR}/scripts/map_host_var.sh" "${ACTION_DIR}/scripts/pack_host_var.sh"
 log "Mapping host /var (deny runtime/cache/images, copy remaining tool state)..."
 "${ACTION_DIR}/scripts/map_host_var.sh" "${CHECKPOINT_DIR}/var_map.txt" || true
@@ -123,6 +145,7 @@ export QEMU_SMP="${INPUT_SMP:-${QEMU_SMP:-2}}"
 export QEMU_MEM="${INPUT_MEMORY_MB:-${QEMU_MEM:-4096}}"
 export NTFY_TOPIC="${INPUT_NTFY_TOPIC:-${NTFY_TOPIC:-}}"
 export STEP_SHELL_PID
+export T9_KERNEL
 
 SERIAL_LOG="${LOG_DIR}/vm_serial.log"
 log "Daemonizing migration helper (target_pid=${WORKER_PID}, tcp_mode=${CRIU_TCP_MODE})..."
