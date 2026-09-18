@@ -442,7 +442,6 @@ for svc in ssh.service ssh.socket sshd.service \
            cloud-config.service cloud-final.service azure-setup.service \
            unattended-upgrades.service apt-daily.service apt-daily.timer \
            apt-daily-upgrade.service apt-daily-upgrade.timer \
-           snapd.service snapd.socket snapd.seeded.service \
            systemd-udev-settle.service \
            systemd-networkd.service systemd-networkd-wait-online.service \
            NetworkManager.service; do
@@ -660,6 +659,10 @@ rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
 /bin/busybox rm -rf /newroot/etc/systemd/system/default.target.wants 2>/dev/null || true
 /bin/busybox rm -rf /newroot/etc/systemd/system/timers.target.wants 2>/dev/null || true
 /bin/busybox rm -rf /newroot/etc/systemd/system/sockets.target.wants 2>/dev/null || true
+# Initramfs /etc may still carry host snapd mask links; snap state is copied when under cap.
+for svc in snapd.service snapd.socket snapd.seeded.service; do
+    /bin/busybox rm -f "/newroot/etc/systemd/system/${svc}"
+done
 
 # Ensure /usr/local is writable for workflow tools
 /bin/busybox chmod 1777 /newroot/usr/local/bin /newroot/usr/local 2>/dev/null || true
@@ -998,6 +1001,7 @@ echo "post_restore_diag written" >> /mnt/checkpoint/guest_progress.txt 2>/dev/nu
 
 echo "[GUEST] Starting snapd after CRIU restore..."
 if [ -d /var/lib/snapd ] && [ -x /usr/bin/systemctl ]; then
+    /usr/bin/systemctl unmask snapd.socket snapd.service snapd.seeded.service 2>>"${DIAG}" || true
     /usr/bin/systemctl start snapd.socket snapd.service 2>>"${DIAG}" \
         && echo "[GUEST] [OK] snapd start" \
         || echo "[GUEST] [WARN] snapd start failed"
