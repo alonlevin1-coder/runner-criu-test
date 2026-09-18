@@ -4,6 +4,12 @@ name: Vendor Jammy appliance
 # Download the artifact and commit it onto rebuild/step-1-systemd-pid1.
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - scripts/vendor_jammy_appliance.sh
+      - scripts/build_criu.sh
+      - appliance/assemble_initramfs.sh
+      - .github/workflows/vendor-jammy-appliance.yml
 
 jobs:
   vendor:
