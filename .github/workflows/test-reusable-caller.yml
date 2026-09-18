@@ -101,6 +101,14 @@ jobs:
           echo "t9-daemon-test" > /tmp/vm_step1_daemon_ok.txt
           echo "CONFIRMED: systemd started t9-daemon-test (active)"
 
+          echo "--- Guest snap state (COPY if under 512MiB cap) ---"
+          if [ ! -d /var/lib/snapd ]; then
+            echo "FAIL: /var/lib/snapd missing; GH runner snapd should be under the COPY cap"
+            ls -la /var/lib 2>/dev/null || true
+            exit 1
+          fi
+          echo "CONFIRMED: /var/lib/snapd present ($(du -sh /var/lib/snapd 2>/dev/null | awk '{print $1}'))"
+
           echo "--- Checking guest identity in /etc ---"
           echo "Guest Machine ID: $(cat /etc/machine-id)"
           if [ -z "$(cat /etc/machine-id 2>/dev/null)" ]; then

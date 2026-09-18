@@ -5,6 +5,7 @@ set -u
 
 OUT="${1:-}"
 QEMU_MEM="${QEMU_MEM:-4096}"
+SNAP_COPY_MAX_BYTES="${SNAP_COPY_MAX_BYTES:-536870912}"
 if [ -n "${OUT}" ]; then
     COPY_LIST="${COPY_LIST:-$(dirname "${OUT}")/var_copy.list}"
 else
@@ -44,7 +45,7 @@ classify() {
         lib/docker|lib/containerd|lib/buildkit|lib/nerdctl|lib/cni|lib/kubelet)
             echo "DROP size+runtime: container images/state; use docker.sock if needed" ;;
         lib/snapd|snap|lib/snapd/*)
-            echo "DROP size: snapd masked in guest; multi-GiB" ;;
+            echo "SNAP size-gated" ;;
         lib/lxc*|lib/lxd|lib/libvirt|lib/qemu)
             echo "DROP runtime: other hypervisors/containers" ;;
         lib/waagent|lib/azure|lib/cloud|lib/hyperv|lib/landscape)
@@ -86,6 +87,24 @@ emit() {
     fi
 }
 
+# COPY snapd//var/snap only when small enough for guest tmpfs (GH ~240MiB; this
+# dev box is multi-GiB and must stay DROP).
+size_gate_snap() {
+    local rel="$1" bytes="$2"
+    case "${rel}" in
+        snap|lib/snapd)
+            if [ "${bytes}" -le "${SNAP_COPY_MAX_BYTES}" ]; then
+                echo "COPY snap under cap $(fmt "${bytes}") <= $(fmt "${SNAP_COPY_MAX_BYTES}")"
+            else
+                echo "DROP snap over cap $(fmt "${bytes}") > $(fmt "${SNAP_COPY_MAX_BYTES}")"
+            fi
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
 {
     echo "=== host /var map $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) ==="
     echo "Guest /var is tmpfs inside QEMU_MEM=${QEMU_MEM} MB. Copying multi-GiB trees will OOM."
@@ -111,6 +130,10 @@ emit() {
         else
             bytes="$(dir_bytes "${p}")"
             why="$(classify "${rel}")"
+            gate="$(size_gate_snap "${rel}" "${bytes}")"
+            if [ -n "${gate}" ]; then
+                why="${gate}"
+            fi
             action="${why%% *}"
             why="${why#* }"
         fi
@@ -135,6 +158,10 @@ emit() {
         else
             bytes="$(dir_bytes "${p}")"
             why="$(classify "${rel}")"
+            gate="$(size_gate_snap "${rel}" "${bytes}")"
+            if [ -n "${gate}" ]; then
+                why="${gate}"
+            fi
             action="${why%% *}"
             why="${why#* }"
         fi
