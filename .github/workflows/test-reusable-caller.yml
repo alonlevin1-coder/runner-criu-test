@@ -121,6 +121,31 @@ jobs:
           snap version || true
           echo "CONFIRMED: snapd is running"
 
+          echo "--- Host docker.sock via guestfwd ---"
+          if [ ! -S /var/run/docker.sock ] && [ ! -S /run/docker.sock ]; then
+            echo "FAIL: guest docker.sock missing"
+            ls -la /run /var/run 2>/dev/null || true
+            exit 1
+          fi
+          if ! docker info; then
+            echo "FAIL: docker info against guest-proxied host engine"
+            ls -la /var/run/docker.sock /run/docker.sock 2>/dev/null || true
+            exit 1
+          fi
+          echo "CONFIRMED: docker info works in guest"
+
+          echo "--- Host systemd wants imported; denylist stays down ---"
+          ls -la /etc/systemd/system/multi-user.target.wants 2>/dev/null || true
+          ls -la /etc/systemd/system/sockets.target.wants 2>/dev/null || true
+          for u in ssh.service walinuxagent.service systemd-networkd.service NetworkManager.service docker.service; do
+            if systemctl is-active --quiet "${u}" 2>/dev/null; then
+              echo "FAIL: denylist unit ${u} is active in guest"
+              systemctl status "${u}" --no-pager || true
+              exit 1
+            fi
+          done
+          echo "CONFIRMED: denylist units are not active"
+
           echo "--- Checking guest identity in /etc ---"
           echo "Guest Machine ID: $(cat /etc/machine-id)"
           if [ -z "$(cat /etc/machine-id 2>/dev/null)" ]; then
@@ -199,6 +224,12 @@ jobs:
             exit 1
           fi
           echo "CONFIRMED: t9-daemon-test still active in Step 2"
+
+          if ! docker info >/dev/null; then
+            echo "FAIL: docker info did not persist into Step 2"
+            exit 1
+          fi
+          echo "CONFIRMED: docker info still works in Step 2"
 
           echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
           echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"
