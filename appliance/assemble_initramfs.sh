@@ -1125,7 +1125,12 @@ if [ -x /sbin/apparmor_parser ] || [ -x /usr/sbin/apparmor_parser ]; then
         [ -f "${prof}" ] && "${APPP}" -r "${prof}" 2>>"${DIAG}" || true
     done
 fi
-if [ -x /usr/sbin/modprobe ] || [ -x /sbin/modprobe ]; then
+if [ -x /usr/sbin/iptables-legacy ]; then
+    echo "[GUEST] using iptables-legacy (nft CHAIN_ADD PREROUTING fails in this VM)"
+    /usr/bin/update-alternatives --set iptables /usr/sbin/iptables-legacy 2>>"${DIAG}" || \
+        /bin/busybox ln -sfn iptables-legacy /usr/sbin/iptables
+    /usr/bin/update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>>"${DIAG}" || true
+fi
     MP=/usr/sbin/modprobe
     [ -x /sbin/modprobe ] && MP=/sbin/modprobe
     for mod in overlay iptable_nat br_netfilter xt_MASQUERADE xt_conntrack xt_addrtype nft_compat; do
