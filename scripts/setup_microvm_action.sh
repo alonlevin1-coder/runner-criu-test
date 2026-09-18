@@ -8,7 +8,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTION_DIR="$(cd "${ACTION_DIR:-${SCRIPT_DIR}/..}" && pwd)"
 
+T9_T0="$(date +%s)"
+T9_LAST="${T9_T0}"
 log() { echo "[setup_microvm_action] $(date '+%Y-%m-%d %H:%M:%S') $*"; }
+stage() {
+    local now
+    now="$(date +%s)"
+    log "stage=${1} elapsed=$((now - T9_T0))s delta=$((now - T9_LAST))s ${2:-}"
+    T9_LAST="${now}"
+}
 
 # shellcheck source=is_in_vm.sh
 . "${SCRIPT_DIR}/is_in_vm.sh"
@@ -32,18 +40,48 @@ done
 if [ "${#NEEDED_PACKAGES[@]}" -gt 0 ]; then
     log "Installing missing system packages: ${NEEDED_PACKAGES[*]}"
     export DEBIAN_FRONTEND=noninteractive
-    if [ "$(id -u)" -eq 0 ]; then
-        apt-get update -y -q
-        apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "${NEEDED_PACKAGES[@]}"
-    else
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -y -q
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "${NEEDED_PACKAGES[@]}"
+    apt_install() {
+        if [ "$(id -u)" -eq 0 ]; then
+            apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "$@"
+        else
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "$@"
+        fi
+    }
+    apt_update() {
+        if [ "$(id -u)" -eq 0 ]; then
+            apt-get update -y -q
+        else
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update -y -q
+        fi
+    }
+    # Image apt lists are usually enough; skip a full update unless install fails.
+    if ! apt_install "${NEEDED_PACKAGES[@]}"; then
+        log "apt install missed indexes; updating and retrying"
+        apt_update
+        apt_install "${NEEDED_PACKAGES[@]}"
     fi
+    stage "apt_packages"
 fi
 
 # 3. Ensure CRIU binary is installed (build from source if not present)
-CRIU_BIN="$(command -v criu || true)"
-[ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
+CRIU_BIN=""
+for c in "${ACTION_DIR}/bin/criu" /usr/sbin/criu /usr/local/sbin/criu; do
+    if [ -x "${c}" ]; then
+        CRIU_BIN="${c}"
+        break
+    fi
+done
+[ -z "${CRIU_BIN}" ] && CRIU_BIN="$(command -v criu || true)"
+
+if [ -n "${CRIU_BIN}" ] && [ "${CRIU_BIN}" != /usr/sbin/criu ]; then
+    log "Installing bundled CRIU to /usr/sbin (guest restore uses host /usr overlay)"
+    if [ "$(id -u)" -eq 0 ]; then
+        install -m 755 "${CRIU_BIN}" /usr/sbin/criu
+    else
+        sudo install -m 755 "${CRIU_BIN}" /usr/sbin/criu
+    fi
+    CRIU_BIN="/usr/sbin/criu"
+fi
 
 if [ -z "${CRIU_BIN}" ] || [ ! -x "${CRIU_BIN}" ]; then
     log "CRIU binary not found. Building CRIU from source with expanded XSAVE buffers..."
@@ -53,6 +91,7 @@ if [ -z "${CRIU_BIN}" ] || [ ! -x "${CRIU_BIN}" ]; then
     [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
 fi
 log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null || true))"
+stage "criu"
 
 # 4. Ensure daemonize helper binary exists
 if [ ! -x "${ACTION_DIR}/scripts/daemonize" ]; then
@@ -67,6 +106,7 @@ if [ ! -f "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
     chmod +x "${ACTION_DIR}/appliance/assemble_initramfs.sh"
     "${ACTION_DIR}/appliance/assemble_initramfs.sh"
 fi
+stage "initramfs"
 
 # 6. Make all helper scripts executable
 chmod +x "${ACTION_DIR}"/scripts/*.sh "${ACTION_DIR}"/appliance/*.sh 2>/dev/null || true
@@ -89,6 +129,7 @@ if [ "$(id -u)" -eq 0 ]; then
 else
     sudo "${ACTION_DIR}/scripts/pack_host_var.sh" "${CHECKPOINT_DIR}"
 fi
+stage "var_seed"
 
 # 8. Configure TCP migration mode
 CRIU_TCP_MODE="${INPUT_TCP_MODE:-${CRIU_TCP_MODE:-established}}"
@@ -152,3 +193,4 @@ export RUNNER_VM_CHECKPOINT="${CHECKPOINT_DIR}"
 export IS_VM_MAX_WAIT_SEC="${IS_VM_MAX_WAIT_SEC:-600}"
 log "Awaiting microVM migration cutover and restore..."
 "${ACTION_DIR}/scripts/is_vm_wait.sh"
+stage "migrated"

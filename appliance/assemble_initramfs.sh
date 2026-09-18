@@ -63,10 +63,7 @@ for b in "${HOST_CORE_BINS[@]}"; do
     done
 done
 
-if [ -d /usr/lib/git-core ]; then
-    mkdir -p "${STAGING}/usr/lib/git-core"
-    cp -a /usr/lib/git-core/* "${STAGING}/usr/lib/git-core/" 2>/dev/null || true
-fi
+# Full host /usr is 9p+overlay after switch_root; do not pack git-core into initramfs.
 
 # Setuid sudo shim to support root commands (e.g. apt-get) in guest microVM
 echo "Compiling setuid sudo shim..."

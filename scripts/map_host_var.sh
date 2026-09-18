@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Inventory host /var and classify each entry.
-# Policy: copy by default; DROP runtime, caches, host agents, container/snap images.
+# Policy: COPY apt/dpkg, size-gated snap, and small helper dbs; DROP the rest.
 set -u
 
 OUT="${1:-}"
@@ -60,7 +60,9 @@ classify() {
             echo "COPY required: apt/dpkg database" ;;
         lib/ucf|lib/xml-core|lib/pam|lib/dictionaries-common|lib/command-not-found|lib/man-db)
             echo "COPY small: package helper dbs" ;;
-        lib/gems|lib/dkms|lib/usbutils|lib/ieee-data|lib/aspell|lib/ghostscript)
+        lib/gems|lib/mecab)
+            echo "DROP size: language models; not needed for apt/snap/systemd" ;;
+        lib/dkms|lib/usbutils|lib/ieee-data|lib/aspell|lib/ghostscript)
             echo "COPY small: language/firmware helper dbs" ;;
         lib/fwupd|lib/PackageKit|lib/update-notifier|lib/unattended-upgrades|lib/ubuntu-advantage|lib/ubuntu-release-upgrader)
             echo "COPY small: updater metadata" ;;
@@ -75,7 +77,7 @@ classify() {
         local|opt|www|metrics)
             echo "COPY if present: site-local tool state" ;;
         *)
-            echo "COPY default: tool state unless size blows tmpfs" ;;
+            echo "DROP default: unknown host state; guest can recreate" ;;
     esac
 }
 
@@ -108,7 +110,7 @@ size_gate_snap() {
 {
     echo "=== host /var map $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) ==="
     echo "Guest /var is tmpfs inside QEMU_MEM=${QEMU_MEM} MB. Copying multi-GiB trees will OOM."
-    echo "Policy: copy by default; DROP runtime, caches, host agents, container/snap images."
+    echo "Policy: COPY apt/dpkg/snap(if small)+small helper dbs; DROP the rest."
     echo
     printf '%-10s %-10s %-36s %s\n' "ACTION" "SIZE" "PATH" "WHY"
     printf '%s\n' "--------------------------------------------------------------------------------"

@@ -11,28 +11,33 @@ if [ ! -s "${LIST}" ]; then
     exit 0
 fi
 
-bytes=0
-while IFS= read -r rel; do
-    [ -n "${rel}" ] || continue
-    [ -e "/${rel}" ] || continue
-    n="$(du -sb -x "/${rel}" 2>/dev/null | awk '{print $1}' || true)"
-    n="${n:-0}"
-    bytes=$((bytes + n))
-done < "${LIST}"
+echo "[pack_host_var] packing $(wc -l < "${LIST}") paths to ${OUT} (excluding apt lists)"
 
-echo "[pack_host_var] packing $(wc -l < "${LIST}") paths ($(awk -v n="${bytes}" 'BEGIN{
-    if (n>=1073741824) printf "%.1f GiB", n/1073741824;
-    else printf "%.1f MiB", n/1048576
-}')) to ${OUT}"
+# Skip a second du pass; refuse only if the archive itself exceeds the cap.
+tar --format=gnu --ignore-failed-read \
+    --exclude='var/lib/apt/lists' \
+    --exclude='var/lib/apt/periodic' \
+    -C / -cf "${OUT}" -T "${LIST}" || {
+    echo "[pack_host_var] WARN tar rc=$?; continuing if archive exists"
+}
 
-if [ "${bytes}" -gt "${MAX_BYTES}" ]; then
-    echo "[pack_host_var] ERROR: COPY set ${bytes} bytes exceeds ${MAX_BYTES}; refusing to fill guest tmpfs"
+if [ ! -f "${OUT}" ]; then
+    echo "[pack_host_var] ERROR: archive missing"
     exit 1
 fi
 
-tar --format=gnu --ignore-failed-read -C / -cf "${OUT}" -T "${LIST}" || {
-    echo "[pack_host_var] WARN tar rc=$?; continuing if archive exists"
-}
+bytes="$(stat -c %s "${OUT}" 2>/dev/null || wc -c < "${OUT}")"
+echo "[pack_host_var] archive $(awk -v n="${bytes}" 'BEGIN{
+    if (n>=1073741824) printf "%.1f GiB", n/1073741824;
+    else printf "%.1f MiB", n/1048576
+}')"
+
+if [ "${bytes}" -gt "${MAX_BYTES}" ]; then
+    echo "[pack_host_var] ERROR: archive ${bytes} bytes exceeds ${MAX_BYTES}; refusing to fill guest tmpfs"
+    rm -f "${OUT}"
+    exit 1
+fi
+
 chmod a+r "${OUT}"
 ls -lh "${OUT}"
 echo "[pack_host_var] done"

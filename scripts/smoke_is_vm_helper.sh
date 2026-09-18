@@ -206,7 +206,6 @@ send_ntfy "is_vm Started" "run=${GITHUB_RUN_ID:-0} kind=${TARGET_KIND} pid=${TAR
 
 mkdir -p "${CHECKPOINT_DIR}/dev_shm" "${CHECKPOINT_DIR}/host_tmp"
 cp -a /dev/shm/* "${CHECKPOINT_DIR}/dev_shm/" 2>/dev/null || true
-find /tmp -maxdepth 2 -user "$(id -u)" -exec cp -a {} "${CHECKPOINT_DIR}/host_tmp/" 2>/dev/null \; || true
 log "saved dev_shm and host_tmp snapshots for guest restore"
 
 if [ "${TARGET_KIND}" = "worker" ]; then
@@ -459,7 +458,7 @@ fi
 stage_mark "ssh_ok" "port=${SSH_PORT}"
 send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} running t9_restore.sh"
 # /init switch_root's right after Dropbear; give systemd a moment.
-sleep 3
+sleep 1
 log "running t9_restore.sh"
 stage_mark "restore_start" ""
 set +e
@@ -503,12 +502,12 @@ if [ "${RESTORE_RC}" -eq 0 ]; then
     # from the host SSH session in case t9_restore's in-guest pass missed them.
     log "SIGCONT restored guest tasks via SSH"
     set +e
-    "${SSH[@]}" 'for pass in 1 2 3 4 5; do
+    "${SSH[@]}" 'for pass in 1 2; do
         for pid in $(ls /proc | grep -E "^[0-9]+$"); do
             [ "$pid" = "1" ] && continue
             kill -CONT "$pid" 2>/dev/null || true
         done
-        sleep 1
+        sleep 0.2
     done
     echo guest_restore_ok > /mnt/checkpoint/guest_restore_ok 2>/dev/null || true
     chmod a+rw /mnt/checkpoint/guest_restore_ok /tmp/is_vm /run/is_vm /etc/is_vm 2>/dev/null || true

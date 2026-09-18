@@ -74,6 +74,7 @@ jobs:
 
           echo "--- Guest apt-get install (hello) ---"
           export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -y -q
           if dpkg -s hello >/dev/null 2>&1; then
             echo "hello already installed; reinstalling to prove dpkg writes"
             sudo apt-get install -y --no-install-recommends --reinstall hello
