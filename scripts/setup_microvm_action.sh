@@ -37,23 +37,56 @@ run_root() {
     fi
 }
 
-# 2. QEMU/dropbear/CRIU libs: prefer debs shipped with the action (already
-#    fetched by `uses:`). Fall back to apt on self-hosted/non-Jammy hosts.
+apt_install() {
+    export DEBIAN_FRONTEND=noninteractive
+    if [ "$(id -u)" -eq 0 ]; then
+        apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "$@"
+    else
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "$@"
+    fi
+}
+apt_update() {
+    export DEBIAN_FRONTEND=noninteractive
+    if [ "$(id -u)" -eq 0 ]; then
+        apt-get update -y -q
+    else
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -y -q
+    fi
+}
+
+# 2. QEMU/dropbear: dpkg only packages the image does not already have.
+#    Never reinstall libc/libselinux — that can stall a live runner.
 DEB_DIR="${ACTION_DIR}/appliance/debs"
 INSTALLED_FROM_DEBS=0
 shopt -s nullglob
 VENDOR_DEBS=("${DEB_DIR}"/*.deb)
 shopt -u nullglob
-if [ "${#VENDOR_DEBS[@]}" -gt 0 ]; then
-    log "Installing ${#VENDOR_DEBS[@]} vendored Jammy debs from ${DEB_DIR}"
-    if run_root dpkg -i "${VENDOR_DEBS[@]}" \
+NEW_DEBS=()
+for deb in "${VENDOR_DEBS[@]}"; do
+    pkg="$(dpkg-deb -f "${deb}" Package 2>/dev/null || true)"
+    [ -n "${pkg}" ] || continue
+    case "${pkg}" in
+        libc6|libselinux1|libssl3|libgcc-s1|libstdc++6) continue ;;
+    esac
+    if dpkg -s "${pkg}" >/dev/null 2>&1; then
+        continue
+    fi
+    NEW_DEBS+=("${deb}")
+done
+if [ "${#NEW_DEBS[@]}" -gt 0 ]; then
+    log "Installing ${#NEW_DEBS[@]} missing vendored debs (skipped already-installed)"
+    if run_root dpkg -i "${NEW_DEBS[@]}" \
         || run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -q -f --no-install-recommends \
             -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"; then
         INSTALLED_FROM_DEBS=1
-        stage "vendor_debs"
     else
-        log "Vendored debs failed (wrong distro?); falling back to apt"
+        log "Vendored debs failed; falling back to apt"
     fi
+    stage "vendor_debs"
+elif [ "${#VENDOR_DEBS[@]}" -gt 0 ]; then
+    log "All vendored deb packages already installed"
+    INSTALLED_FROM_DEBS=1
+    stage "vendor_debs"
 fi
 
 NEEDED_PACKAGES=()
@@ -67,22 +100,6 @@ fi
 
 if [ "${#NEEDED_PACKAGES[@]}" -gt 0 ]; then
     log "Installing missing system packages: ${NEEDED_PACKAGES[*]}"
-    export DEBIAN_FRONTEND=noninteractive
-    apt_install() {
-        if [ "$(id -u)" -eq 0 ]; then
-            apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "$@"
-        else
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" "$@"
-        fi
-    }
-    apt_update() {
-        if [ "$(id -u)" -eq 0 ]; then
-            apt-get update -y -q
-        else
-            sudo DEBIAN_FRONTEND=noninteractive apt-get update -y -q
-        fi
-    }
-    # Image apt lists are usually enough; skip a full update unless install fails.
     if ! apt_install "${NEEDED_PACKAGES[@]}"; then
         log "apt install missed indexes; updating and retrying"
         apt_update
@@ -119,6 +136,13 @@ if [ -z "${CRIU_BIN}" ] || [ ! -x "${CRIU_BIN}" ]; then
     [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
 fi
 log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null || true))"
+if command -v ldd >/dev/null && ldd "${CRIU_BIN}" 2>/dev/null | grep -q 'not found'; then
+    log "CRIU missing shared libraries; installing runtime packages"
+    if ! apt_install libprotobuf-c1 libnet1 libnftables1 libbsd0 libnl-3-200; then
+        apt_update
+        apt_install libprotobuf-c1 libnet1 libnftables1 libbsd0 libnl-3-200
+    fi
+fi
 stage "criu"
 
 # 4. Ensure daemonize helper binary exists
