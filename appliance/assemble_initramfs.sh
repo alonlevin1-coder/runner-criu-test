@@ -159,11 +159,11 @@ ln -sf /sbin/iptables "${STAGING}/usr/sbin/iptables" 2>/dev/null || true
 
 # Dropbear for two-stage SSH (host helper runs criu restore after boot).
 echo "[4b/7] Packaging dropbear..."
-if ! command -v dropbear >/dev/null 2>&1; then
+if ! command -v dropbear >/dev/null 2>&1 && [ -z "${DROPBEAR_BIN:-}" ]; then
     sudo apt-get install -y dropbear-bin >/dev/null
 fi
-DROPBEAR_BIN="$(command -v dropbear)"
-DROPBEARKEY_BIN="$(command -v dropbearkey || true)"
+DROPBEAR_BIN="${DROPBEAR_BIN:-$(command -v dropbear)}"
+DROPBEARKEY_BIN="${DROPBEARKEY_BIN:-$(command -v dropbearkey || true)}"
 if [ -z "${DROPBEAR_BIN}" ] || [ ! -f "${DROPBEAR_BIN}" ]; then
     echo "ERROR: dropbear not found (install dropbear-bin)"
     exit 1

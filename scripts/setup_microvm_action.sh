@@ -134,14 +134,19 @@ ensure_criu() {
         [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
     fi
     log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null || true))"
-    if command -v ldd >/dev/null && ldd "${CRIU_BIN}" 2>/dev/null | grep -q 'not found'; then
+    stage "criu"
+}
+
+ensure_criu_libs() {
+    local CRIU_BIN="${1:-/usr/sbin/criu}"
+    if [ -x "${CRIU_BIN}" ] && command -v ldd >/dev/null && ldd "${CRIU_BIN}" 2>/dev/null | grep -q 'not found'; then
         log "CRIU missing shared libraries; installing runtime packages"
         if ! apt_install libprotobuf-c1 libnet1 libnftables1 libbsd0 libnl-3-200; then
             apt_update
             apt_install libprotobuf-c1 libnet1 libnftables1 libbsd0 libnl-3-200
         fi
+        stage "criu_libs"
     fi
-    stage "criu"
 }
 
 ensure_daemonize() {
@@ -205,6 +210,43 @@ pack_var_seed() {
     stage "var_seed"
 }
 
+extract_dropbear_from_deb() {
+    local deb d bin key
+    deb="$(ls "${ACTION_DIR}"/appliance/debs/dropbear-bin_*.deb 2>/dev/null | head -n1 || true)"
+    [ -n "${deb}" ] || return 0
+    d="${ACTION_DIR}/appliance/staging-dropbear"
+    rm -rf "${d}"
+    mkdir -p "${d}"
+    dpkg-deb -x "${deb}" "${d}"
+    bin="$(find "${d}" -type f -name dropbear | head -n1 || true)"
+    key="$(find "${d}" -type f -name dropbearkey | head -n1 || true)"
+    if [ -n "${bin}" ]; then
+        export DROPBEAR_BIN="${bin}"
+        export DROPBEARKEY_BIN="${key}"
+        log "dropbear from ${deb} -> ${DROPBEAR_BIN}"
+    fi
+}
+
+wait_bg() {
+    local name="$1" pid="$2" max="${3:-90}" elapsed=0 rc=0
+    while kill -0 "${pid}" 2>/dev/null; do
+        if [ "${elapsed}" -ge "${max}" ]; then
+            log "ERROR: background ${name} pid=${pid} exceeded ${max}s; killing"
+            kill -9 "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+            return 124
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    if ! wait "${pid}"; then
+        rc=$?
+        log "ERROR: background ${name} pid=${pid} exited ${rc}"
+        return "${rc}"
+    fi
+    log "background ${name} pid=${pid} ok"
+}
+
 chmod +x "${ACTION_DIR}"/scripts/*.sh "${ACTION_DIR}"/appliance/*.sh 2>/dev/null || true
 chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true
 
@@ -216,12 +258,22 @@ cat /proc/cmdline > "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 chmod a+rw "${CHECKPOINT_DIR}/host_boot_id" "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 log "Checkpoint dir: ${CHECKPOINT_DIR} host_boot_id=$(cat "${CHECKPOINT_DIR}/host_boot_id")"
 
-log "Host setup (QEMU/CRIU, then initramfs, then /var pack)"
-ensure_qemu
+log "Host setup in parallel: assemble + /var pack + QEMU dpkg (no overlapping apt)"
 ensure_criu
+extract_dropbear_from_deb
 ensure_daemonize
-ensure_initramfs
-pack_var_seed
+ensure_initramfs &
+PID_INITRAMFS=$!
+pack_var_seed &
+PID_VAR=$!
+ensure_qemu
+ensure_criu_libs /usr/sbin/criu
+wait_bg initramfs "${PID_INITRAMFS}" 90
+wait_bg var_seed "${PID_VAR}" 90
+if [ ! -s "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
+    log "ERROR: initramfs.cpio.gz missing"
+    exit 1
+fi
 if [ ! -s "${CHECKPOINT_DIR}/var_seed.tar" ]; then
     log "ERROR: var_seed.tar missing"
     exit 1
