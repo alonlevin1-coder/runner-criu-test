@@ -131,6 +131,7 @@ if [ -n "${BZ_KVER}" ] && [ -d "/lib/modules/${BZ_KVER}" ]; then
     echo "Packing extra netfilter/bridge modules from /lib/modules/${KMOD_VER}"
     for name in x_tables ip_tables iptable_filter iptable_nat iptable_mangle \
                 nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat nft_compat \
+                nft_chain_nat nft_nat nft_masq nft_ct nft_limit \
                 xt_nat xt_MASQUERADE xt_addrtype xt_conntrack \
                 llc stp bridge br_netfilter; do
         src="$(find "/lib/modules/${KMOD_VER}" \( -name "${name}.ko.zst" -o -name "${name}.ko" \) 2>/dev/null | head -n 1 || true)"
@@ -528,7 +529,8 @@ echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 
 # Load diagnostic kernel modules, then iptables-nat/bridge for guest dockerd.
 for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables \
-           x_tables nft_compat ip_tables iptable_filter nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
+           x_tables nft_compat nft_chain_nat nft_nat nft_masq nft_ct nft_limit \
+           ip_tables iptable_filter nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
            iptable_nat xt_nat xt_MASQUERADE xt_addrtype xt_conntrack llc stp bridge br_netfilter; do
 
     if [ -f "/modules/${mod}.ko" ]; then
