@@ -89,6 +89,45 @@ emit() {
     fi
 }
 
+needs_bytes() {
+    local rel="$1" why="$2"
+    case "${rel}" in
+        snap|lib/snapd) return 0 ;;
+    esac
+    case "${why%% *}" in
+        COPY) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+scan_one() {
+    local p="$1" rel="$2"
+    local bytes=0 why action gate
+    if [ -L "${p}" ]; then
+        why="runtime: symlink -> $(readlink "${p}" 2>/dev/null || true)"
+        action="DROP"
+        emit "${action}" 0 "${p}" "${why}"
+        return
+    fi
+    why="$(classify "${rel}")"
+    if needs_bytes "${rel}" "${why}"; then
+        bytes="$(dir_bytes "${p}")"
+        gate="$(size_gate_snap "${rel}" "${bytes}")"
+        if [ -n "${gate}" ]; then
+            why="${gate}"
+        fi
+    fi
+    action="${why%% *}"
+    why="${why#* }"
+    total=$((total + bytes))
+    if [ "${action}" = "COPY" ]; then
+        copy_bytes=$((copy_bytes + bytes))
+    elif [ "${action}" = "DROP" ]; then
+        drop_bytes=$((drop_bytes + bytes))
+    fi
+    emit "${action}" "${bytes}" "${p}" "${why}"
+}
+
 # COPY snapd//var/snap only when small enough for guest tmpfs (GH ~240MiB; this
 # dev box is multi-GiB and must stay DROP).
 size_gate_snap() {
@@ -123,73 +162,21 @@ size_gate_snap() {
     echo "=== /var (top-level) ==="
     for p in /var/* /var/.[!.]*; do
         [ -e "${p}" ] || continue
-        rel="${p#/var/}"
-        if [ -L "${p}" ]; then
-            target="$(readlink "${p}" 2>/dev/null || true)"
-            bytes=0
-            why="runtime: symlink -> ${target}"
-            action="DROP"
-        else
-            bytes="$(dir_bytes "${p}")"
-            why="$(classify "${rel}")"
-            gate="$(size_gate_snap "${rel}" "${bytes}")"
-            if [ -n "${gate}" ]; then
-                why="${gate}"
-            fi
-            action="${why%% *}"
-            why="${why#* }"
-        fi
-        total=$((total + bytes))
-        if [ "${action}" = "COPY" ]; then
-            copy_bytes=$((copy_bytes + bytes))
-        elif [ "${action}" = "DROP" ]; then
-            drop_bytes=$((drop_bytes + bytes))
-        fi
-        emit "${action}" "${bytes}" "${p}" "${why}"
+        scan_one "${p}" "${p#/var/}"
     done
 
     echo
     echo "=== /var/lib ==="
     for p in /var/lib/*; do
         [ -e "${p}" ] || continue
-        rel="lib/${p##*/}"
-        if [ -L "${p}" ]; then
-            bytes=0
-            why="runtime: symlink"
-            action="DROP"
-        else
-            bytes="$(dir_bytes "${p}")"
-            why="$(classify "${rel}")"
-            gate="$(size_gate_snap "${rel}" "${bytes}")"
-            if [ -n "${gate}" ]; then
-                why="${gate}"
-            fi
-            action="${why%% *}"
-            why="${why#* }"
-        fi
-        if [ "${action}" = "COPY" ]; then
-            copy_bytes=$((copy_bytes + bytes))
-        elif [ "${action}" = "DROP" ]; then
-            drop_bytes=$((drop_bytes + bytes))
-        fi
-        emit "${action}" "${bytes}" "${p}" "${why}"
+        scan_one "${p}" "lib/${p##*/}"
     done
 
     echo
     echo "=== /var/cache ==="
     for p in /var/cache/*; do
         [ -e "${p}" ] || continue
-        rel="cache/${p##*/}"
-        bytes="$(dir_bytes "${p}")"
-        why="$(classify "${rel}")"
-        action="${why%% *}"
-        why="${why#* }"
-        if [ "${action}" = "COPY" ]; then
-            copy_bytes=$((copy_bytes + bytes))
-        elif [ "${action}" = "DROP" ]; then
-            drop_bytes=$((drop_bytes + bytes))
-        fi
-        emit "${action}" "${bytes}" "${p}" "${why}"
+        scan_one "${p}" "cache/${p##*/}"
     done
 
     echo

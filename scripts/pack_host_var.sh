@@ -17,19 +17,22 @@ echo "[pack_host_var] exploding $(wc -l < "${LIST}") paths to ${DEST} (no snapd/
 rm -rf "${STAGE}" "${DEST}"
 mkdir -p "${STAGE}"
 
-# One pass: copy listed host paths into the seed tree (no tar for the guest).
-tar --format=gnu --ignore-failed-read \
-    --exclude='var/lib/apt/lists' \
-    --exclude='var/lib/apt/periodic' \
-    --exclude='var/lib/dpkg/lock' \
-    --exclude='var/lib/dpkg/lock-frontend' \
-    --exclude='var/lib/dpkg/updates/*' \
-    --exclude='var/lib/dpkg/tmp.ci' \
-    --exclude='var/lib/snapd' \
-    --exclude='var/lib/snapd/*' \
-    --exclude='var/snap' \
-    --exclude='var/snap/*' \
-    -C / -cf - -T "${LIST}" | tar -C "${STAGE}" --warning=no-timestamp -xf - || true
+copy_one() {
+    local rel="$1"
+    case "${rel}" in
+        var/lib/snapd|var/lib/snapd/*|var/snap|var/snap/*) return 0 ;;
+    esac
+    [ -e "/${rel}" ] || return 0
+    mkdir -p "${STAGE}/$(dirname "${rel}")"
+    cp -a --reflink=auto "/${rel}" "${STAGE}/${rel}" 2>/dev/null \
+        || cp -a "/${rel}" "${STAGE}/${rel}"
+}
+
+export STAGE
+while read -r rel; do
+    [ -n "${rel}" ] || continue
+    copy_one "${rel}"
+done < "${LIST}"
 
 rm -f "${STAGE}/var/lib/dpkg/lock" "${STAGE}/var/lib/dpkg/lock-frontend" 2>/dev/null || true
 rm -rf "${STAGE}/var/lib/dpkg/updates" "${STAGE}/var/lib/dpkg/tmp.ci" 2>/dev/null || true
@@ -43,39 +46,18 @@ if [ ! -s "${STAGE}/var/lib/dpkg/status" ]; then
     exit 1
 fi
 
-bytes="$(du -sb "${STAGE}" 2>/dev/null | awk '{print $1}')"
-echo "[pack_host_var] seed $(awk -v n="${bytes:-0}" 'BEGIN{
-    if (n>=1073741824) printf "%.1f GiB", n/1073741824;
-    else printf "%.1f MiB", n/1048576
-}')"
-
-if [ "${bytes:-0}" -gt "${MAX_BYTES}" ]; then
-    echo "[pack_host_var] ERROR: seed ${bytes} bytes exceeds ${MAX_BYTES}"
-    rm -rf "${STAGE}"
-    exit 1
-fi
-
 mv "${STAGE}" "${DEST}"
-chmod -R a+rX "${DEST}" 2>/dev/null || true
+chmod a+rX "${DEST}" "${DEST}/var" "${DEST}/var/lib" "${DEST}/var/lib/dpkg" 2>/dev/null || true
 touch "${DEST}.ok"
 echo "[pack_host_var] done ${DEST}/var/lib/dpkg/status"
-ls -ld "${DEST}/var/lib/dpkg" 2>/dev/null || true
 
-SNAP_COPY_MAX_BYTES="${SNAP_COPY_MAX_BYTES:-536870912}"
 rm -f "${CP}/snapd_9p" "${CP}/var_snap_9p"
-if [ -d /var/lib/snapd ]; then
-    snap_bytes="$(du -sb -x /var/lib/snapd 2>/dev/null | awk '{print $1}')"
-    if [ "${snap_bytes:-0}" -gt 0 ] && [ "${snap_bytes}" -le "${SNAP_COPY_MAX_BYTES}" ]; then
-        echo "${snap_bytes}" > "${CP}/snapd_9p"
-        echo "[pack_host_var] snapd via 9p (${snap_bytes} bytes)"
-    else
-        echo "[pack_host_var] snapd not 9p'd (size=${snap_bytes:-0} cap=${SNAP_COPY_MAX_BYTES})"
-    fi
+if grep -qx 'var/lib/snapd' "${LIST}" 2>/dev/null && [ -d /var/lib/snapd ]; then
+    echo 1 > "${CP}/snapd_9p"
+    echo "[pack_host_var] snapd via 9p (COPY under cap)"
 fi
-if [ -d /var/snap ]; then
-    vs_bytes="$(du -sb -x /var/snap 2>/dev/null | awk '{print $1}')"
-    if [ "${vs_bytes:-0}" -gt 0 ] && [ "${vs_bytes}" -le "${SNAP_COPY_MAX_BYTES}" ]; then
-        echo "${vs_bytes}" > "${CP}/var_snap_9p"
-    fi
+if grep -qx 'var/snap' "${LIST}" 2>/dev/null && [ -d /var/snap ]; then
+    echo 1 > "${CP}/var_snap_9p"
+    echo "[pack_host_var] /var/snap via 9p"
 fi
 chmod a+r "${CP}/snapd_9p" "${CP}/var_snap_9p" 2>/dev/null || true
