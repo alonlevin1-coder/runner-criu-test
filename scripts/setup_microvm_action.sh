@@ -250,8 +250,8 @@ wait_bg() {
 chmod +x "${ACTION_DIR}"/scripts/*.sh "${ACTION_DIR}"/appliance/*.sh 2>/dev/null || true
 chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true
 
-CHECKPOINT_DIR="${RUNNER_VM_CHECKPOINT:-${CHECKPOINT_DIR:-${GITHUB_WORKSPACE:-/tmp}/checkpoint}}"
-LOG_DIR="${LOG_DIR:-${GITHUB_WORKSPACE:-/tmp}/smoke-logs}"
+CHECKPOINT_DIR="${RUNNER_VM_CHECKPOINT:-${CHECKPOINT_DIR:-/tmp/t9-checkpoint}}"
+LOG_DIR="${LOG_DIR:-/tmp/t9-smoke-logs}"
 mkdir -p "${CHECKPOINT_DIR}" "${LOG_DIR}"
 tr -d '[:space:]' < /proc/sys/kernel/random/boot_id > "${CHECKPOINT_DIR}/host_boot_id"
 cat /proc/cmdline > "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
