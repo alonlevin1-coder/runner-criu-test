@@ -25,9 +25,7 @@ tar --format=gnu --ignore-failed-read \
     --exclude='var/lib/dpkg/lock-frontend' \
     --exclude='var/lib/dpkg/updates/*' \
     --exclude='var/lib/dpkg/tmp.ci' \
-    -C / -cf - -T "${LIST}" | tar -C "${STAGE}" -xf - || {
-    echo "[pack_host_var] WARN explode rc=$?; continuing if dpkg status exists"
-}
+    -C / -cf - -T "${LIST}" | tar -C "${STAGE}" --warning=no-timestamp -xf - || true
 
 rm -f "${STAGE}/var/lib/dpkg/lock" "${STAGE}/var/lib/dpkg/lock-frontend" 2>/dev/null || true
 rm -rf "${STAGE}/var/lib/dpkg/updates" "${STAGE}/var/lib/dpkg/tmp.ci" 2>/dev/null || true

@@ -571,6 +571,22 @@ echo "=========================================================="
 /bin/busybox ln -sf usr/lib /newroot/lib
 /bin/busybox ln -sf usr/lib64 /newroot/lib64
 
+# snapd cannot use 9p/overlay (no user xattrs). Copy onto tmpfs while /usr mounts.
+if [ -d /mnt/checkpoint/var_seed/var/lib/snapd ]; then
+    /bin/busybox mkdir -p /newroot/run/snapd-local
+    (
+        /bin/busybox cp -a /mnt/checkpoint/var_seed/var/lib/snapd/. /newroot/run/snapd-local/ \
+            && /bin/busybox touch /newroot/run/snapd-local/.t9_ready
+    ) &
+    echo $! > /run/t9_snapd_cp.pid
+    echo "[GUEST] snapd tmpfs copy started"
+fi
+if [ -d /mnt/checkpoint/var_seed/var/snap ]; then
+    /bin/busybox mkdir -p /newroot/run/var-snap-local
+    /bin/busybox cp -a /mnt/checkpoint/var_seed/var/snap/. /newroot/run/var-snap-local/ &
+    echo $! > /run/t9_varsnap_cp.pid
+fi
+
 # 3. Mount 9p shares and OverlayFS into newroot
 echo "[GUEST] Mounting 9p shares and overlays into /newroot..."
 /bin/busybox mkdir -p /newroot/.overlay/lower_usr /newroot/.overlay/usr_upper /newroot/.overlay/usr_work
@@ -666,6 +682,23 @@ fi
     /newroot/var/lib/dpkg/updates /newroot/var/lib/dpkg/tmp.ci
 /bin/busybox chmod 1777 /newroot/var/tmp 2>/dev/null || true
 /bin/busybox rm -f /newroot/var/lib/dpkg/lock /newroot/var/lib/dpkg/lock-frontend 2>/dev/null || true
+
+if [ -f /run/t9_snapd_cp.pid ]; then
+    wait "$(/bin/busybox cat /run/t9_snapd_cp.pid)" 2>/dev/null || true
+fi
+if [ -d /newroot/run/snapd-local ]; then
+    /bin/busybox mkdir -p /newroot/var/lib/snapd
+    /bin/busybox mount --bind /newroot/run/snapd-local /newroot/var/lib/snapd \
+        && echo "[GUEST] [OK] snapd on tmpfs (not 9p overlay)" \
+        || echo "[GUEST] [WARN] snapd bind failed"
+fi
+if [ -f /run/t9_varsnap_cp.pid ]; then
+    wait "$(/bin/busybox cat /run/t9_varsnap_cp.pid)" 2>/dev/null || true
+fi
+if [ -d /newroot/run/var-snap-local ]; then
+    /bin/busybox mkdir -p /newroot/var/snap
+    /bin/busybox mount --bind /newroot/run/var-snap-local /newroot/var/snap 2>/dev/null || true
+fi
 
 # Guest identity — never imported from host /etc
 cat << 'FSTABEOF' > /newroot/etc/fstab
