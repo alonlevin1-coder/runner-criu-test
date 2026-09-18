@@ -760,22 +760,8 @@ echo SSH_READY
 echo "[GUEST] SSH_READY — Dropbear listening on port 22 before systemd handoff"
 progress "SSH_READY"
 
-# Hold PID 1 here until the helper has a live SSH session. Immediate
-# switch_root lets systemd kill Dropbear before the helper logs in.
-echo "[GUEST] Waiting for host helper SSH before switch_root..."
-progress "wait_ssh_connected"
-w=0
-while [ "${w}" -lt 180 ]; do
-    if [ -f /newroot/mnt/checkpoint/ssh_connected ] || [ -f /mnt/checkpoint/ssh_connected ]; then
-        echo "[GUEST] [OK] host helper SSH connected"
-        progress "ssh_connected"
-        break
-    fi
-    w=$((w + 1))
-    /bin/busybox sleep 1
-done
-
-# Apt/dpkg seed is done in t9_restore after CRIU restore.
+# Apt/dpkg seed stays out of /init. switch_root immediately so systemd is
+# up while the helper SSHes, matching the last green 3-step boot.
 
 # 9. Unmount temporary filesystems in early initramfs
 /bin/busybox umount /dev/pts /dev/shm /tmp /mnt 2>/dev/null || true
