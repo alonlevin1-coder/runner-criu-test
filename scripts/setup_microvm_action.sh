@@ -249,25 +249,24 @@ cat /proc/cmdline > "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 chmod a+rw "${CHECKPOINT_DIR}/host_boot_id" "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 log "Checkpoint dir: ${CHECKPOINT_DIR} host_boot_id=$(cat "${CHECKPOINT_DIR}/host_boot_id")"
 
-# QEMU/CRIU share the dpkg lock; initramfs fetch and /var pack do not.
-log "Starting initramfs fetch and /var pack in parallel with QEMU/CRIU install"
+# Initramfs download is unprivileged. /var pack uses sudo tar and must not
+# overlap QEMU dpkg (sudo/dpkg lock deadlock on GH).
+log "Fetching initramfs in parallel with QEMU/CRIU install"
 ensure_initramfs &
 PID_INITRAMFS=$!
-pack_var_seed &
-PID_VAR=$!
 ensure_qemu
 ensure_criu
 ensure_daemonize
 wait_bg initramfs "${PID_INITRAMFS}" 100 || true
-wait_bg var_seed "${PID_VAR}" 100 || true
 if [ ! -s "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
-    log "initramfs missing after parallel fetch; assembling"
+    log "initramfs missing after fetch; assembling"
     chmod +x "${ACTION_DIR}/appliance/assemble_initramfs.sh"
     "${ACTION_DIR}/appliance/assemble_initramfs.sh"
     stage "initramfs"
 fi
+pack_var_seed
 if [ ! -s "${CHECKPOINT_DIR}/var_seed.tar" ]; then
-    log "ERROR: var_seed.tar missing after parallel pack"
+    log "ERROR: var_seed.tar missing"
     exit 1
 fi
 stage "host_setup_parallel"
