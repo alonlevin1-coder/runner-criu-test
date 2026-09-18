@@ -173,8 +173,6 @@ if [ -z "${DROPBEAR_BIN}" ] || [ ! -f "${DROPBEAR_BIN}" ]; then
 fi
 cp -L "${DROPBEAR_BIN}" "${STAGING}/usr/sbin/dropbear"
 chmod 755 "${STAGING}/usr/sbin/dropbear"
-cp -a "${REPO_DIR}/scripts/guest_docker_proxy.py" "${STAGING}/usr/sbin/t9_docker_proxy.py"
-chmod 755 "${STAGING}/usr/sbin/t9_docker_proxy.py"
 for lib in $(ldd "${DROPBEAR_BIN}" 2>/dev/null | grep -o '/[^ ]*' || true); do
     if [ -f "${lib}" ]; then
         fname="$(basename "${lib}")"
@@ -735,8 +733,6 @@ SUDOEOF
 /bin/busybox chmod 755 /newroot/usr/sbin/dropbear 2>/dev/null || true
 /bin/busybox cp -a /usr/sbin/t9_restore.sh /newroot/t9_restore.sh 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/t9_restore.sh 2>/dev/null || true
-/bin/busybox cp -a /usr/sbin/t9_docker_proxy.py /newroot/t9_docker_proxy.py 2>/dev/null || true
-/bin/busybox chmod 755 /newroot/t9_docker_proxy.py 2>/dev/null || true
 /bin/busybox cp -a /bin/busybox /newroot/bin/busybox 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/bin/busybox 2>/dev/null || true
 
@@ -1023,8 +1019,6 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
                 return 0 ;;
             systemd-networkd.service|systemd-networkd-wait-online.service|NetworkManager.service|systemd-udev-settle.service)
                 return 0 ;;
-            docker.service|docker.socket|containerd.service)
-                return 0 ;;
         esac
         return 1
     }
@@ -1065,36 +1059,39 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
     echo "wants_imported" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 fi
 
-echo "[GUEST] Proxying host docker.sock via 10.0.2.2:2375..."
-# User-mode NIC (guestfwd) is eth1 when TAP is the workload path.
-/bin/busybox ifconfig eth1 up 2>/dev/null || true
-/bin/busybox ip addr add 10.0.2.15/24 dev eth1 2>/dev/null || true
-/bin/busybox ip route add 10.0.2.2/32 dev eth1 2>/dev/null || true
-/bin/busybox ip route add 10.0.2.2/32 dev eth0 2>/dev/null || true
-if [ -x /usr/bin/python3 ] && [ -f /t9_docker_proxy.py ]; then
-    /usr/bin/python3 /t9_docker_proxy.py >>"${DIAG}" 2>&1 &
-    echo "docker_proxy_pid=$!" >>"${DIAG}"
+echo "[GUEST] Starting guest dockerd (own socket; not host engine)..."
+/bin/busybox mkdir -p /var/lib/docker /var/lib/containerd /run /var/run
+if [ -x /usr/bin/systemctl ]; then
+    /usr/bin/systemctl unmask containerd.service docker.socket docker.service 2>>"${DIAG}" || true
+    /usr/bin/systemctl start containerd.service docker.socket docker.service 2>>"${DIAG}" \
+        && echo "[GUEST] [OK] guest docker start" \
+        || echo "[GUEST] [WARN] guest docker start failed"
+fi
+WAIT_DOCK=0
+while [ ! -S /run/docker.sock ] && [ ! -S /var/run/docker.sock ] && [ "${WAIT_DOCK}" -lt 15 ]; do
     /bin/busybox sleep 1
-    echo "docker_proxy_start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-    # User-mode NIC (guestfwd) is eth1 when TAP is the workload path.
-    /bin/busybox ifconfig eth1 up 2>/dev/null || true
-    /bin/busybox ip addr add 10.0.2.15/24 dev eth1 2>/dev/null || true
-    /bin/busybox ip route add 10.0.2.2/32 dev eth1 2>/dev/null || true
-    /bin/busybox ip route add 10.0.2.2/32 dev eth0 2>/dev/null || true
-    if [ -S /run/docker.sock ]; then
-        for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'); do
-            cmd="$(/bin/busybox tr '\0' ' ' < /proc/${pid}/cmdline 2>/dev/null || true)"
-            echo "${cmd}" | /bin/busybox grep -qE 'Runner\.(Worker|Listener)|is_vm_wait' || continue
-            ROOT="/proc/${pid}/root"
-            for dest in "${ROOT}/run/docker.sock" "${ROOT}/var/run/docker.sock"; do
-                /bin/busybox mkdir -p "$(/bin/busybox dirname "${dest}")" 2>/dev/null || true
-                /bin/busybox touch "${dest}" 2>/dev/null || true
-                /bin/busybox mount --bind /run/docker.sock "${dest}" 2>/dev/null \
-                    && echo "bind_docker_sock pid=${pid} ${dest} ok" >>"${DIAG}" \
-                    || echo "bind_docker_sock pid=${pid} ${dest} skip" >>"${DIAG}"
-            done
+    WAIT_DOCK=$((WAIT_DOCK + 1))
+done
+GUEST_DOCK=""
+[ -S /run/docker.sock ] && GUEST_DOCK=/run/docker.sock
+[ -z "${GUEST_DOCK}" ] && [ -S /var/run/docker.sock ] && GUEST_DOCK=/var/run/docker.sock
+if [ -n "${GUEST_DOCK}" ]; then
+    echo "[GUEST] [OK] guest docker.sock ${GUEST_DOCK} after ${WAIT_DOCK}s" >>"${DIAG}"
+    for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'); do
+        cmd="$(/bin/busybox tr '\0' ' ' < /proc/${pid}/cmdline 2>/dev/null || true)"
+        echo "${cmd}" | /bin/busybox grep -qE 'Runner\.(Worker|Listener)|is_vm_wait' || continue
+        ROOT="/proc/${pid}/root"
+        for dest in "${ROOT}/run/docker.sock" "${ROOT}/var/run/docker.sock"; do
+            /bin/busybox mkdir -p "$(/bin/busybox dirname "${dest}")" 2>/dev/null || true
+            /bin/busybox touch "${dest}" 2>/dev/null || true
+            /bin/busybox mount --bind "${GUEST_DOCK}" "${dest}" 2>/dev/null \
+                && echo "bind_guest_docker_sock pid=${pid} ${dest} ok" >>"${DIAG}" \
+                || echo "bind_guest_docker_sock pid=${pid} ${dest} skip" >>"${DIAG}"
         done
-    fi
+    done
+    echo "docker_guest_start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+else
+    echo "[GUEST] [WARN] guest docker.sock never appeared" >>"${DIAG}"
 fi
 
 # Host helper writes migrator_ok after this script returns; restored bash waits on that.

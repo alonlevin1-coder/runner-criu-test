@@ -43,7 +43,7 @@ classify() {
         lib/systemd|lib/dbus|lib/private|lib/NetworkManager)
             echo "DROP runtime: host systemd/dbus/NM machine state" ;;
         lib/docker|lib/containerd|lib/buildkit|lib/nerdctl|lib/cni|lib/kubelet)
-            echo "DROP size+runtime: container images/state; use docker.sock if needed" ;;
+            echo "DROP size+runtime: host container images; guest dockerd starts empty" ;;
         lib/snapd|snap|lib/snapd/*)
             echo "SNAP size-gated" ;;
         lib/lxc*|lib/lxd|lib/libvirt|lib/qemu)

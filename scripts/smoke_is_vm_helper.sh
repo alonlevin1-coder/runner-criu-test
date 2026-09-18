@@ -362,18 +362,6 @@ fi
 chmod 666 "${SERIAL_LOG}" 2>/dev/null || true
 NET_MODE="user"
 [ -f "${CHECKPOINT_DIR}/net_mode.txt" ] && NET_MODE="$(cat "${CHECKPOINT_DIR}/net_mode.txt")"
-DOCKER_PROXY_PID=""
-if [ -S /var/run/docker.sock ] || [ -S /run/docker.sock ]; then
-    log "starting host docker TCP proxy 127.0.0.1:2375"
-    nohup python3 "${SCRIPT_DIR}/host_docker_proxy.py" >> "${HELPER_LOG}" 2>&1 &
-    DOCKER_PROXY_PID=$!
-    disown "${DOCKER_PROXY_PID}" 2>/dev/null || true
-    echo "${DOCKER_PROXY_PID}" > "${CHECKPOINT_DIR}/docker_proxy.pid"
-    sleep 0.3
-else
-    log "host docker.sock missing — guest docker proxy will have nothing to reach"
-fi
-
 log "booting QEMU for SSH restore net_mode=${NET_MODE}"
 stage_mark "qemu_start" "net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
 send_ntfy "is_vm Booting QEMU" "run=${GITHUB_RUN_ID:-0} accel=${ACCEL_ARGS} net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
@@ -409,12 +397,12 @@ if [ -f "${CHECKPOINT_DIR}/net_mode.txt" ] \
     NETDEV_ARGS=(
         -netdev "tap,id=net0,ifname=${TAP_DEV},script=no,downscript=no"
         -device "${DEV_NET0_ARG}"
-        -netdev "user,id=net1,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22,guestfwd=tcp:10.0.2.2:2375-tcp:127.0.0.1:2375"
+        -netdev "user,id=net1,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
         -device "virtio-net-pci,netdev=net1"
     )
 else
     NETDEV_ARGS=(
-        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22,guestfwd=tcp:10.0.2.2:2375-tcp:127.0.0.1:2375"
+        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
         -device "virtio-net-pci,netdev=net0"
     )
 fi
