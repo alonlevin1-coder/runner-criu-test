@@ -17,6 +17,10 @@ echo "[pack_host_var] packing $(wc -l < "${LIST}") paths to ${OUT} (excluding ap
 tar --format=gnu --ignore-failed-read \
     --exclude='var/lib/apt/lists' \
     --exclude='var/lib/apt/periodic' \
+    --exclude='var/lib/dpkg/lock' \
+    --exclude='var/lib/dpkg/lock-frontend' \
+    --exclude='var/lib/dpkg/updates/*' \
+    --exclude='var/lib/dpkg/tmp.ci' \
     -C / -cf "${OUT}" -T "${LIST}" || {
     echo "[pack_host_var] WARN tar rc=$?; continuing if archive exists"
 }

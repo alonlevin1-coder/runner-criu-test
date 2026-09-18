@@ -900,6 +900,16 @@ if [ -f /mnt/checkpoint/var_seed.tar ]; then
 else
     echo "[GUEST] [WARN] var_seed.tar missing"
 fi
+# Host pack can race apt/dpkg; drop stale locks so guest apt-get can run.
+/bin/busybox rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend \
+    /var/lib/dpkg/lock-frontend.lock /var/lib/apt/lists/lock 2>/dev/null || true
+/bin/busybox rm -rf /var/lib/dpkg/updates /var/lib/dpkg/tmp.ci 2>/dev/null || true
+/bin/busybox mkdir -p /var/lib/dpkg/updates /var/lib/dpkg/tmp.ci
+if [ -x /usr/bin/dpkg ]; then
+    /usr/bin/dpkg --configure -a >/mnt/checkpoint/guest_dpkg_configure.log 2>&1 \
+        && echo "[GUEST] [OK] dpkg --configure -a" \
+        || echo "[GUEST] [WARN] dpkg --configure -a failed (see guest_dpkg_configure.log)"
+fi
 if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
     # Host dpkg statoverrides name users like _chrony; keep guest root's shell.
     for item in passwd group shadow gshadow; do
