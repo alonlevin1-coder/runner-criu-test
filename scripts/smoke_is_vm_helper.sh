@@ -351,6 +351,12 @@ boot_qemu() {
             VIRTFS_ARGS+=(-virtfs "local,path=${path},mount_tag=${tag},security_model=none,readonly=on,id=${tag}")
         fi
     done
+    if [ -f "${CHECKPOINT_DIR}/snapd_9p" ] && [ -d /var/lib/snapd ]; then
+        VIRTFS_ARGS+=(-virtfs "local,path=/var/lib/snapd,mount_tag=host_snapd,security_model=none,readonly=on,id=host_snapd")
+    fi
+    if [ -f "${CHECKPOINT_DIR}/var_snap_9p" ] && [ -d /var/snap ]; then
+        VIRTFS_ARGS+=(-virtfs "local,path=/var/snap,mount_tag=host_var_snap,security_model=none,readonly=on,id=host_var_snap")
+    fi
 
     NETDEV_ARGS=()
     if [ -f "${CHECKPOINT_DIR}/net_mode.txt" ] \

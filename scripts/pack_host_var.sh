@@ -12,7 +12,7 @@ if [ ! -s "${LIST}" ]; then
     exit 0
 fi
 
-echo "[pack_host_var] exploding $(wc -l < "${LIST}") paths to ${DEST} (excluding apt lists/locks)"
+echo "[pack_host_var] exploding $(wc -l < "${LIST}") paths to ${DEST} (no snapd/snap; those are 9p)"
 
 rm -rf "${STAGE}" "${DEST}"
 mkdir -p "${STAGE}"
@@ -25,6 +25,10 @@ tar --format=gnu --ignore-failed-read \
     --exclude='var/lib/dpkg/lock-frontend' \
     --exclude='var/lib/dpkg/updates/*' \
     --exclude='var/lib/dpkg/tmp.ci' \
+    --exclude='var/lib/snapd' \
+    --exclude='var/lib/snapd/*' \
+    --exclude='var/snap' \
+    --exclude='var/snap/*' \
     -C / -cf - -T "${LIST}" | tar -C "${STAGE}" --warning=no-timestamp -xf - || true
 
 rm -f "${STAGE}/var/lib/dpkg/lock" "${STAGE}/var/lib/dpkg/lock-frontend" 2>/dev/null || true
@@ -55,4 +59,23 @@ mv "${STAGE}" "${DEST}"
 chmod -R a+rX "${DEST}" 2>/dev/null || true
 touch "${DEST}.ok"
 echo "[pack_host_var] done ${DEST}/var/lib/dpkg/status"
-ls -ld "${DEST}/var/lib/dpkg" "${DEST}/var/lib/snapd" 2>/dev/null || true
+ls -ld "${DEST}/var/lib/dpkg" 2>/dev/null || true
+
+SNAP_COPY_MAX_BYTES="${SNAP_COPY_MAX_BYTES:-536870912}"
+rm -f "${CP}/snapd_9p" "${CP}/var_snap_9p"
+if [ -d /var/lib/snapd ]; then
+    snap_bytes="$(du -sb -x /var/lib/snapd 2>/dev/null | awk '{print $1}')"
+    if [ "${snap_bytes:-0}" -gt 0 ] && [ "${snap_bytes}" -le "${SNAP_COPY_MAX_BYTES}" ]; then
+        echo "${snap_bytes}" > "${CP}/snapd_9p"
+        echo "[pack_host_var] snapd via 9p (${snap_bytes} bytes)"
+    else
+        echo "[pack_host_var] snapd not 9p'd (size=${snap_bytes:-0} cap=${SNAP_COPY_MAX_BYTES})"
+    fi
+fi
+if [ -d /var/snap ]; then
+    vs_bytes="$(du -sb -x /var/snap 2>/dev/null | awk '{print $1}')"
+    if [ "${vs_bytes:-0}" -gt 0 ] && [ "${vs_bytes}" -le "${SNAP_COPY_MAX_BYTES}" ]; then
+        echo "${vs_bytes}" > "${CP}/var_snap_9p"
+    fi
+fi
+chmod a+r "${CP}/snapd_9p" "${CP}/var_snap_9p" 2>/dev/null || true

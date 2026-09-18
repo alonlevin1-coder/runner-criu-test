@@ -571,19 +571,34 @@ echo "=========================================================="
 /bin/busybox ln -sf usr/lib /newroot/lib
 /bin/busybox ln -sf usr/lib64 /newroot/lib64
 
-# snapd cannot use 9p/overlay (no user xattrs). Copy onto tmpfs while /usr mounts.
-if [ -d /mnt/checkpoint/var_seed/var/lib/snapd ]; then
+# snapd cannot use 9p/overlay (no user xattrs). Copy onto tmpfs from a
+# read-only host 9p (skip duplicating ~240MiB into checkpoint/var_seed).
+SNAP_SRC=""
+/bin/busybox mkdir -p /mnt/host_snapd /mnt/host_var_snap
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_snapd /mnt/host_snapd 2>/dev/null; then
+    SNAP_SRC="/mnt/host_snapd"
+    echo "[GUEST] [OK] mounted host_snapd 9p"
+elif [ -d /mnt/checkpoint/var_seed/var/lib/snapd ]; then
+    SNAP_SRC="/mnt/checkpoint/var_seed/var/lib/snapd"
+fi
+if [ -n "${SNAP_SRC}" ]; then
     /bin/busybox mkdir -p /newroot/run/snapd-local
     (
-        /bin/busybox cp -a /mnt/checkpoint/var_seed/var/lib/snapd/. /newroot/run/snapd-local/ \
+        /bin/busybox cp -a "${SNAP_SRC}/." /newroot/run/snapd-local/ \
             && /bin/busybox touch /newroot/run/snapd-local/.t9_ready
     ) &
     echo $! > /run/t9_snapd_cp.pid
-    echo "[GUEST] snapd tmpfs copy started"
+    echo "[GUEST] snapd tmpfs copy started from ${SNAP_SRC}"
 fi
-if [ -d /mnt/checkpoint/var_seed/var/snap ]; then
+VARSNAP_SRC=""
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_var_snap /mnt/host_var_snap 2>/dev/null; then
+    VARSNAP_SRC="/mnt/host_var_snap"
+elif [ -d /mnt/checkpoint/var_seed/var/snap ]; then
+    VARSNAP_SRC="/mnt/checkpoint/var_seed/var/snap"
+fi
+if [ -n "${VARSNAP_SRC}" ]; then
     /bin/busybox mkdir -p /newroot/run/var-snap-local
-    /bin/busybox cp -a /mnt/checkpoint/var_seed/var/snap/. /newroot/run/var-snap-local/ &
+    /bin/busybox cp -a "${VARSNAP_SRC}/." /newroot/run/var-snap-local/ &
     echo $! > /run/t9_varsnap_cp.pid
 fi
 
