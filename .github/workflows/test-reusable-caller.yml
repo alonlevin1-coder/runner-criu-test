@@ -85,6 +85,22 @@ jobs:
           echo "hello" > /tmp/vm_step1_apt_ok.txt
           echo "CONFIRMED: apt-get install hello succeeded in guest"
 
+          echo "--- Guest systemd can start a unit (no host /var/lib/systemd) ---"
+          sudo systemctl reset-failed t9-daemon-test.service 2>/dev/null || true
+          sudo systemctl stop t9-daemon-test.service 2>/dev/null || true
+          if ! sudo systemd-run --unit=t9-daemon-test --remain-after-exit /bin/true; then
+            echo "FAIL: systemd-run could not start t9-daemon-test"
+            systemctl status t9-daemon-test.service --no-pager || true
+            exit 1
+          fi
+          if ! systemctl is-active --quiet t9-daemon-test.service; then
+            echo "FAIL: t9-daemon-test is not active"
+            systemctl status t9-daemon-test.service --no-pager || true
+            exit 1
+          fi
+          echo "t9-daemon-test" > /tmp/vm_step1_daemon_ok.txt
+          echo "CONFIRMED: systemd started t9-daemon-test (active)"
+
           echo "--- Checking guest identity in /etc ---"
           echo "Guest Machine ID: $(cat /etc/machine-id)"
           if [ -z "$(cat /etc/machine-id 2>/dev/null)" ]; then
@@ -152,6 +168,17 @@ jobs:
           fi
           hello
           echo "CONFIRMED: hello binary still works in Step 2"
+
+          if [ ! -f /tmp/vm_step1_daemon_ok.txt ]; then
+            echo "FAIL: daemon start marker missing in Step 2"
+            exit 1
+          fi
+          if ! systemctl is-active --quiet t9-daemon-test.service; then
+            echo "FAIL: t9-daemon-test did not persist into Step 2"
+            systemctl status t9-daemon-test.service --no-pager || true
+            exit 1
+          fi
+          echo "CONFIRMED: t9-daemon-test still active in Step 2"
 
           echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
           echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"
