@@ -175,7 +175,7 @@ ensure_initramfs() {
     rm -f "${tmp}" "${dest}"
     if command -v gh >/dev/null 2>&1 && [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
         log "trying gh release download (authenticated)"
-        if timeout 90 gh release download jammy-appliance-v1 \
+        if timeout -k 5 90 gh release download jammy-appliance-v1 \
             --repo alonlevin1-coder/runner-criu-test \
             --pattern initramfs.cpio.gz \
             --dir "$(dirname "${dest}")" \
@@ -219,7 +219,17 @@ pack_var_seed() {
 }
 
 wait_bg() {
-    local name="$1" pid="$2" rc=0
+    local name="$1" pid="$2" max="${3:-120}" rc=0 elapsed=0
+    while kill -0 "${pid}" 2>/dev/null; do
+        if [ "${elapsed}" -ge "${max}" ]; then
+            log "ERROR: background ${name} pid=${pid} exceeded ${max}s; killing"
+            kill -9 "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+            return 124
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
     if ! wait "${pid}"; then
         rc=$?
         log "ERROR: background ${name} pid=${pid} exited ${rc}"
@@ -248,8 +258,18 @@ PID_VAR=$!
 ensure_qemu
 ensure_criu
 ensure_daemonize
-wait_bg initramfs "${PID_INITRAMFS}"
-wait_bg var_seed "${PID_VAR}"
+wait_bg initramfs "${PID_INITRAMFS}" 100 || true
+wait_bg var_seed "${PID_VAR}" 100 || true
+if [ ! -s "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
+    log "initramfs missing after parallel fetch; assembling"
+    chmod +x "${ACTION_DIR}/appliance/assemble_initramfs.sh"
+    "${ACTION_DIR}/appliance/assemble_initramfs.sh"
+    stage "initramfs"
+fi
+if [ ! -s "${CHECKPOINT_DIR}/var_seed.tar" ]; then
+    log "ERROR: var_seed.tar missing after parallel pack"
+    exit 1
+fi
 stage "host_setup_parallel"
 
 CRIU_TCP_MODE="${INPUT_TCP_MODE:-${CRIU_TCP_MODE:-established}}"
