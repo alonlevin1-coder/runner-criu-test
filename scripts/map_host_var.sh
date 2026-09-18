@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Inventory host /var and classify each entry.
+# Policy: copy by default; DROP runtime, caches, host agents, container/snap images.
+set -u
+
+OUT="${1:-}"
+QEMU_MEM="${QEMU_MEM:-4096}"
+
+fmt() {
+    awk -v n="${1:-0}" 'BEGIN {
+        if (n >= 1073741824) printf "%.1f GiB", n/1073741824
+        else if (n >= 1048576) printf "%.1f MiB", n/1048576
+        else if (n >= 1024) printf "%.1f KiB", n/1024
+        else printf "%d B", n
+    }'
+}
+
+dir_bytes() {
+    local p="$1" n
+    n="$(du -sb -x "${p}" 2>/dev/null | awk '{print $1}')"
+    echo "${n:-0}"
+}
+
+# Classify a path relative to /var (lib/docker, cache/debconf, run, ...).
+classify() {
+    local rel="$1"
+    case "${rel}" in
+        lib)
+            echo "SKIP container: see /var/lib children" ;;
+        cache)
+            echo "SKIP container: see /var/cache children" ;;
+        run|lock|run/*|lock/*)
+            echo "DROP runtime: guest tmpfs; host pid/socks would fight systemd" ;;
+        lib/systemd|lib/dbus|lib/private|lib/NetworkManager)
+            echo "DROP runtime: host systemd/dbus/NM machine state" ;;
+        lib/docker|lib/containerd|lib/buildkit|lib/nerdctl|lib/cni|lib/kubelet)
+            echo "DROP size+runtime: container images/state; use docker.sock if needed" ;;
+        lib/snapd|snap|lib/snapd/*)
+            echo "DROP size: snapd masked in guest; multi-GiB" ;;
+        lib/lxc*|lib/lxd|lib/libvirt|lib/qemu)
+            echo "DROP runtime: other hypervisors/containers" ;;
+        lib/waagent|lib/azure|lib/cloud|lib/hyperv|lib/landscape)
+            echo "DROP host-agent: Azure/cloud-init; units are masked" ;;
+        cache/debconf)
+            echo "COPY small: dpkg package configuration database" ;;
+        cache|cache/apt|cache/snapd|cache/man|cache/fontconfig|cache/*)
+            echo "DROP cache: regenerable; apt can refetch" ;;
+        log|tmp|crash|spool|mail|spool/*)
+            echo "DROP junk: logs/tmp/mail; not tool install state" ;;
+        lib/dpkg|lib/apt)
+            echo "COPY required: apt/dpkg database" ;;
+        lib/ucf|lib/xml-core|lib/pam|lib/dictionaries-common|lib/command-not-found|lib/man-db)
+            echo "COPY small: package helper dbs" ;;
+        lib/gems|lib/dkms|lib/usbutils|lib/ieee-data|lib/aspell|lib/ghostscript)
+            echo "COPY small: language/firmware helper dbs" ;;
+        lib/fwupd|lib/PackageKit|lib/update-notifier|lib/unattended-upgrades|lib/ubuntu-advantage|lib/ubuntu-release-upgrader)
+            echo "COPY small: updater metadata" ;;
+        lib/sudo|lib/polkit-1|lib/misc|lib/logrotate|lib/alsa|lib/plymouth|lib/colord)
+            echo "COPY small: os helper state" ;;
+        lib/grub|lib/shim|lib/shim-signed|lib/initramfs-tools|lib/os-prober)
+            echo "DROP boot: not used after switch_root" ;;
+        lib/apport)
+            echo "DROP junk: crash reports" ;;
+        backups)
+            echo "COPY small: dpkg backups" ;;
+        local|opt|www|metrics)
+            echo "COPY if present: site-local tool state" ;;
+        *)
+            echo "COPY default: tool state unless size blows tmpfs" ;;
+    esac
+}
+
+emit() {
+    local action="$1" bytes="$2" path="$3" why="$4"
+    printf '%-10s %-10s %-36s %s\n' "${action}" "$(fmt "${bytes}")" "${path}" "${why}"
+}
+
+{
+    echo "=== host /var map $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) ==="
+    echo "Guest /var is tmpfs inside QEMU_MEM=${QEMU_MEM} MB. Copying multi-GiB trees will OOM."
+    echo "Policy: copy by default; DROP runtime, caches, host agents, container/snap images."
+    echo
+    printf '%-10s %-10s %-36s %s\n' "ACTION" "SIZE" "PATH" "WHY"
+    printf '%s\n' "--------------------------------------------------------------------------------"
+
+    total=0
+    copy_bytes=0
+    drop_bytes=0
+
+    echo
+    echo "=== /var (top-level) ==="
+    for p in /var/* /var/.[!.]*; do
+        [ -e "${p}" ] || continue
+        rel="${p#/var/}"
+        if [ -L "${p}" ]; then
+            target="$(readlink "${p}" 2>/dev/null || true)"
+            bytes=0
+            why="runtime: symlink -> ${target}"
+            action="DROP"
+        else
+            bytes="$(dir_bytes "${p}")"
+            why="$(classify "${rel}")"
+            action="${why%% *}"
+            why="${why#* }"
+        fi
+        total=$((total + bytes))
+        if [ "${action}" = "COPY" ]; then
+            copy_bytes=$((copy_bytes + bytes))
+        elif [ "${action}" = "DROP" ]; then
+            drop_bytes=$((drop_bytes + bytes))
+        fi
+        emit "${action}" "${bytes}" "${p}" "${why}"
+    done
+
+    echo
+    echo "=== /var/lib ==="
+    for p in /var/lib/*; do
+        [ -e "${p}" ] || continue
+        rel="lib/${p##*/}"
+        if [ -L "${p}" ]; then
+            bytes=0
+            why="runtime: symlink"
+            action="DROP"
+        else
+            bytes="$(dir_bytes "${p}")"
+            why="$(classify "${rel}")"
+            action="${why%% *}"
+            why="${why#* }"
+        fi
+        if [ "${action}" = "COPY" ]; then
+            copy_bytes=$((copy_bytes + bytes))
+        elif [ "${action}" = "DROP" ]; then
+            drop_bytes=$((drop_bytes + bytes))
+        fi
+        emit "${action}" "${bytes}" "${p}" "${why}"
+    done
+
+    echo
+    echo "=== /var/cache ==="
+    for p in /var/cache/*; do
+        [ -e "${p}" ] || continue
+        rel="cache/${p##*/}"
+        bytes="$(dir_bytes "${p}")"
+        why="$(classify "${rel}")"
+        action="${why%% *}"
+        why="${why#* }"
+        if [ "${action}" = "COPY" ]; then
+            copy_bytes=$((copy_bytes + bytes))
+        elif [ "${action}" = "DROP" ]; then
+            drop_bytes=$((drop_bytes + bytes))
+        fi
+        emit "${action}" "${bytes}" "${p}" "${why}"
+    done
+
+    echo
+    echo "TOTAL /var=$(fmt "${total}")  COPY=$(fmt "${copy_bytes}")  DROP=$(fmt "${drop_bytes}")"
+    echo "COPY must stay well under guest RAM (${QEMU_MEM} MB)."
+} | tee ${OUT:+"${OUT}"}
