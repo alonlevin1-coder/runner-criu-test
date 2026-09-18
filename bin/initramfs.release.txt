@@ -1,0 +1,6 @@
+url=https://github.com/alonlevin1-coder/runner-criu-test/releases/download/jammy-appliance-v1/initramfs.cpio.gz
+sha256=3a0ce9cb734eb9f00659b9f0d332e9c64a479e97e0a3882693ebe6cda58d8591
+tag=jammy-appliance-v1
+size_mib=129
+built=2026-09-18T10:59:29Z
+os=Ubuntu 22.04.5 LTS

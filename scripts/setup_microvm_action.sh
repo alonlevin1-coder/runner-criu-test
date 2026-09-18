@@ -21,7 +21,6 @@ stage() {
 # shellcheck source=is_in_vm.sh
 . "${SCRIPT_DIR}/is_in_vm.sh"
 
-# 1. If already executing inside the microVM, no-op immediately
 if is_in_vm; then
     log "Already executing inside MicroVM (procfs/hostname guest signal). Succeeded."
     exit 0
@@ -54,117 +53,170 @@ apt_update() {
     fi
 }
 
-# 2. QEMU/dropbear: dpkg only packages the image does not already have.
-#    Never reinstall libc/libselinux — that can stall a live runner.
-DEB_DIR="${ACTION_DIR}/appliance/debs"
-INSTALLED_FROM_DEBS=0
-shopt -s nullglob
-VENDOR_DEBS=("${DEB_DIR}"/*.deb)
-shopt -u nullglob
-NEW_DEBS=()
-for deb in "${VENDOR_DEBS[@]}"; do
-    pkg="$(dpkg-deb -f "${deb}" Package 2>/dev/null || true)"
-    [ -n "${pkg}" ] || continue
-    case "${pkg}" in
-        libc6|libselinux1|libssl3|libgcc-s1|libstdc++6) continue ;;
-    esac
-    if dpkg -s "${pkg}" >/dev/null 2>&1; then
-        continue
-    fi
-    NEW_DEBS+=("${deb}")
-done
-if [ "${#NEW_DEBS[@]}" -gt 0 ]; then
-    log "Installing ${#NEW_DEBS[@]} missing vendored debs (skipped already-installed)"
-    if run_root dpkg -i "${NEW_DEBS[@]}" \
-        || run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -q -f --no-install-recommends \
-            -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"; then
+ensure_qemu() {
+    local DEB_DIR="${ACTION_DIR}/appliance/debs"
+    local INSTALLED_FROM_DEBS=0
+    local pkg deb
+    local NEW_DEBS=()
+    local VENDOR_DEBS=()
+    shopt -s nullglob
+    VENDOR_DEBS=("${DEB_DIR}"/*.deb)
+    shopt -u nullglob
+    for deb in "${VENDOR_DEBS[@]}"; do
+        pkg="$(dpkg-deb -f "${deb}" Package 2>/dev/null || true)"
+        [ -n "${pkg}" ] || continue
+        case "${pkg}" in
+            libc6|libselinux1|libssl3|libgcc-s1|libstdc++6) continue ;;
+        esac
+        if dpkg -s "${pkg}" >/dev/null 2>&1; then
+            continue
+        fi
+        NEW_DEBS+=("${deb}")
+    done
+    if [ "${#NEW_DEBS[@]}" -gt 0 ]; then
+        log "Installing ${#NEW_DEBS[@]} missing vendored debs (skipped already-installed)"
+        if run_root dpkg -i "${NEW_DEBS[@]}" \
+            || run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -q -f --no-install-recommends \
+                -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"; then
+            INSTALLED_FROM_DEBS=1
+        else
+            log "Vendored debs failed; falling back to apt"
+        fi
+        stage "vendor_debs"
+    elif [ "${#VENDOR_DEBS[@]}" -gt 0 ]; then
+        log "All vendored deb packages already installed"
         INSTALLED_FROM_DEBS=1
-    else
-        log "Vendored debs failed; falling back to apt"
+        stage "vendor_debs"
     fi
-    stage "vendor_debs"
-elif [ "${#VENDOR_DEBS[@]}" -gt 0 ]; then
-    log "All vendored deb packages already installed"
-    INSTALLED_FROM_DEBS=1
-    stage "vendor_debs"
-fi
 
-NEEDED_PACKAGES=()
-if [ "${INSTALLED_FROM_DEBS}" -eq 0 ]; then
-    for pkg in qemu-system-x86 cpio gcc dropbear-bin openssh-client iproute2; do
-        if ! dpkg -s "${pkg}" >/dev/null 2>&1; then
-            NEEDED_PACKAGES+=("${pkg}")
+    local NEEDED_PACKAGES=()
+    if [ "${INSTALLED_FROM_DEBS}" -eq 0 ]; then
+        local p
+        for p in qemu-system-x86 cpio gcc dropbear-bin openssh-client iproute2; do
+            if ! dpkg -s "${p}" >/dev/null 2>&1; then
+                NEEDED_PACKAGES+=("${p}")
+            fi
+        done
+    fi
+    if [ "${#NEEDED_PACKAGES[@]}" -gt 0 ]; then
+        log "Installing missing system packages: ${NEEDED_PACKAGES[*]}"
+        if ! apt_install "${NEEDED_PACKAGES[@]}"; then
+            log "apt install missed indexes; updating and retrying"
+            apt_update
+            apt_install "${NEEDED_PACKAGES[@]}"
+        fi
+        stage "apt_packages"
+    fi
+}
+
+ensure_criu() {
+    local CRIU_BIN=""
+    local c
+    for c in "${ACTION_DIR}/bin/criu" /usr/sbin/criu /usr/local/sbin/criu; do
+        if [ -x "${c}" ]; then
+            CRIU_BIN="${c}"
+            break
         fi
     done
-fi
+    [ -z "${CRIU_BIN}" ] && CRIU_BIN="$(command -v criu || true)"
 
-if [ "${#NEEDED_PACKAGES[@]}" -gt 0 ]; then
-    log "Installing missing system packages: ${NEEDED_PACKAGES[*]}"
-    if ! apt_install "${NEEDED_PACKAGES[@]}"; then
-        log "apt install missed indexes; updating and retrying"
-        apt_update
-        apt_install "${NEEDED_PACKAGES[@]}"
+    if [ -n "${CRIU_BIN}" ] && [ "${CRIU_BIN}" != /usr/sbin/criu ]; then
+        log "Installing bundled CRIU to /usr/sbin (guest restore uses host /usr overlay)"
+        run_root install -m 755 "${CRIU_BIN}" /usr/sbin/criu
+        CRIU_BIN="/usr/sbin/criu"
     fi
-    stage "apt_packages"
-fi
 
-# 3. Ensure CRIU binary is installed (build from source if not present)
-CRIU_BIN=""
-for c in "${ACTION_DIR}/bin/criu" /usr/sbin/criu /usr/local/sbin/criu; do
-    if [ -x "${c}" ]; then
-        CRIU_BIN="${c}"
-        break
+    if [ -z "${CRIU_BIN}" ] || [ ! -x "${CRIU_BIN}" ]; then
+        log "CRIU binary not found. Building CRIU from source with expanded XSAVE buffers..."
+        chmod +x "${ACTION_DIR}/scripts/build_criu.sh"
+        "${ACTION_DIR}/scripts/build_criu.sh"
+        CRIU_BIN="$(command -v criu || true)"
+        [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
     fi
-done
-[ -z "${CRIU_BIN}" ] && CRIU_BIN="$(command -v criu || true)"
+    log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null || true))"
+    if command -v ldd >/dev/null && ldd "${CRIU_BIN}" 2>/dev/null | grep -q 'not found'; then
+        log "CRIU missing shared libraries; installing runtime packages"
+        if ! apt_install libprotobuf-c1 libnet1 libnftables1 libbsd0 libnl-3-200; then
+            apt_update
+            apt_install libprotobuf-c1 libnet1 libnftables1 libbsd0 libnl-3-200
+        fi
+    fi
+    stage "criu"
+}
 
-if [ -n "${CRIU_BIN}" ] && [ "${CRIU_BIN}" != /usr/sbin/criu ]; then
-    log "Installing bundled CRIU to /usr/sbin (guest restore uses host /usr overlay)"
-    if [ "$(id -u)" -eq 0 ]; then
-        install -m 755 "${CRIU_BIN}" /usr/sbin/criu
+ensure_daemonize() {
+    if [ ! -x "${ACTION_DIR}/scripts/daemonize" ]; then
+        log "Compiling daemonize helper..."
+        gcc -O2 -Wall "${ACTION_DIR}/scripts/daemonize.c" -o "${ACTION_DIR}/scripts/daemonize"
+        chmod +x "${ACTION_DIR}/scripts/daemonize"
+    fi
+}
+
+ensure_initramfs() {
+    local dest="${ACTION_DIR}/appliance/initramfs.cpio.gz"
+    local stamp="${ACTION_DIR}/bin/initramfs.release.txt"
+    local url sha tmp got
+    if [ -s "${dest}" ]; then
+        log "initramfs already present $(ls -lh "${dest}" | awk '{print $5}')"
+        stage "initramfs"
+        return 0
+    fi
+    url="${T9_INITRAMFS_URL:-}"
+    sha="${T9_INITRAMFS_SHA256:-}"
+    if [ -z "${url}" ] && [ -f "${stamp}" ]; then
+        url="$(awk -F= '/^url=/{print substr($0,5)}' "${stamp}")"
+        sha="$(awk -F= '/^sha256=/{print substr($0,8)}' "${stamp}")"
+    fi
+    url="${url:-https://github.com/alonlevin1-coder/runner-criu-test/releases/download/jammy-appliance-v1/initramfs.cpio.gz}"
+    sha="${sha:-3a0ce9cb734eb9f00659b9f0d332e9c64a479e97e0a3882693ebe6cda58d8591}"
+    tmp="${dest}.part"
+    mkdir -p "$(dirname "${dest}")"
+    log "Downloading initramfs from ${url}"
+    if curl -fsSL --retry 3 --retry-delay 1 -o "${tmp}" "${url}"; then
+        got="$(sha256sum "${tmp}" | awk '{print $1}')"
+        if [ "${got}" = "${sha}" ]; then
+            mv -f "${tmp}" "${dest}"
+            log "initramfs download ok $(ls -lh "${dest}" | awk '{print $5}')"
+            stage "initramfs"
+            return 0
+        fi
+        log "initramfs checksum mismatch got=${got} want=${sha}; assembling"
+        rm -f "${tmp}"
     else
-        sudo install -m 755 "${CRIU_BIN}" /usr/sbin/criu
+        log "initramfs download failed; assembling"
+        rm -f "${tmp}"
     fi
-    CRIU_BIN="/usr/sbin/criu"
-fi
-
-if [ -z "${CRIU_BIN}" ] || [ ! -x "${CRIU_BIN}" ]; then
-    log "CRIU binary not found. Building CRIU from source with expanded XSAVE buffers..."
-    chmod +x "${ACTION_DIR}/scripts/build_criu.sh"
-    "${ACTION_DIR}/scripts/build_criu.sh"
-    CRIU_BIN="$(command -v criu || true)"
-    [ -x /usr/sbin/criu ] && CRIU_BIN="/usr/sbin/criu"
-fi
-log "Using CRIU binary: ${CRIU_BIN} ($("${CRIU_BIN}" --version 2>/dev/null || true))"
-if command -v ldd >/dev/null && ldd "${CRIU_BIN}" 2>/dev/null | grep -q 'not found'; then
-    log "CRIU missing shared libraries; installing runtime packages"
-    if ! apt_install libprotobuf-c1 libnet1 libnftables1 libbsd0 libnl-3-200; then
-        apt_update
-        apt_install libprotobuf-c1 libnet1 libnftables1 libbsd0 libnl-3-200
-    fi
-fi
-stage "criu"
-
-# 4. Ensure daemonize helper binary exists
-if [ ! -x "${ACTION_DIR}/scripts/daemonize" ]; then
-    log "Compiling daemonize helper..."
-    gcc -O2 -Wall "${ACTION_DIR}/scripts/daemonize.c" -o "${ACTION_DIR}/scripts/daemonize"
-    chmod +x "${ACTION_DIR}/scripts/daemonize"
-fi
-
-# 5. Ensure initramfs is assembled
-if [ ! -f "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
-    log "Assembling QEMU MicroVM restore initramfs..."
     chmod +x "${ACTION_DIR}/appliance/assemble_initramfs.sh"
     "${ACTION_DIR}/appliance/assemble_initramfs.sh"
-fi
-stage "initramfs"
+    stage "initramfs"
+}
 
-# 6. Make all helper scripts executable
+pack_var_seed() {
+    chmod +x "${ACTION_DIR}/scripts/map_host_var.sh" "${ACTION_DIR}/scripts/pack_host_var.sh"
+    log "Mapping host /var (deny runtime/cache/images, copy remaining tool state)..."
+    "${ACTION_DIR}/scripts/map_host_var.sh" "${CHECKPOINT_DIR}/var_map.txt" || true
+    log "Packing COPY /var trees into checkpoint for the guest..."
+    if [ "$(id -u)" -eq 0 ]; then
+        "${ACTION_DIR}/scripts/pack_host_var.sh" "${CHECKPOINT_DIR}"
+    else
+        sudo "${ACTION_DIR}/scripts/pack_host_var.sh" "${CHECKPOINT_DIR}"
+    fi
+    stage "var_seed"
+}
+
+wait_bg() {
+    local name="$1" pid="$2" rc=0
+    if ! wait "${pid}"; then
+        rc=$?
+        log "ERROR: background ${name} pid=${pid} exited ${rc}"
+        return "${rc}"
+    fi
+    log "background ${name} pid=${pid} ok"
+}
+
 chmod +x "${ACTION_DIR}"/scripts/*.sh "${ACTION_DIR}"/appliance/*.sh 2>/dev/null || true
 chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true
 
-# 7. Setup checkpoint and log directories
 CHECKPOINT_DIR="${RUNNER_VM_CHECKPOINT:-${CHECKPOINT_DIR:-${GITHUB_WORKSPACE:-/tmp}/checkpoint}}"
 LOG_DIR="${LOG_DIR:-${GITHUB_WORKSPACE:-/tmp}/smoke-logs}"
 mkdir -p "${CHECKPOINT_DIR}" "${LOG_DIR}"
@@ -172,24 +224,25 @@ tr -d '[:space:]' < /proc/sys/kernel/random/boot_id > "${CHECKPOINT_DIR}/host_bo
 cat /proc/cmdline > "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 chmod a+rw "${CHECKPOINT_DIR}/host_boot_id" "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 log "Checkpoint dir: ${CHECKPOINT_DIR} host_boot_id=$(cat "${CHECKPOINT_DIR}/host_boot_id")"
-chmod +x "${ACTION_DIR}/scripts/map_host_var.sh" "${ACTION_DIR}/scripts/pack_host_var.sh"
-log "Mapping host /var (deny runtime/cache/images, copy remaining tool state)..."
-"${ACTION_DIR}/scripts/map_host_var.sh" "${CHECKPOINT_DIR}/var_map.txt" || true
-log "Packing COPY /var trees into checkpoint for the guest..."
-if [ "$(id -u)" -eq 0 ]; then
-    "${ACTION_DIR}/scripts/pack_host_var.sh" "${CHECKPOINT_DIR}"
-else
-    sudo "${ACTION_DIR}/scripts/pack_host_var.sh" "${CHECKPOINT_DIR}"
-fi
-stage "var_seed"
 
-# 8. Configure TCP migration mode
+# QEMU/CRIU share the dpkg lock; initramfs fetch and /var pack do not.
+log "Starting initramfs fetch and /var pack in parallel with QEMU/CRIU install"
+ensure_initramfs &
+PID_INITRAMFS=$!
+pack_var_seed &
+PID_VAR=$!
+ensure_qemu
+ensure_criu
+ensure_daemonize
+wait_bg initramfs "${PID_INITRAMFS}"
+wait_bg var_seed "${PID_VAR}"
+stage "host_setup_parallel"
+
 CRIU_TCP_MODE="${INPUT_TCP_MODE:-${CRIU_TCP_MODE:-established}}"
 echo "${CRIU_TCP_MODE}" > "${CHECKPOINT_DIR}/criu_tcp_mode.txt"
 chmod a+rw "${CHECKPOINT_DIR}/criu_tcp_mode.txt" 2>/dev/null || true
 log "TCP mode configured: ${CRIU_TCP_MODE}"
 
-# 9. Isolate orchestrator step shell from CRIU freeze
 STEP_SHELL_PID="${STEP_SHELL_PID:-$$}"
 echo "${STEP_SHELL_PID}" > "${CHECKPOINT_DIR}/step_shell.pid"
 echo "${STEP_SHELL_PID}" > "${CHECKPOINT_DIR}/freeze_exclude_pids.txt"
@@ -198,7 +251,6 @@ chmod a+rw "${CHECKPOINT_DIR}/step_shell.pid" "${CHECKPOINT_DIR}/freeze_exclude_
 log "Mapping runner process tree..."
 "${ACTION_DIR}/scripts/map_workflow_processes.sh" "${CHECKPOINT_DIR}" "${STEP_SHELL_PID}"
 
-# 10. Identify Runner.Worker PID
 WORKER_PID=$(pgrep -f 'Runner\.Worker' | head -n1 || true)
 if [ -z "${WORKER_PID}" ]; then
     log "ERROR: Runner.Worker PID could not be found."
@@ -206,7 +258,6 @@ if [ -z "${WORKER_PID}" ]; then
 fi
 log "Identified Runner.Worker PID: ${WORKER_PID}"
 
-# 11. Launch migration daemon in background
 export ALLOW_WORKER_DUMP=1
 export KEEP_QEMU_ALIVE=1
 export CRIU_TCP_MODE="${CRIU_TCP_MODE}"
@@ -237,10 +288,6 @@ else
         "worker"
 fi
 
-# 12. Run is_vm_wait.sh
-# Host branch waits for migrator_ok, then blocks forever via exec sleep (keeps host runner alive).
-# Guest branch restores Runner.Worker via CRIU, where waitpid immediately returns success and
-# advances to all subsequent workflow steps inside the MicroVM.
 export RUNNER_VM_CHECKPOINT="${CHECKPOINT_DIR}"
 export IS_VM_MAX_WAIT_SEC="${IS_VM_MAX_WAIT_SEC:-600}"
 log "Awaiting microVM migration cutover and restore..."
