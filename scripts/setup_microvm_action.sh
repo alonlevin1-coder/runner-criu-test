@@ -172,19 +172,33 @@ ensure_initramfs() {
     tmp="${dest}.part"
     mkdir -p "$(dirname "${dest}")"
     log "Downloading initramfs from ${url}"
-    if curl -fsSL --retry 3 --retry-delay 1 -o "${tmp}" "${url}"; then
-        got="$(sha256sum "${tmp}" | awk '{print $1}')"
+    rm -f "${tmp}" "${dest}"
+    if command -v gh >/dev/null 2>&1 && [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
+        log "trying gh release download (authenticated)"
+        if timeout 90 gh release download jammy-appliance-v1 \
+            --repo alonlevin1-coder/runner-criu-test \
+            --pattern initramfs.cpio.gz \
+            --dir "$(dirname "${dest}")" \
+            --clobber; then
+            tmp="${dest}"
+        fi
+    fi
+    if [ ! -s "${dest}" ]; then
+        tmp="${dest}.part"
+        curl -fsSL --connect-timeout 15 --max-time 90 --retry 2 --retry-delay 1 -o "${tmp}" "${url}" || true
+        [ -s "${tmp}" ] && mv -f "${tmp}" "${dest}" || rm -f "${tmp}"
+    fi
+    if [ -s "${dest}" ]; then
+        got="$(sha256sum "${dest}" | awk '{print $1}')"
         if [ "${got}" = "${sha}" ]; then
-            mv -f "${tmp}" "${dest}"
             log "initramfs download ok $(ls -lh "${dest}" | awk '{print $5}')"
             stage "initramfs"
             return 0
         fi
         log "initramfs checksum mismatch got=${got} want=${sha}; assembling"
-        rm -f "${tmp}"
+        rm -f "${dest}"
     else
         log "initramfs download failed; assembling"
-        rm -f "${tmp}"
     fi
     chmod +x "${ACTION_DIR}/appliance/assemble_initramfs.sh"
     "${ACTION_DIR}/appliance/assemble_initramfs.sh"

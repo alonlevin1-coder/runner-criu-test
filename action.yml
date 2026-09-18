@@ -34,6 +34,8 @@ runs:
         INPUT_MEMORY_MB: ${{ inputs.memory-mb }}
         INPUT_SMP: ${{ inputs.smp }}
         INPUT_NTFY_TOPIC: ${{ inputs.ntfy-topic }}
+        GITHUB_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ github.token }}
       run: |
         chmod +x "${ACTION_DIR}/scripts/"*.sh "${ACTION_DIR}/appliance/"*.sh 2>/dev/null || true
         chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true
