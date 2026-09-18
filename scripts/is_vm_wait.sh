@@ -155,6 +155,7 @@ fi
 log "waiting for migrator_ok (pid=$$ cp=${CP})"
 wait_stage "waiting" "max=${IS_VM_MAX_WAIT_SEC:-600}s"
 send_ntfy "is_vm_wait waiting" "run=${GITHUB_RUN_ID:-0} cp=${CP} max=${IS_VM_MAX_WAIT_SEC:-600}s"
+HELPER_STAGE_LINES=0
 touch "${CP}/wait_loop_ready"
 [ -d /mnt/checkpoint ] && touch "/mnt/checkpoint/wait_loop_ready" 2>/dev/null || true
 log "signaled wait_loop_ready"
@@ -193,6 +194,15 @@ $(tail -n 8 "${MARKER}" 2>/dev/null || true)"
         exit 124
     fi
     TICK=$((TICK + 1))
+    if [ -f "${CP}/helper_stage.txt" ]; then
+        STAGE_LINES="$(wc -l < "${CP}/helper_stage.txt" | tr -d ' ')"
+        if [ "${STAGE_LINES}" -gt "${HELPER_STAGE_LINES}" ]; then
+            tail -n "$((STAGE_LINES - HELPER_STAGE_LINES))" "${CP}/helper_stage.txt" | while read -r line; do
+                log "helper ${line}"
+            done
+            HELPER_STAGE_LINES="${STAGE_LINES}"
+        fi
+    fi
     if [ $((TICK % 15)) -eq 0 ]; then
         send_ntfy "is_vm_wait poll" "waiting migrator_ok ${TICK}*2s run=${GITHUB_RUN_ID:-0}
 $(checkpoint_snapshot)

@@ -24,16 +24,26 @@ CRIU_TCP_FLAG="$("${SCRIPT_DIR}/criu_tcp_flags.sh")"
 CRIU_TCP_MODE="${CRIU_TCP_MODE:-close}"
 
 HELPER_STAGE="${CHECKPOINT_DIR}/helper_stage.txt"
+HELPER_T0="$(date +%s)"
+HELPER_LAST="${HELPER_T0}"
+QEMU_PID=""
+DUMP_PID=""
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [is_vm] $*" | tee -a "${HELPER_LOG}"; }
 
 stage_mark() {
     local stage="${1:?stage}"
     local detail="${2:-}"
-    local ts
+    local ts now elapsed delta
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "${ts} stage=${stage} run=${GITHUB_RUN_ID:-0} pid=$$ ${detail}" >> "${HELPER_STAGE}"
-    printf '%s %s %s\n' "${ts}" "${stage}" "${detail}" > "${CHECKPOINT_DIR}/helper_stage_latest.txt"
+    now="$(date +%s)"
+    elapsed=$((now - HELPER_T0))
+    delta=$((now - HELPER_LAST))
+    HELPER_LAST="${now}"
+    echo "${ts} stage=${stage} elapsed=${elapsed}s delta=${delta}s run=${GITHUB_RUN_ID:-0} pid=$$ ${detail}" >> "${HELPER_STAGE}"
+    printf '%s stage=%s elapsed=%ss delta=%ss %s\n' "${ts}" "${stage}" "${elapsed}" "${delta}" "${detail}" \
+        > "${CHECKPOINT_DIR}/helper_stage_latest.txt"
     chmod a+rw "${HELPER_STAGE}" "${CHECKPOINT_DIR}/helper_stage_latest.txt" "${HELPER_LOG}" 2>/dev/null || true
+    log "stage=${stage} elapsed=${elapsed}s delta=${delta}s ${detail}"
 }
 
 run_with_timeout() {
@@ -266,58 +276,209 @@ LEAVE_FLAG="--leave-running"
 if [ "${CRIU_TCP_MODE}" = "established" ] && [ "${TARGET_KIND}" = "worker" ]; then
     LEAVE_FLAG="--leave-stopped"
 fi
-log "criu dump ${LEAVE_FLAG} pid=${TARGET_PID} tcp=${CRIU_TCP_FLAG}"
-stage_mark "dump_start" "leave=${LEAVE_FLAG} tcp=${CRIU_TCP_FLAG}"
-"${SCRIPT_DIR}/load_criu_tcp_modules.sh"
-if [ -f "${CHECKPOINT_DIR}/freeze_exclude_pids.txt" ]; then
-    log "pausing orchestrator PIDs for criu dump"
-    stage_mark "orchestrator_pause" "$(tr '\n' ' ' < "${CHECKPOINT_DIR}/freeze_exclude_pids.txt")"
-    orchestrator_pause_for_dump "${CHECKPOINT_DIR}"
+
+helper_abort() {
+    local rc="${1:-1}"
+    [ -n "${DUMP_PID:-}" ] && kill "${DUMP_PID}" 2>/dev/null || true
+    [ -n "${QEMU_PID:-}" ] && kill -9 "${QEMU_PID}" 2>/dev/null || true
+    touch "${CHECKPOINT_DIR}/helper_failed"
+    HELPER_EXIT_RC="${rc}"
+    exit "${rc}"
+}
+
+run_criu_dump() {
+    log "criu dump ${LEAVE_FLAG} pid=${TARGET_PID} tcp=${CRIU_TCP_FLAG}"
+    stage_mark "dump_start" "leave=${LEAVE_FLAG} tcp=${CRIU_TCP_FLAG}"
+    "${SCRIPT_DIR}/load_criu_tcp_modules.sh"
+    if [ -f "${CHECKPOINT_DIR}/freeze_exclude_pids.txt" ]; then
+        log "pausing orchestrator PIDs for criu dump"
+        stage_mark "orchestrator_pause" "$(tr '\n' ' ' < "${CHECKPOINT_DIR}/freeze_exclude_pids.txt")"
+        orchestrator_pause_for_dump "${CHECKPOINT_DIR}"
+    fi
+    set +e
+    sudo "${CRIU_BIN}" dump \
+        -t "${TARGET_PID}" \
+        -D "${CHECKPOINT_DIR}" \
+        "${LEAVE_FLAG}" \
+        --shell-job --file-locks --ext-unix-sk "${CRIU_TCP_FLAG}" \
+        --ghost-limit 32M \
+        -v4 -o dump.log
+    local rc=$?
+    set -e
+    if [ -f "${CHECKPOINT_DIR}/freeze_exclude_pids.txt" ]; then
+        orchestrator_resume_after_dump "${CHECKPOINT_DIR}"
+        stage_mark "orchestrator_resume" "dump_rc=${rc}"
+        log "resumed orchestrator PIDs after criu dump"
+    fi
+    echo "${rc}" > "${CHECKPOINT_DIR}/dump.rc"
+    log "dump rc=${rc} ${LEAVE_FLAG}"
+    stage_mark "dump_done" "rc=${rc} ${LEAVE_FLAG}"
+    send_ntfy "is_vm dump" "kind=${TARGET_KIND} rc=${rc} ${LEAVE_FLAG}=1 run=${GITHUB_RUN_ID:-0}"
+    return 0
+}
+
+boot_qemu() {
+    local runner_home="/home/runner"
+    [ -d "${runner_home}" ] || runner_home="${HOME}"
+    local dotnet_dir="/usr/share/dotnet"
+    [ -d "${dotnet_dir}" ] || dotnet_dir="/tmp"
+    if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+        ACCEL_ARGS="-enable-kvm -cpu host"
+    else
+        ACCEL_ARGS="-accel tcg -cpu max"
+    fi
+
+    : > "${SERIAL_LOG}"
+    chmod 666 "${SERIAL_LOG}" 2>/dev/null || true
+    NET_MODE="user"
+    [ -f "${CHECKPOINT_DIR}/net_mode.txt" ] && NET_MODE="$(cat "${CHECKPOINT_DIR}/net_mode.txt")"
+    log "booting QEMU for SSH restore net_mode=${NET_MODE}"
+    stage_mark "qemu_start" "net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
+    send_ntfy "is_vm Booting QEMU" "run=${GITHUB_RUN_ID:-0} accel=${ACCEL_ARGS} net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
+
+    VIRTFS_ARGS=(
+        -virtfs "local,path=${runner_home},mount_tag=host_runner,security_model=none,id=host_runner"
+        -virtfs "local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp"
+        -virtfs "local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib"
+        -virtfs "local,path=${dotnet_dir},mount_tag=dotnet,security_model=none,id=dotnet"
+        -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
+    )
+    local spec tag path
+    for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt" "host_etc:/etc" \
+                "host_var_dpkg:/var/lib/dpkg" "host_var_apt:/var/lib/apt"; do
+        tag="${spec%%:*}"
+        path="${spec##*:}"
+        if [ -d "${path}" ]; then
+            VIRTFS_ARGS+=(-virtfs "local,path=${path},mount_tag=${tag},security_model=none,readonly=on,id=${tag}")
+        fi
+    done
+
+    NETDEV_ARGS=()
+    if [ -f "${CHECKPOINT_DIR}/net_mode.txt" ] \
+        && [ "$(cat "${CHECKPOINT_DIR}/net_mode.txt")" = "tap" ] \
+        && [ -f "${CHECKPOINT_DIR}/network_spec.env" ]; then
+        # shellcheck disable=SC1091
+        source "${CHECKPOINT_DIR}/network_spec.env"
+        log "QEMU dual-NIC: net0=tap(${TAP_DEV}) workload IP ${LOCAL_IP} mac=${ETH0_MAC:-auto}, net1=user SSH"
+        DEV_NET0_ARG="virtio-net-pci,netdev=net0"
+        if [ -n "${ETH0_MAC:-}" ]; then
+            DEV_NET0_ARG="virtio-net-pci,netdev=net0,mac=${ETH0_MAC}"
+        fi
+        NETDEV_ARGS=(
+            -netdev "tap,id=net0,ifname=${TAP_DEV},script=no,downscript=no"
+            -device "${DEV_NET0_ARG}"
+            -netdev "user,id=net1,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
+            -device "virtio-net-pci,netdev=net1"
+        )
+    else
+        NETDEV_ARGS=(
+            -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
+            -device "virtio-net-pci,netdev=net0"
+        )
+    fi
+
+    MEM_ARG="${QEMU_MEM:-2G}"
+    [[ "${MEM_ARG}" =~ ^[0-9]+$ ]] && MEM_ARG="${MEM_ARG}M"
+    SMP_ARG="${QEMU_SMP:-2}"
+
+    set +e
+    qemu-system-x86_64 \
+        ${ACCEL_ARGS} -m "${MEM_ARG}" -smp "${SMP_ARG}" \
+        -display none -monitor none \
+        -kernel "${KERNEL_BIN}" \
+        -initrd "${INITRD_BIN}" \
+        -append "earlyprintk=ttyS0 console=ttyS0 panic=1 loglevel=7 net.ifnames=0 biosdevname=0 rdinit=/init t9_is_vm=1" \
+        -no-reboot \
+        "${NETDEV_ARGS[@]}" \
+        "${VIRTFS_ARGS[@]}" \
+        -serial "file:${SERIAL_LOG}" >> "${HELPER_LOG}" 2>&1 &
+    QEMU_PID=$!
+    set -e
+    echo "${QEMU_PID}" > "${CHECKPOINT_DIR}/qemu.pid"
+    WATCHDOG_ITERS=12
+    [ "${KEEP_QEMU_ALIVE:-0}" = "1" ] && WATCHDOG_ITERS=36
+    start_watchdog "${WATCHDOG_ITERS}"
+    send_ntfy "is_vm QEMU pid" "pid=${QEMU_PID} serial_bytes=0 run=${GITHUB_RUN_ID:-0}"
+}
+
+wait_ssh() {
+    SSH=(ssh -i "${SSH_KEY}" -p "${SSH_PORT}" -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o BatchMode=yes root@127.0.0.1)
+    SSH_OK=0
+    local i
+    for i in $(seq 1 180); do
+        if [ -f "${CHECKPOINT_DIR}/dump.rc" ] && [ "$(cat "${CHECKPOINT_DIR}/dump.rc")" != "0" ]; then
+            break
+        fi
+        if "${SSH[@]}" 'echo SSH_OK' >/dev/null 2>> "${HELPER_LOG}"; then
+            SSH_OK=1
+            break
+        fi
+        kill -0 "${QEMU_PID}" 2>/dev/null || break
+        sleep 1
+    done
+    if [ "${SSH_OK}" -ne 1 ]; then
+        log "ssh failed"
+        stage_mark "ssh_fail" "port=${SSH_PORT}"
+        serial_sz=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
+        send_ntfy "is_vm SSH FAIL" "port=${SSH_PORT} serial_bytes=${serial_sz} qemu_alive=$(kill -0 "${QEMU_PID}" 2>/dev/null && echo yes || echo no)
+$(tail -n 15 "${HELPER_LOG}" 2>/dev/null || true)"
+        touch "${CHECKPOINT_DIR}/ssh_failed"
+        helper_abort 1
+    fi
+    stage_mark "ssh_ok" "port=${SSH_PORT}"
+    send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} dump_rc=$(cat "${CHECKPOINT_DIR}/dump.rc" 2>/dev/null || echo pending)"
+}
+
+# TAP device only (Dropbear/QEMU). Do not steal GHA WebSocket until dump finishes.
+if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; then
+    chmod +x "${SCRIPT_DIR}/host_tap_cutover.sh"
+    stage_mark "tap_prepare_start" ""
+    if ! TAP_PHASE=prepare run_with_timeout "${TAP_CUTOVER_TIMEOUT_SEC:-120}" \
+        "${SCRIPT_DIR}/host_tap_cutover.sh" "${CHECKPOINT_DIR}"; then
+        log "ERROR: TAP prepare failed or timed out"
+        send_ntfy "is_vm TAP FAIL" "$(tail -n 20 "${CHECKPOINT_DIR}/host_tap_cutover.log" 2>/dev/null || true)"
+        helper_abort 1
+    fi
+    stage_mark "tap_prepare_ok" "net_mode=$(cat "${CHECKPOINT_DIR}/net_mode.txt" 2>/dev/null || echo unknown)"
 fi
-set +e
-sudo "${CRIU_BIN}" dump \
-    -t "${TARGET_PID}" \
-    -D "${CHECKPOINT_DIR}" \
-    "${LEAVE_FLAG}" \
-    --shell-job --file-locks --ext-unix-sk "${CRIU_TCP_FLAG}" \
-    --ghost-limit 32M \
-    -v4 -o dump.log
-DUMP_RC=$?
-set -e
-if [ -f "${CHECKPOINT_DIR}/freeze_exclude_pids.txt" ]; then
-    orchestrator_resume_after_dump "${CHECKPOINT_DIR}"
-    stage_mark "orchestrator_resume" "dump_rc=${DUMP_RC}"
-    log "resumed orchestrator PIDs after criu dump"
-fi
-echo "${DUMP_RC}" > "${CHECKPOINT_DIR}/dump.rc"
-log "dump rc=${DUMP_RC} ${LEAVE_FLAG}"
-stage_mark "dump_done" "rc=${DUMP_RC} ${LEAVE_FLAG}"
-send_ntfy "is_vm dump" "kind=${TARGET_KIND} rc=${DUMP_RC} ${LEAVE_FLAG}=1 run=${GITHUB_RUN_ID:-0}"
+
+boot_qemu
+run_criu_dump &
+DUMP_PID=$!
+wait "${DUMP_PID}" || true
+DUMP_PID=""
+DUMP_RC="$(cat "${CHECKPOINT_DIR}/dump.rc" 2>/dev/null || echo 1)"
 
 if [ "${DUMP_RC}" -ne 0 ]; then
     dump_tail="$(tail -n 25 "${CHECKPOINT_DIR}/dump.log" 2>/dev/null || true)"
     send_ntfy "is_vm dump FAIL" "rc=${DUMP_RC}
 ${dump_tail}"
-    touch "${CHECKPOINT_DIR}/helper_failed"
-    HELPER_EXIT_RC="${DUMP_RC}"
-    exit "${DUMP_RC}"
+    helper_abort "${DUMP_RC}"
 fi
 
 if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; then
-    # GHA constraint (R13): killing Worker tears down the hosted VM immediately.
-    # Porter F09 step 13 (SIGKILL source tree) does NOT apply here — keep host
-    # Worker alive but frozen (R14: suspend keeps Listener + VM up).
     log "tcp-established: host Worker stays frozen (no SIGKILL on GHA)"
     echo "host_tree_frozen_forever=yes" >> "${CHECKPOINT_DIR}/state.txt"
+elif ! kill -0 "${TARGET_PID}" 2>/dev/null; then
+    log "WARN: target died despite --leave-running"
+    echo "target_dead_after_dump=yes" >> "${CHECKPOINT_DIR}/state.txt"
+else
+    log "target still alive on host after leave-running dump (still frozen until restore done)"
+    echo "target_alive_after_dump=yes" >> "${CHECKPOINT_DIR}/state.txt"
+fi
+
+wait_ssh
+
+# Dump images are complete and guest SSH is up. Steal host TCP, then restore.
+if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; then
     if [ "${ISOLATE_HOST_TCP_AFTER_DUMP:-0}" = "1" ]; then
         log "closing host TCP sockets while tree frozen (ss -K)"
         stage_mark "tcp_close_start" ""
         if ! run_with_timeout "${TCP_CLOSE_TIMEOUT_SEC:-120}" "${SCRIPT_DIR}/host_close_tcp_sockets.sh" "${CHECKPOINT_DIR}"; then
             log "ERROR: tcp close timed out or failed"
             send_ntfy "is_vm FAIL" "tcp close timeout rc=$?"
-            touch "${CHECKPOINT_DIR}/helper_failed"
-            HELPER_EXIT_RC=1
-            exit 1
+            helper_abort 1
         fi
         stage_mark "tcp_close_ok" "$(tail -n1 "${CHECKPOINT_DIR}/state.txt" 2>/dev/null || true)"
         send_ntfy "is_vm TCP close" "$(tail -n 15 "${CHECKPOINT_DIR}/host_tcp_close.log" 2>/dev/null || echo done)"
@@ -327,140 +488,21 @@ if [ "${TARGET_KIND}" = "worker" ] && [ "${CRIU_TCP_MODE}" = "established" ]; th
             >> "${CHECKPOINT_DIR}/state.txt"
         stage_mark "tcp_close_skip" "frozen_host"
     fi
-    chmod +x "${SCRIPT_DIR}/host_tap_cutover.sh"
-    stage_mark "tap_start" ""
-    if ! run_with_timeout "${TAP_CUTOVER_TIMEOUT_SEC:-120}" "${SCRIPT_DIR}/host_tap_cutover.sh" "${CHECKPOINT_DIR}"; then
-        log "ERROR: host TAP cutover failed or timed out"
+    stage_mark "tap_steal_start" ""
+    if ! TAP_PHASE=steal run_with_timeout "${TAP_CUTOVER_TIMEOUT_SEC:-120}" \
+        "${SCRIPT_DIR}/host_tap_cutover.sh" "${CHECKPOINT_DIR}"; then
+        log "ERROR: TAP steal (TC redirect) failed or timed out"
         send_ntfy "is_vm TAP FAIL" "$(tail -n 20 "${CHECKPOINT_DIR}/host_tap_cutover.log" 2>/dev/null || true)"
-        touch "${CHECKPOINT_DIR}/helper_failed"
-        HELPER_EXIT_RC=1
-        exit 1
+        helper_abort 1
     fi
     stage_mark "tap_ok" "net_mode=$(cat "${CHECKPOINT_DIR}/net_mode.txt" 2>/dev/null || echo unknown)"
-    send_ntfy "is_vm TAP OK" "$(tail -n 15 "${CHECKPOINT_DIR}/host_tap_cutover.log" 2>/dev/null || true)
-net_mode=$(cat "${CHECKPOINT_DIR}/net_mode.txt" 2>/dev/null || echo unknown)"
-elif ! kill -0 "${TARGET_PID}" 2>/dev/null; then
-    log "WARN: target died despite --leave-running"
-    echo "target_dead_after_dump=yes" >> "${CHECKPOINT_DIR}/state.txt"
-else
-    log "target still alive on host after leave-running dump (still frozen until restore done)"
-    echo "target_alive_after_dump=yes" >> "${CHECKPOINT_DIR}/state.txt"
+    send_ntfy "is_vm TAP steal OK" "$(tail -n 15 "${CHECKPOINT_DIR}/host_tap_cutover.log" 2>/dev/null || true)"
 fi
 
-RUNNER_HOME="/home/runner"
-[ -d "${RUNNER_HOME}" ] || RUNNER_HOME="${HOME}"
-DOTNET_DIR="/usr/share/dotnet"
-[ -d "${DOTNET_DIR}" ] || DOTNET_DIR="/tmp"
-if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-    ACCEL_ARGS="-enable-kvm -cpu host"
-else
-    ACCEL_ARGS="-accel tcg -cpu max"
-fi
-
-: > "${SERIAL_LOG}"
-chmod 666 "${SERIAL_LOG}" 2>/dev/null || true
-NET_MODE="user"
-[ -f "${CHECKPOINT_DIR}/net_mode.txt" ] && NET_MODE="$(cat "${CHECKPOINT_DIR}/net_mode.txt")"
-log "booting QEMU for SSH restore net_mode=${NET_MODE}"
-stage_mark "qemu_start" "net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
-send_ntfy "is_vm Booting QEMU" "run=${GITHUB_RUN_ID:-0} accel=${ACCEL_ARGS} net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
-
-VIRTFS_ARGS=(
-    -virtfs "local,path=${RUNNER_HOME},mount_tag=host_runner,security_model=none,id=host_runner"
-    -virtfs "local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp"
-    -virtfs "local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib"
-    -virtfs "local,path=${DOTNET_DIR},mount_tag=dotnet,security_model=none,id=dotnet"
-    -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
-)
-# host_etc is copy-only. Export only the dpkg/apt slices of /var (full /var 9p stalls boot).
-for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt" "host_etc:/etc" \
-            "host_var_dpkg:/var/lib/dpkg" "host_var_apt:/var/lib/apt"; do
-    tag="${spec%%:*}"
-    path="${spec##*:}"
-    if [ -d "${path}" ]; then
-        VIRTFS_ARGS+=(-virtfs "local,path=${path},mount_tag=${tag},security_model=none,readonly=on,id=${tag}")
-    fi
-done
-
-NETDEV_ARGS=()
-if [ -f "${CHECKPOINT_DIR}/net_mode.txt" ] \
-    && [ "$(cat "${CHECKPOINT_DIR}/net_mode.txt")" = "tap" ] \
-    && [ -f "${CHECKPOINT_DIR}/network_spec.env" ]; then
-    # shellcheck disable=SC1091
-    source "${CHECKPOINT_DIR}/network_spec.env"
-    log "QEMU dual-NIC: net0=tap(${TAP_DEV}) workload IP ${LOCAL_IP} mac=${ETH0_MAC:-auto}, net1=user SSH"
-    DEV_NET0_ARG="virtio-net-pci,netdev=net0"
-    if [ -n "${ETH0_MAC:-}" ]; then
-        DEV_NET0_ARG="virtio-net-pci,netdev=net0,mac=${ETH0_MAC}"
-    fi
-    NETDEV_ARGS=(
-        -netdev "tap,id=net0,ifname=${TAP_DEV},script=no,downscript=no"
-        -device "${DEV_NET0_ARG}"
-        -netdev "user,id=net1,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
-        -device "virtio-net-pci,netdev=net1"
-    )
-else
-    NETDEV_ARGS=(
-        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
-        -device "virtio-net-pci,netdev=net0"
-    )
-fi
-
-MEM_ARG="${QEMU_MEM:-2G}"
-[[ "${MEM_ARG}" =~ ^[0-9]+$ ]] && MEM_ARG="${MEM_ARG}M"
-SMP_ARG="${QEMU_SMP:-2}"
-
-set +e
-qemu-system-x86_64 \
-    ${ACCEL_ARGS} -m "${MEM_ARG}" -smp "${SMP_ARG}" \
-    -display none -monitor none \
-    -kernel "${KERNEL_BIN}" \
-    -initrd "${INITRD_BIN}" \
-    -append "earlyprintk=ttyS0 console=ttyS0 panic=1 loglevel=7 net.ifnames=0 biosdevname=0 rdinit=/init t9_is_vm=1" \
-    -no-reboot \
-    "${NETDEV_ARGS[@]}" \
-    "${VIRTFS_ARGS[@]}" \
-    -serial "file:${SERIAL_LOG}" >> "${HELPER_LOG}" 2>&1 &
-QEMU_PID=$!
-set -e
-echo "${QEMU_PID}" > "${CHECKPOINT_DIR}/qemu.pid"
-WATCHDOG_ITERS=12
-[ "${KEEP_QEMU_ALIVE:-0}" = "1" ] && WATCHDOG_ITERS=36
-start_watchdog "${WATCHDOG_ITERS}"
-send_ntfy "is_vm QEMU pid" "pid=${QEMU_PID} serial_bytes=0 run=${GITHUB_RUN_ID:-0}"
-
-SSH=(ssh -i "${SSH_KEY}" -p "${SSH_PORT}" -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o BatchMode=yes root@127.0.0.1)
-
-SSH_OK=0
-for i in $(seq 1 180); do
-    if "${SSH[@]}" 'echo SSH_OK' >/dev/null 2>> "${HELPER_LOG}"; then
-        SSH_OK=1
-        break
-    fi
-    kill -0 "${QEMU_PID}" 2>/dev/null || break
-    sleep 1
-done
-
-if [ "${SSH_OK}" -ne 1 ]; then
-    log "ssh failed"
-    stage_mark "ssh_fail" "port=${SSH_PORT}"
-    serial_sz=$(wc -c < "${SERIAL_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
-    send_ntfy "is_vm SSH FAIL" "port=${SSH_PORT} serial_bytes=${serial_sz} qemu_alive=$(kill -0 "${QEMU_PID}" 2>/dev/null && echo yes || echo no)
-$(tail -n 15 "${HELPER_LOG}" 2>/dev/null || true)"
-    touch "${CHECKPOINT_DIR}/ssh_failed"
-    kill -9 "${QEMU_PID}" 2>/dev/null || true
-    touch "${CHECKPOINT_DIR}/helper_failed"
-    HELPER_EXIT_RC=1
-    exit 1
-fi
-
-stage_mark "ssh_ok" "port=${SSH_PORT}"
-send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} running t9_restore.sh"
 # /init switch_root's right after Dropbear; give systemd a moment.
 sleep 1
 log "running t9_restore.sh"
-stage_mark "restore_start" ""
+stage_mark "restore_start" "dump_rc=${DUMP_RC}"
 set +e
 run_with_timeout "${RESTORE_TIMEOUT_SEC:-300}" "${SSH[@]}" '/t9_restore.sh' >> "${HELPER_LOG}" 2>&1
 RESTORE_RC=$?
