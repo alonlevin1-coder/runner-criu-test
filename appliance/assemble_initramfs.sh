@@ -888,6 +888,43 @@ if [ -f /mnt/checkpoint/network_spec.env ]; then
     /bin/busybox ip route show 2>/dev/null >> /mnt/checkpoint/post_restore_diag.txt 2>/dev/null || true
     echo "network_reconstruct ok LOCAL_IP=${LOCAL_IP} GUEST_IP=${GUEST_IP:-none}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 fi
+
+echo "[GUEST] Seeding guest apt/dpkg before CRIU restore..."
+echo "apt_seed_start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+/bin/busybox mkdir -p /var/lib /mnt/host_etc /mnt/host_var_dpkg /mnt/host_var_apt
+if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
+    if [ -d /mnt/host_etc/apt ]; then
+        /bin/busybox rm -rf /etc/apt
+        /bin/busybox cp -a /mnt/host_etc/apt /etc/apt \
+            && echo "[GUEST] [OK] copied /etc/apt" || echo "[GUEST] [WARN] /etc/apt copy failed"
+    fi
+    if [ -f /mnt/host_etc/group ]; then
+        for g in crontab shadow systemd-journal messagebus; do
+            if ! /bin/busybox grep -q "^${g}:" /etc/group 2>/dev/null; then
+                /bin/busybox grep "^${g}:" /mnt/host_etc/group >> /etc/group 2>/dev/null \
+                    && echo "[GUEST] [OK] merged group ${g}" || true
+            fi
+        done
+    fi
+    /bin/busybox umount /mnt/host_etc 2>/dev/null || true
+fi
+for spec in "host_var_dpkg:dpkg" "host_var_apt:apt"; do
+    tag="${spec%%:*}"
+    name="${spec##*:}"
+    mnt="/mnt/${tag}"
+    /bin/busybox mkdir -p "${mnt}"
+    if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro "${tag}" "${mnt}" 2>/dev/null; then
+        /bin/busybox rm -rf "/var/lib/${name}"
+        /bin/busybox cp -a "${mnt}" "/var/lib/${name}" \
+            && echo "[GUEST] [OK] copied /var/lib/${name}" || echo "[GUEST] [WARN] copy /var/lib/${name} failed"
+        /bin/busybox umount "${mnt}" 2>/dev/null || true
+    else
+        echo "[GUEST] [WARN] ${tag} 9p unavailable"
+    fi
+    /bin/busybox rmdir "${mnt}" 2>/dev/null || true
+done
+echo "apt_seed_done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+
 TCP_FLAG="--tcp-close"
 if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
     case "$(/bin/busybox cat /mnt/checkpoint/criu_tcp_mode.txt)" in
@@ -942,43 +979,6 @@ for pass in 1 2 3; do
 done
 echo "sigcont_count=${CONT_COUNT}" >> "${DIAG}"
 echo "guest_sigcont count=${CONT_COUNT}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-
-echo "[GUEST] Seeding guest apt/dpkg after restore..."
-echo "apt_seed_start" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-/bin/busybox mkdir -p /var/lib /mnt/host_etc /mnt/host_var_dpkg /mnt/host_var_apt
-if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_etc /mnt/host_etc 2>/dev/null; then
-    if [ -d /mnt/host_etc/apt ]; then
-        /bin/busybox rm -rf /etc/apt
-        /bin/busybox cp -a /mnt/host_etc/apt /etc/apt \
-            && echo "[GUEST] [OK] copied /etc/apt" || echo "[GUEST] [WARN] /etc/apt copy failed"
-    fi
-    if [ -f /mnt/host_etc/group ]; then
-        for g in crontab shadow systemd-journal messagebus; do
-            if ! /bin/busybox grep -q "^${g}:" /etc/group 2>/dev/null; then
-                /bin/busybox grep "^${g}:" /mnt/host_etc/group >> /etc/group 2>/dev/null \
-                    && echo "[GUEST] [OK] merged group ${g}" || true
-            fi
-        done
-    fi
-    /bin/busybox umount /mnt/host_etc 2>/dev/null || true
-fi
-for spec in "host_var_dpkg:dpkg" "host_var_apt:apt"; do
-    tag="${spec%%:*}"
-    name="${spec##*:}"
-    mnt="/mnt/${tag}"
-    /bin/busybox mkdir -p "${mnt}"
-    if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro "${tag}" "${mnt}" 2>/dev/null; then
-        /bin/busybox rm -rf "/var/lib/${name}"
-        /bin/busybox cp -a "${mnt}" "/var/lib/${name}" \
-            && echo "[GUEST] [OK] copied /var/lib/${name}" || echo "[GUEST] [WARN] copy /var/lib/${name} failed"
-        /bin/busybox umount "${mnt}" 2>/dev/null || true
-    else
-        echo "[GUEST] [WARN] ${tag} 9p unavailable"
-    fi
-    /bin/busybox rmdir "${mnt}" 2>/dev/null || true
-done
-echo "apt_seed_done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-
 /bin/busybox touch /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox echo "is_vm" | /bin/busybox tee /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
 /bin/busybox chmod 666 /run/is_vm /etc/is_vm /tmp/is_vm 2>/dev/null || true
