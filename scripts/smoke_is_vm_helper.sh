@@ -457,8 +457,10 @@ $(tail -n 15 "${HELPER_LOG}" 2>/dev/null || true)"
 fi
 
 stage_mark "ssh_ok" "port=${SSH_PORT}"
+touch "${CHECKPOINT_DIR}/ssh_connected"
+sync || true
 send_ntfy "is_vm SSH Ready" "port=${SSH_PORT} running t9_restore.sh"
-# /init switch_root's right after Dropbear; give systemd a moment.
+# Guest switch_root's after ssh_connected; give systemd a moment.
 sleep 3
 log "running t9_restore.sh"
 stage_mark "restore_start" ""
