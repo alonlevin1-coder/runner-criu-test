@@ -16,7 +16,7 @@ rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
 # 1. Base directory layout
-mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,host_usr,host_bin,host_lib,host_lib64,host_opt,opt,usr/share/dotnet,modules}
+mkdir -p "${STAGING}"/{bin,sbin,usr/bin,usr/sbin,usr/local/sbin,usr/lib,usr/share,lib,lib64,etc,proc,sys,dev,dev/pts,dev/shm,tmp,run,root,home/runner,mnt/checkpoint,host_tmp,mnt/usrlib,host_usr,host_bin,host_lib,host_lib64,host_opt,opt,usr/share/dotnet,modules}
 
 
 # 2. Install busybox utilities
@@ -147,6 +147,11 @@ if [ -f "${CRIU_BIN}" ]; then
             fi
         done
     done
+fi
+
+if [ -f "${REPO_DIR}/scripts/t9_host_units.sh" ]; then
+    cp -a "${REPO_DIR}/scripts/t9_host_units.sh" "${STAGING}/t9_host_units.sh"
+    chmod 755 "${STAGING}/t9_host_units.sh"
 fi
 
 # Dropbear for two-stage SSH (host helper runs criu restore after boot).
@@ -738,6 +743,10 @@ if [ -x /newroot/usr/sbin/ip6tables-legacy ]; then
     /bin/busybox ln -sfn ip6tables-legacy /newroot/usr/sbin/ip6tables
 fi
 echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+if [ -f /mnt/checkpoint/host_running_units.txt ]; then
+    /bin/busybox cp -a /mnt/checkpoint/host_running_units.txt /newroot/etc/t9-host-units.txt
+    echo "[GUEST] [OK] copied host unit list"
+fi
 # Host /var overlay often materializes /var/run as a directory; dockerd listens on /run.
 /bin/busybox rm -rf /newroot/var/run /newroot/var/lock
 /bin/busybox ln -s /run /newroot/var/run
@@ -830,6 +839,12 @@ SUDOEOF
 /bin/busybox chmod 755 /newroot/usr/sbin/dropbear 2>/dev/null || true
 /bin/busybox cp -a /usr/sbin/t9_restore.sh /newroot/t9_restore.sh 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/t9_restore.sh 2>/dev/null || true
+if [ -f /t9_host_units.sh ]; then
+    /bin/busybox cp -a /t9_host_units.sh /newroot/t9_host_units.sh
+    /bin/busybox mkdir -p /newroot/usr/local/sbin
+    /bin/busybox cp -a /t9_host_units.sh /newroot/usr/local/sbin/t9_host_units.sh
+    /bin/busybox chmod 755 /newroot/t9_host_units.sh /newroot/usr/local/sbin/t9_host_units.sh
+fi
 /bin/busybox cp -a /bin/busybox /newroot/bin/busybox 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/bin/busybox 2>/dev/null || true
 
@@ -1038,6 +1053,14 @@ RC=$?
 echo "[GUEST] t9_restore rc=${RC}"
 echo "${RC}" > /mnt/checkpoint/restore.rc
 echo "criu restore rc=${RC}" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+if [ "${RC}" -eq 0 ] && [ -f /t9_host_units.sh ]; then
+    echo "[GUEST] starting host-matching systemd units"
+    /usr/bin/bash /t9_host_units.sh start \
+        /mnt/checkpoint/host_running_units.txt \
+        /mnt/checkpoint/guest_host_units.log \
+        || echo "[GUEST] WARN t9_host_units start failed"
+    echo "host_units_start done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+fi
 if [ "${RC}" -ne 0 ]; then
     echo "[GUEST] restore_log errors:"
     /bin/busybox grep -E 'Error|error|WARN|Failed|failed' /mnt/checkpoint/restore_log.txt 2>/dev/null \

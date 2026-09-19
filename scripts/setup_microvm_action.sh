@@ -257,6 +257,14 @@ tr -d '[:space:]' < /proc/sys/kernel/random/boot_id > "${CHECKPOINT_DIR}/host_bo
 cat /proc/cmdline > "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 chmod a+rw "${CHECKPOINT_DIR}/host_boot_id" "${CHECKPOINT_DIR}/host_cmdline" 2>/dev/null || true
 log "Checkpoint dir: ${CHECKPOINT_DIR} host_boot_id=$(cat "${CHECKPOINT_DIR}/host_boot_id")"
+if [ -x "${ACTION_DIR}/scripts/t9_host_units.sh" ]; then
+    "${ACTION_DIR}/scripts/t9_host_units.sh" snapshot "${CHECKPOINT_DIR}/host_running_units.txt" || true
+    log "Host running systemd units:"
+    grep -E '^[A-Za-z0-9]' "${CHECKPOINT_DIR}/host_running_units.txt" 2>/dev/null | tee -a "${LOG_DIR}/host_running_units.txt" || true
+    if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+        cp -a "${CHECKPOINT_DIR}/host_running_units.txt" "${GITHUB_WORKSPACE}/.t9-host-units.txt" 2>/dev/null || true
+    fi
+fi
 
 log "Host setup in parallel: assemble + /var pack + QEMU dpkg (no overlapping apt)"
 ensure_criu

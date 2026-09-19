@@ -109,25 +109,47 @@ jobs:
           echo "t9-daemon-test" > /tmp/vm_step1_daemon_ok.txt
           echo "CONFIRMED: systemd started t9-daemon-test (active)"
 
-          echo "--- Guest snap state (COPY if under 512MiB cap) ---"
+          echo "--- Host vs guest daemons ---"
+          UNIT_SCRIPT=""
+          for p in /t9_host_units.sh /usr/local/sbin/t9_host_units.sh \
+                   "${GITHUB_WORKSPACE:-}/scripts/t9_host_units.sh"; do
+            if [ -n "${p}" ] && [ -f "${p}" ]; then
+              UNIT_SCRIPT="${p}"
+              break
+            fi
+          done
+          if [ -z "${UNIT_SCRIPT}" ]; then
+            echo "FAIL: t9_host_units.sh missing in guest"
+            exit 1
+          fi
+          HOST_LIST=""
+          for p in /etc/t9-host-units.txt /mnt/checkpoint/host_running_units.txt \
+                   "${GITHUB_WORKSPACE:-}/.t9-host-units.txt"; do
+            if [ -n "${p}" ] && [ -f "${p}" ]; then
+              HOST_LIST="${p}"
+              break
+            fi
+          done
+          if [ -z "${HOST_LIST}" ]; then
+            echo "FAIL: host unit snapshot missing"
+            exit 1
+          fi
+          echo "Using host list ${HOST_LIST} script ${UNIT_SCRIPT}"
+          if ! sudo bash "${UNIT_SCRIPT}" compare "${HOST_LIST}"; then
+            echo "FAIL: guest daemons do not match host snapshot"
+            systemctl list-units --type=service --state=running --no-pager || true
+            cat /mnt/checkpoint/guest_host_units.log 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "--- Guest snapd ---"
           if [ ! -d /var/lib/snapd ]; then
             echo "FAIL: /var/lib/snapd missing; GH runner snapd should be under the COPY cap"
             ls -la /var/lib 2>/dev/null || true
             exit 1
           fi
           echo "CONFIRMED: /var/lib/snapd present ($(du -sh /var/lib/snapd 2>/dev/null | awk '{print $1}'))"
-          if ! sudo systemctl start snapd.socket snapd.service; then
-            echo "FAIL: could not start snapd"
-            systemctl status snapd.service --no-pager || true
-            exit 1
-          fi
-          if ! systemctl is-active --quiet snapd.socket && ! systemctl is-active --quiet snapd.service; then
-            echo "FAIL: snapd socket/service not active"
-            systemctl status snapd.socket snapd.service --no-pager || true
-            exit 1
-          fi
           snap version || true
-          echo "CONFIRMED: snapd is running"
 
           echo "--- Guest dockerd (isolated engine, not host docker.sock) ---"
           if [ ! -x /usr/bin/docker ] && [ ! -x /usr/bin/dockerd ]; then
@@ -141,26 +163,6 @@ jobs:
             exit 1
           fi
           echo "CONFIRMED: /var/lib/docker is tmpfs"
-          sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
-          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1 >/dev/null 2>/dev/null || true
-          if [ -x /usr/sbin/iptables-legacy ]; then
-            sudo update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null \
-              || sudo ln -sfn /usr/sbin/iptables-legacy /usr/sbin/iptables
-          fi
-          if [ ! -L /var/run ]; then
-            sudo rm -rf /var/run
-            sudo ln -s /run /var/run
-          fi
-          sudo systemctl reset-failed containerd.service docker.socket docker.service 2>/dev/null || true
-          sudo systemctl unmask containerd.service docker.socket docker.service 2>/dev/null || true
-          if ! sudo systemctl start containerd.service docker.socket docker.service; then
-            echo "FAIL: could not start guest docker"
-            systemctl status docker.service containerd.service --no-pager || true
-            journalctl -u docker -u containerd -n 80 --no-pager || true
-            lsmod | grep -E 'iptable|xt_|nf_|bridge' || true
-            iptables -t nat -S 2>/dev/null | head || true
-            exit 1
-          fi
           docker_info_ok=0
           for _i in 1 2 3 4 5 6 7 8 9 10; do
             if sudo docker info >/tmp/vm_step1_docker_info.txt 2>&1; then
