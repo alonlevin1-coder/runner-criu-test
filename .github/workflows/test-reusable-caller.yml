@@ -129,6 +129,50 @@ jobs:
           snap version || true
           echo "CONFIRMED: snapd is running"
 
+          echo "--- Guest dockerd (isolated engine, not host docker.sock) ---"
+          if [ ! -x /usr/bin/docker ] && [ ! -x /usr/bin/dockerd ]; then
+            echo "FAIL: docker binary missing from guest /usr"
+            ls -l /usr/bin/docker /usr/sbin/dockerd 2>/dev/null || true
+            exit 1
+          fi
+          if ! mount | grep -E "on /var/lib/docker type tmpfs"; then
+            echo "FAIL: /var/lib/docker must be tmpfs (not 9p/overlay graph)"
+            mount | grep docker || true
+            exit 1
+          fi
+          echo "CONFIRMED: /var/lib/docker is tmpfs"
+          sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1 >/dev/null 2>/dev/null || true
+          if [ -x /usr/sbin/iptables-legacy ]; then
+            sudo update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null \
+              || sudo ln -sfn /usr/sbin/iptables-legacy /usr/sbin/iptables
+          fi
+          sudo mkdir -p /run /var/run
+          sudo systemctl reset-failed containerd.service docker.socket docker.service 2>/dev/null || true
+          sudo systemctl unmask containerd.service docker.socket docker.service 2>/dev/null || true
+          if ! sudo systemctl start containerd.service docker.socket docker.service; then
+            echo "FAIL: could not start guest docker"
+            systemctl status docker.service containerd.service --no-pager || true
+            journalctl -u docker -u containerd -n 80 --no-pager || true
+            lsmod | grep -E 'iptable|xt_|nf_|bridge' || true
+            iptables -t nat -S 2>/dev/null | head || true
+            exit 1
+          fi
+          if ! sudo docker info >/tmp/vm_step1_docker_info.txt; then
+            echo "FAIL: docker info failed"
+            cat /tmp/vm_step1_docker_info.txt || true
+            journalctl -u docker -n 40 --no-pager || true
+            exit 1
+          fi
+          echo "CONFIRMED: docker info ok"
+          if ! sudo docker run --rm hello-world; then
+            echo "FAIL: docker run hello-world failed"
+            journalctl -u docker -n 40 --no-pager || true
+            exit 1
+          fi
+          echo hello-world > /tmp/vm_step1_docker_ok.txt
+          echo "CONFIRMED: guest docker run hello-world succeeded"
+
           echo "--- Checking guest identity in /etc ---"
           echo "Guest Machine ID: $(cat /etc/machine-id)"
           if [ -z "$(cat /etc/machine-id 2>/dev/null)" ]; then
@@ -213,6 +257,17 @@ jobs:
             exit 1
           fi
           echo "CONFIRMED: t9-daemon-test still active in Step 2"
+
+          if [ ! -f /tmp/vm_step1_docker_ok.txt ]; then
+            echo "FAIL: docker marker missing in Step 2"
+            exit 1
+          fi
+          if ! sudo docker info >/dev/null; then
+            echo "FAIL: docker did not persist into Step 2"
+            systemctl status docker.service --no-pager || true
+            exit 1
+          fi
+          echo "CONFIRMED: guest dockerd still running in Step 2"
 
           echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
           echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"

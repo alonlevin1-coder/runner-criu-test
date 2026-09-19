@@ -149,14 +149,6 @@ if [ -f "${CRIU_BIN}" ]; then
     done
 fi
 
-# Stub iptables so CRIU post-restore netfilter cleanup does not fail with status 127
-cat << 'IPT_EOF' > "${STAGING}/sbin/iptables"
-#!/bin/sh
-exit 0
-IPT_EOF
-chmod 755 "${STAGING}/sbin/iptables"
-ln -sf /sbin/iptables "${STAGING}/usr/sbin/iptables" 2>/dev/null || true
-
 # Dropbear for two-stage SSH (host helper runs criu restore after boot).
 echo "[4b/7] Packaging dropbear..."
 if ! command -v dropbear >/dev/null 2>&1 && [ -z "${DROPBEAR_BIN:-}" ]; then
@@ -392,6 +384,11 @@ else
     echo "runner:x:1001:" >> "${STAGING}/etc/group"
 fi
 grep -E "^$(whoami):" /etc/group >> "${STAGING}/etc/group" 2>/dev/null || true
+if grep -E "^docker:" /etc/group >> "${STAGING}/etc/group" 2>/dev/null; then
+    :
+else
+    echo "docker:x:988:" >> "${STAGING}/etc/group"
+fi
 
 cat << 'EOF' > "${STAGING}/etc/hosts"
 127.0.0.1   localhost qemu-restore-vm
@@ -493,8 +490,11 @@ progress() {
 # Set max pid limit
 echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 
-# Load diagnostic kernel modules
-for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables; do
+# Load diagnostic kernel modules, then iptables-nat/bridge for guest dockerd.
+for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables \
+           x_tables nft_compat nft_chain_nat nft_nat nft_masq nft_ct nft_limit \
+           ip_tables iptable_filter iptable_mangle nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
+           iptable_nat xt_nat xt_MASQUERADE xt_addrtype xt_conntrack llc stp bridge br_netfilter; do
 
     if [ -f "/modules/${mod}.ko" ]; then
         if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
@@ -715,6 +715,30 @@ if [ -d /newroot/run/var-snap-local ]; then
     /bin/busybox mount --bind /newroot/run/var-snap-local /newroot/var/snap 2>/dev/null || true
 fi
 
+# Empty docker/containerd graphs on tmpfs (overlay/9p /var has no user xattrs).
+/bin/busybox mkdir -p /newroot/var/lib/docker /newroot/var/lib/containerd /newroot/etc/docker
+/bin/busybox mount -t tmpfs -o mode=0755 docker /newroot/var/lib/docker \
+    && echo "[GUEST] [OK] tmpfs /var/lib/docker" || true
+/bin/busybox mount -t tmpfs -o mode=0755 containerd /newroot/var/lib/containerd \
+    && echo "[GUEST] [OK] tmpfs /var/lib/containerd" || true
+cat << 'DOCKEREOF' > /newroot/etc/docker/daemon.json
+{
+  "storage-driver": "overlay2",
+  "live-restore": false,
+  "iptables": true,
+  "ip6tables": false
+}
+DOCKEREOF
+if [ -x /newroot/usr/sbin/iptables-legacy ]; then
+    /bin/busybox ln -sfn iptables-legacy /newroot/usr/sbin/iptables
+    /bin/busybox ln -sfn iptables-legacy /newroot/usr/bin/iptables
+    echo "[GUEST] [OK] iptables -> iptables-legacy"
+fi
+if [ -x /newroot/usr/sbin/ip6tables-legacy ]; then
+    /bin/busybox ln -sfn ip6tables-legacy /newroot/usr/sbin/ip6tables
+fi
+echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+
 # Guest identity — never imported from host /etc
 cat << 'FSTABEOF' > /newroot/etc/fstab
 # /etc/fstab: MicroVM guest filesystem table (rootfs mounted by initramfs)
@@ -728,7 +752,8 @@ rm -f /newroot/etc/ssh/ssh_host_* 2>/dev/null || true
 /bin/busybox rm -rf /newroot/etc/systemd/system/timers.target.wants 2>/dev/null || true
 /bin/busybox rm -rf /newroot/etc/systemd/system/sockets.target.wants 2>/dev/null || true
 # Initramfs /etc may still carry host snapd mask links; snap state is copied when under cap.
-for svc in snapd.service snapd.socket snapd.seeded.service; do
+for svc in snapd.service snapd.socket snapd.seeded.service \
+           docker.service docker.socket containerd.service; do
     /bin/busybox rm -f "/newroot/etc/systemd/system/${svc}"
 done
 
@@ -981,6 +1006,7 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
         fi
     done
     /bin/busybox sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/sh|' /etc/passwd 2>/dev/null || true
+    /bin/busybox grep -q '^docker:' /etc/group 2>/dev/null || echo 'docker:x:988:' >> /etc/group
     /bin/busybox umount /mnt/host_etc 2>/dev/null || true
 fi
 echo "apt_seed_done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
