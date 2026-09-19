@@ -28,7 +28,9 @@ unit_skip() {
             return 0 ;;
         apparmor.service|snapd.apparmor.service)
             return 0 ;;
-        actions.runner*|gha-*|runner-provisioner*)
+        hosted-compute-agent.service|actions.runner*|gha-*|runner-provisioner*)
+            return 0 ;;
+        multipathd.service|multipathd.socket)
             return 0 ;;
         getty@*|serial-getty@*|console-getty.service|autovt@*|plymouth*)
             return 0 ;;
@@ -42,6 +44,39 @@ unit_skip() {
             return 0 ;;
         *)
             return 1 ;;
+    esac
+}
+
+guest_covers() {
+    local u="$1" guest_list="$2"
+    grep -qxF "${u}" "${guest_list}" && return 0
+    case "${u}" in
+        syslog.socket)
+            grep -qxF systemd-journald-dev-log.socket "${guest_list}" && return 0
+            grep -qxF rsyslog.service "${guest_list}" && return 0
+            ;;
+    esac
+    return 1
+}
+
+prep_unit() {
+    case "$1" in
+        chrony.service)
+            mkdir -p /var/lib/chrony /var/log/chrony /run/chrony
+            if getent passwd _chrony >/dev/null 2>&1; then
+                chown -R _chrony:_chrony /var/lib/chrony /var/log/chrony /run/chrony 2>/dev/null || true
+            fi
+            ;;
+        php8.1-fpm.service|php*-fpm.service)
+            mkdir -p /run/php /var/log
+            ;;
+        rsyslog.service|syslog.socket)
+            mkdir -p /var/log /run/systemd/journal
+            touch /var/log/syslog 2>/dev/null || true
+            ;;
+        mono-xsp4.service)
+            mkdir -p /var/run /run
+            ;;
     esac
 }
 
@@ -81,6 +116,7 @@ case "${cmd}" in
         started=0
         skipped=0
         failed=0
+        systemctl daemon-reload >/dev/null 2>&1 || true
         while IFS= read -r unit; do
             [ -n "${unit}" ] || continue
             if unit_skip "${unit}"; then
@@ -88,6 +124,7 @@ case "${cmd}" in
                 skipped=$((skipped + 1))
                 continue
             fi
+            prep_unit "${unit}"
             systemctl unmask "${unit}" >/dev/null 2>&1 || true
             systemctl reset-failed "${unit}" >/dev/null 2>&1 || true
             if timeout 20 systemctl start "${unit}" >>"${log}" 2>&1; then
@@ -116,7 +153,7 @@ case "${cmd}" in
         while IFS= read -r unit; do
             [ -n "${unit}" ] || continue
             unit_skip "${unit}" && continue
-            if ! grep -qxF "${unit}" "${guest_list}"; then
+            if ! guest_covers "${unit}" "${guest_list}"; then
                 echo "${unit}" >> "${miss}"
             fi
         done < <(normalize_list < "${host_list}")

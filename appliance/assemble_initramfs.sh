@@ -1026,6 +1026,32 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
     done
     /bin/busybox sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/sh|' /etc/passwd 2>/dev/null || true
     /bin/busybox grep -q '^docker:' /etc/group 2>/dev/null || echo 'docker:x:988:' >> /etc/group
+    # Guest /etc is private; copy daemon configs/units (not fstab/hostname/network).
+    for rel in chrony.conf chrony php rsyslog.conf rsyslog.d logrotate.conf logrotate.d \
+               mono xsp security/limits.conf security/limits.d; do
+        if [ -e "/mnt/host_etc/${rel}" ]; then
+            parent="$(/bin/busybox dirname "${rel}")"
+            [ "${parent}" = "." ] || /bin/busybox mkdir -p "/etc/${parent}"
+            /bin/busybox cp -a "/mnt/host_etc/${rel}" "/etc/${rel}" \
+                && echo "[GUEST] [OK] copied /etc/${rel}" || true
+        fi
+    done
+    /bin/busybox mkdir -p /etc/default /etc/systemd/system
+    for f in /mnt/host_etc/default/*; do
+        [ -e "${f}" ] || continue
+        /bin/busybox cp -a "${f}" /etc/default/ || true
+    done
+    for f in /mnt/host_etc/systemd/system/*; do
+        [ -e "${f}" ] || continue
+        base="$(/bin/busybox basename "${f}")"
+        case "${base}" in
+            ssh.service|ssh.socket|sshd.service|walinuxagent.service|cloud-*|azure*| \
+            unattended-upgrades.service|apt-daily*|systemd-udev-settle.service| \
+            systemd-networkd*|NetworkManager*|apparmor.service)
+                continue ;;
+        esac
+        /bin/busybox cp -a "${f}" "/etc/systemd/system/${base}" || true
+    done
     /bin/busybox umount /mnt/host_etc 2>/dev/null || true
 fi
 echo "apt_seed_done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
