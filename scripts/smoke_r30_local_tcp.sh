@@ -176,14 +176,11 @@ boot_qemu_and_restore() {
         -netdev "user,id=net1,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" -device virtio-net-pci,netdev=net1 \
         -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none" \
         -virtfs "local,path=${WORK_DIR},mount_tag=workdir,security_model=none" \
-        -virtfs "local,path=${runner_home},mount_tag=host_runner,security_model=none" \
-        -virtfs "local,path=/tmp,mount_tag=host_tmp,security_model=none" \
-        -virtfs "local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none" \
-        -virtfs "local,path=${dotnet_dir},mount_tag=dotnet,security_model=none" \
-        -virtfs "local,path=/usr,mount_tag=host_usr,security_model=none" \
-        -virtfs "local,path=/bin,mount_tag=host_bin,security_model=none" \
-        -virtfs "local,path=/lib,mount_tag=host_lib,security_model=none" \
-        -virtfs "local,path=/lib64,mount_tag=host_lib64,security_model=none" \
+        -virtfs "local,path=${runner_home},mount_tag=host_runner,security_model=none,readonly=on" \
+        -virtfs "local,path=/usr,mount_tag=host_usr,security_model=none,readonly=on" \
+        -virtfs "local,path=/bin,mount_tag=host_bin,security_model=none,readonly=on" \
+        -virtfs "local,path=/lib,mount_tag=host_lib,security_model=none,readonly=on" \
+        -virtfs "local,path=/lib64,mount_tag=host_lib64,security_model=none,readonly=on" \
         -serial "file:${SERIAL_LOG}" &
     QEMU_PID=$!
     local ssh=(ssh -i "${SSH_KEY}" -p "${SSH_PORT}" -o StrictHostKeyChecking=no \

@@ -320,8 +320,6 @@ run_criu_dump() {
 boot_qemu() {
     local runner_home="/home/runner"
     [ -d "${runner_home}" ] || runner_home="${HOME}"
-    local dotnet_dir="/usr/share/dotnet"
-    [ -d "${dotnet_dir}" ] || dotnet_dir="/tmp"
     if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
         ACCEL_ARGS="-enable-kvm -cpu host"
     else
@@ -337,10 +335,7 @@ boot_qemu() {
     send_ntfy "is_vm Booting QEMU" "run=${GITHUB_RUN_ID:-0} accel=${ACCEL_ARGS} net_mode=${NET_MODE} ssh_port=${SSH_PORT}"
 
     VIRTFS_ARGS=(
-        -virtfs "local,path=${runner_home},mount_tag=host_runner,security_model=none,id=host_runner"
-        -virtfs "local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp"
-        -virtfs "local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib"
-        -virtfs "local,path=${dotnet_dir},mount_tag=dotnet,security_model=none,id=dotnet"
+        -virtfs "local,path=${runner_home},mount_tag=host_runner,security_model=none,readonly=on,id=host_runner"
         -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
     )
     local spec tag path

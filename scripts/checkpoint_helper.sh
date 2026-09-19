@@ -236,10 +236,7 @@ chmod 666 "${SERIAL_LOG}"
 QEMU_DEBUG_LOG="${CHECKPOINT_DIR}/qemu.log"
 
 VIRTFS_ARGS=(
-    -virtfs "local,path=${RUNNER_HOME},mount_tag=host_runner,security_model=none,id=host_runner"
-    -virtfs "local,path=/tmp,mount_tag=host_tmp,security_model=none,id=host_tmp"
-    -virtfs "local,path=/usr/lib/x86_64-linux-gnu,mount_tag=usrlib,security_model=none,id=usrlib"
-    -virtfs "local,path=${DOTNET_DIR},mount_tag=dotnet,security_model=none,id=dotnet"
+    -virtfs "local,path=${RUNNER_HOME},mount_tag=host_runner,security_model=none,readonly=on,id=host_runner"
     -virtfs "local,path=${CHECKPOINT_DIR},mount_tag=checkpoint,security_model=none,id=checkpoint"
 )
 for spec in "host_usr:/usr" "host_bin:/bin" "host_lib:/lib" "host_lib64:/lib64" "host_opt:/opt" "host_etc:/etc"; do

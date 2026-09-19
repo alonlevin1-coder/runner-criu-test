@@ -72,6 +72,21 @@ jobs:
           fi
           echo "CONFIRMED: /var is overlay (guest-private upper)"
           echo "var_overlay_ok" > /var/tmp/t9_var_overlay_test.txt
+
+          echo "--- Guest /home/runner overlay (no live rw 9p) ---"
+          if ! mount | grep -E "on /home/runner type overlay"; then
+            echo "FAIL: /home/runner must be an overlay (9p ro lower + guest tmpfs upper)!"
+            mount | grep " /home/runner " || mount
+            exit 1
+          fi
+          if mount | grep -E "on /home/runner type 9p"; then
+            echo "FAIL: /home/runner must not be a live host 9p mount!"
+            mount | grep " /home/runner "
+            exit 1
+          fi
+          echo "CONFIRMED: /home/runner is overlay (guest-private upper)"
+          echo "home_overlay_ok" > "${GITHUB_WORKSPACE}/t9_home_overlay_test.txt"
+          echo "T9_HOME_ISOLATION=ok" >> "${GITHUB_ENV}"
           if [ ! -s /var/lib/dpkg/status ]; then
             echo "FAIL: /var/lib/dpkg/status missing; apt/dpkg state was not copied"
             ls -la /var/lib 2>/dev/null || true
@@ -253,6 +268,17 @@ jobs:
             exit 1
           fi
           echo "CONFIRMED: /var overlay write persisted: $(cat /var/tmp/t9_var_overlay_test.txt)"
+
+          if [ ! -f "${GITHUB_WORKSPACE}/t9_home_overlay_test.txt" ]; then
+            echo "FAIL: workspace home-overlay marker missing in Step 2"
+            exit 1
+          fi
+          echo "CONFIRMED: /home/runner overlay write persisted: $(cat "${GITHUB_WORKSPACE}/t9_home_overlay_test.txt")"
+          if [ "${T9_HOME_ISOLATION:-}" != "ok" ]; then
+            echo "FAIL: GITHUB_ENV T9_HOME_ISOLATION not propagated (got '${T9_HOME_ISOLATION:-}')"
+            exit 1
+          fi
+          echo "CONFIRMED: GITHUB_ENV survived overlay /home/runner"
 
           if [ ! -f /tmp/vm_step1_apt_ok.txt ]; then
             echo "FAIL: apt install marker missing in Step 2"

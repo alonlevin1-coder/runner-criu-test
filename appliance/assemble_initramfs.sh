@@ -627,14 +627,14 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
         || echo "[GUEST] [FAIL] overlayfs on /newroot/opt failed!"
 fi
 
+/bin/busybox mkdir -p /newroot/.overlay/lower_home /newroot/.overlay/home_upper /newroot/.overlay/home_work
 /bin/busybox mkdir -p /newroot/home/runner
-/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose host_runner /newroot/home/runner 2>&1 \
-    && echo "[GUEST] [OK] Mounted host_runner share" \
+/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose,ro host_runner /newroot/.overlay/lower_home 2>&1 \
+    && echo "[GUEST] [OK] Mounted host_runner (ro) at /newroot/.overlay/lower_home" \
     || echo "[GUEST] [FAIL] host_runner mount failed!"
-
-if [ -d /newroot/usr/share/dotnet ]; then
-    /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=loose dotnet /newroot/usr/share/dotnet 2>/dev/null || true
-fi
+/bin/busybox mount -t overlay overlay -o lowerdir=/newroot/.overlay/lower_home,upperdir=/newroot/.overlay/home_upper,workdir=/newroot/.overlay/home_work /newroot/home/runner 2>&1 \
+    && echo "[GUEST] [OK] Mounted overlayfs on /newroot/home/runner" \
+    || echo "[GUEST] [FAIL] overlayfs on /newroot/home/runner failed!"
 
 # Move checkpoint share from initramfs to newroot
 /bin/busybox mkdir -p /newroot/mnt/checkpoint
