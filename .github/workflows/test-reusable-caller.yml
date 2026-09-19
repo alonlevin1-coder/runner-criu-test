@@ -147,7 +147,10 @@ jobs:
             sudo update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null \
               || sudo ln -sfn /usr/sbin/iptables-legacy /usr/sbin/iptables
           fi
-          sudo mkdir -p /run /var/run
+          if [ ! -L /var/run ]; then
+            sudo rm -rf /var/run
+            sudo ln -s /run /var/run
+          fi
           sudo systemctl reset-failed containerd.service docker.socket docker.service 2>/dev/null || true
           sudo systemctl unmask containerd.service docker.socket docker.service 2>/dev/null || true
           if ! sudo systemctl start containerd.service docker.socket docker.service; then
@@ -158,8 +161,17 @@ jobs:
             iptables -t nat -S 2>/dev/null | head || true
             exit 1
           fi
-          if ! sudo docker info >/tmp/vm_step1_docker_info.txt; then
+          docker_info_ok=0
+          for _i in 1 2 3 4 5 6 7 8 9 10; do
+            if sudo docker info >/tmp/vm_step1_docker_info.txt 2>&1; then
+              docker_info_ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "${docker_info_ok}" != 1 ]; then
             echo "FAIL: docker info failed"
+            ls -l /run/docker.sock /var/run/docker.sock /run /var/run 2>/dev/null || true
             cat /tmp/vm_step1_docker_info.txt || true
             journalctl -u docker -n 40 --no-pager || true
             exit 1

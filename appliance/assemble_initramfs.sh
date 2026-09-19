@@ -738,6 +738,10 @@ if [ -x /newroot/usr/sbin/ip6tables-legacy ]; then
     /bin/busybox ln -sfn ip6tables-legacy /newroot/usr/sbin/ip6tables
 fi
 echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+# Host /var overlay often materializes /var/run as a directory; dockerd listens on /run.
+/bin/busybox rm -rf /newroot/var/run /newroot/var/lock
+/bin/busybox ln -s /run /newroot/var/run
+/bin/busybox ln -s /run/lock /newroot/var/lock
 
 # Guest identity — never imported from host /etc
 cat << 'FSTABEOF' > /newroot/etc/fstab
