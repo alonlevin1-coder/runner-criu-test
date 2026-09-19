@@ -62,10 +62,27 @@ guest_covers() {
 prep_unit() {
     case "$1" in
         chrony.service)
-            mkdir -p /var/lib/chrony /var/log/chrony /run/chrony
-            if getent passwd _chrony >/dev/null 2>&1; then
-                chown -R _chrony:_chrony /var/lib/chrony /var/log/chrony /run/chrony 2>/dev/null || true
+            mkdir -p /var/lib/chrony /var/log/chrony /run/chrony /etc/chrony
+            if [ ! -s /etc/chrony/chrony.conf ]; then
+                cat > /etc/chrony/chrony.conf << 'EOF'
+driftfile /var/lib/chrony/chrony.drift
+makestep 1.0 3
+rtcsync
+leapsectz right/UTC
+logdir /var/log/chrony
+EOF
             fi
+            mkdir -p /etc/systemd/system/chrony.service.d
+            cat > /etc/systemd/system/chrony.service.d/t9-guest.conf << 'EOF'
+[Service]
+ProtectClock=no
+PrivateDevices=no
+RestrictRealtime=no
+EOF
+            if getent passwd _chrony >/dev/null 2>&1; then
+                chown -R _chrony:_chrony /var/lib/chrony /var/log/chrony /run/chrony /etc/chrony 2>/dev/null || true
+            fi
+            systemctl daemon-reload >/dev/null 2>&1 || true
             ;;
         php8.1-fpm.service|php*-fpm.service)
             mkdir -p /run/php /var/log
@@ -132,6 +149,8 @@ case "${cmd}" in
                 started=$((started + 1))
             else
                 echo "start FAIL ${unit} active=$(systemctl is-active "${unit}" 2>/dev/null || true)" | tee -a "${log}"
+                systemctl status "${unit}" --no-pager -l >>"${log}" 2>&1 || true
+                journalctl -u "${unit}" -n 25 --no-pager >>"${log}" 2>&1 || true
                 failed=$((failed + 1))
             fi
         done < <(normalize_list < "${list}")
