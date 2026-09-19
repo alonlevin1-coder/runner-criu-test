@@ -1028,7 +1028,7 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
     /bin/busybox grep -q '^docker:' /etc/group 2>/dev/null || echo 'docker:x:988:' >> /etc/group
     # Guest /etc is private; copy daemon configs/units (not fstab/hostname/network).
     for rel in chrony.conf chrony php rsyslog.conf rsyslog.d logrotate.conf logrotate.d \
-               mono xsp security/limits.conf security/limits.d init.d insserv.conf insserv.conf.d; do
+               mono xsp xsp4 security/limits.conf security/limits.d init.d insserv.conf insserv.conf.d; do
         if [ -e "/mnt/host_etc/${rel}" ]; then
             parent="$(/bin/busybox dirname "${rel}")"
             [ "${parent}" = "." ] || /bin/busybox mkdir -p "/etc/${parent}"

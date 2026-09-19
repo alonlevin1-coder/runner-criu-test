@@ -49,11 +49,12 @@ unit_skip() {
 
 guest_covers() {
     local u="$1" guest_list="$2"
+    systemctl is-active --quiet "${u}" 2>/dev/null && return 0
     grep -qxF "${u}" "${guest_list}" && return 0
     case "${u}" in
         syslog.socket)
             grep -qxF systemd-journald-dev-log.socket "${guest_list}" && return 0
-            grep -qxF rsyslog.service "${guest_list}" && return 0
+            systemctl is-active --quiet rsyslog.service 2>/dev/null && return 0
             ;;
     esac
     return 1
@@ -63,6 +64,7 @@ prep_unit() {
     case "$1" in
         chrony.service)
             mkdir -p /var/lib/chrony /var/log/chrony /run/chrony /etc/chrony
+            chmod 750 /run/chrony 2>/dev/null || true
             if [ ! -s /etc/chrony/chrony.conf ]; then
                 cat > /etc/chrony/chrony.conf << 'EOF'
 driftfile /var/lib/chrony/chrony.drift
@@ -72,6 +74,9 @@ leapsectz right/UTC
 logdir /var/log/chrony
 EOF
             fi
+            # Host Azure PHC is not in QEMU; keep NTP but drop Hyper-V PTP.
+            sed -i -E '/refclock[[:space:]]+PHC/d;/ptp_hyperv/d' /etc/chrony/chrony.conf \
+                /etc/chrony/conf.d/* /etc/chrony/sources.d/* /etc/default/chrony 2>/dev/null || true
             mkdir -p /etc/systemd/system/chrony.service.d
             cat > /etc/systemd/system/chrony.service.d/t9-guest.conf << 'EOF'
 [Service]
@@ -84,15 +89,15 @@ EOF
             fi
             systemctl daemon-reload >/dev/null 2>&1 || true
             ;;
+        mono-xsp4.service)
+            mkdir -p /var/run /run /etc/xsp4
+            ;;
         php8.1-fpm.service|php*-fpm.service)
             mkdir -p /run/php /var/log
             ;;
         rsyslog.service|syslog.socket)
             mkdir -p /var/log /run/systemd/journal
             touch /var/log/syslog 2>/dev/null || true
-            ;;
-        mono-xsp4.service)
-            mkdir -p /var/run /run
             ;;
     esac
 }
