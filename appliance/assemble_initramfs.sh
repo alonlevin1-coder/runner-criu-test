@@ -498,8 +498,8 @@ echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null || true
 # Load diagnostic kernel modules, then iptables-nat/bridge for guest dockerd.
 for mod in inet_diag tcp_diag unix_diag af_packet_diag netlink_diag veth nfnetlink nf_tables \
            x_tables nft_compat nft_chain_nat nft_nat nft_masq nft_ct nft_limit \
-           ip_tables iptable_filter iptable_mangle nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
-           iptable_nat xt_nat xt_MASQUERADE xt_addrtype xt_conntrack llc stp bridge br_netfilter; do
+           ip_tables iptable_filter iptable_mangle iptable_raw nf_defrag_ipv4 nf_defrag_ipv6 nf_conntrack nf_nat \
+           iptable_nat xt_tcpudp xt_nat xt_MASQUERADE xt_addrtype xt_conntrack llc stp bridge br_netfilter; do
 
     if [ -f "/modules/${mod}.ko" ]; then
         if /bin/busybox insmod "/modules/${mod}.ko" 2>&1; then
