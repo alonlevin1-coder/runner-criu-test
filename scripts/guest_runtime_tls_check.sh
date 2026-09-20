@@ -29,7 +29,6 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "GIT_SSL_CAINFO=${BUNDLE}"
     echo "NODE_EXTRA_CA_CERTS=${LEAF}"
     echo "PIP_CERT=${BUNDLE}"
-    echo "NODE_OPTIONS=--use-openssl-ca"
   } >> "${GITHUB_ENV}"
 fi
 fail() { echo "FAIL: $*"; exit 1; }
