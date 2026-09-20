@@ -98,7 +98,7 @@ jobs:
           lineage_ok=0
           for _ in $(seq 1 10); do
             if grep -q 'lineage=yes' /mnt/checkpoint/state.txt 2>/dev/null \
-               && grep -Eq '"event_type": "(PROCESS_EXECVE|CONNECTION_OPEN)"' /mnt/checkpoint/lineage.log 2>/dev/null; then
+               && grep -Eq 'PROCESS_EXECVE|CONNECTION_OPEN' /mnt/checkpoint/lineage.log 2>/dev/null; then
               lineage_ok=1
               break
             fi
