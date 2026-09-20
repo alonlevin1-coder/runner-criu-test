@@ -1,0 +1,113 @@
+name: Test Lineage Step Attribution
+
+# Focused exercise of HTTP x PID x step attribution. No overlay/docker asserts.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/test-lineage-attribution.yml'
+
+jobs:
+  lineage-attribution:
+    name: Nested runtime HTTP under MicroVM
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Resolve MicroVM Action
+        shell: bash
+        run: |
+          mkdir -p .github/actions/microvm
+          cp -a action.yml scripts appliance bin visibility .github/actions/microvm/ 2>/dev/null || true
+
+      - name: Migrate Runner to MicroVM
+        uses: ./.github/actions/microvm
+        with:
+          tcp-mode: established
+          memory-mb: '4096'
+          smp: '2'
+
+      - name: Python subprocess curl
+        run: |
+          bash "${GITHUB_WORKSPACE}/scripts/t9_mark_step.sh" "Python subprocess curl"
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source /etc/profile.d/t9-proxy-ca.sh 2>/dev/null || true
+          export SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}"
+          export CURL_CA_BUNDLE="${SSL_CERT_FILE}"
+          python3 -c 'import subprocess,sys; r=subprocess.run(["curl","-sS","-o","/tmp/t9_attr_py_curl","-w","%{http_code}","https://example.com/?via=python-subprocess-curl"],check=True,capture_output=True,text=True); print("python->curl", r.stdout.strip()); sys.exit(0 if r.stdout.strip()=="200" else 1)'
+
+      - name: Node spawn python urllib
+        run: |
+          bash "${GITHUB_WORKSPACE}/scripts/t9_mark_step.sh" "Node spawn python urllib"
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source /etc/profile.d/t9-proxy-ca.sh 2>/dev/null || true
+          export SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}"
+          export REQUESTS_CA_BUNDLE="${SSL_CERT_FILE}"
+          node -e '
+          const {spawnSync} = require("child_process");
+          const r = spawnSync("python3", ["-c", "import urllib.request; urllib.request.urlopen(\"https://example.com/?via=node-python-urllib\", timeout=30).read(64); print(\"python urllib ok\")"], {encoding:"utf8", env: process.env});
+          process.stdout.write(r.stdout || "");
+          process.stderr.write(r.stderr || "");
+          if (r.status !== 0) process.exit(r.status || 1);
+          '
+
+      - name: Ruby system curl
+        run: |
+          bash "${GITHUB_WORKSPACE}/scripts/t9_mark_step.sh" "Ruby system curl"
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source /etc/profile.d/t9-proxy-ca.sh 2>/dev/null || true
+          export SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}"
+          ruby -e 'ok = system("curl", "-sS", "-o", "/tmp/t9_attr_rb_curl", "https://example.com/?via=ruby-system-curl"); abort("ruby curl failed") unless ok'
+
+      - name: Nested bash scripts curl
+        run: |
+          bash "${GITHUB_WORKSPACE}/scripts/t9_mark_step.sh" "Nested bash scripts curl"
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source /etc/profile.d/t9-proxy-ca.sh 2>/dev/null || true
+          export SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}"
+          export CURL_CA_BUNDLE="${SSL_CERT_FILE}"
+          cat > /tmp/t9_attr_inner.sh <<'EOF'
+          #!/bin/sh
+          set -eu
+          curl -sS -o /tmp/t9_attr_sh_curl -w '%{http_code}' "https://example.com/?via=nested-sh-curl"
+          echo
+          EOF
+          chmod 755 /tmp/t9_attr_inner.sh
+          cat > /tmp/t9_attr_outer.sh <<'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          /tmp/t9_attr_inner.sh
+          EOF
+          chmod 755 /tmp/t9_attr_outer.sh
+          bash /tmp/t9_attr_outer.sh | tee /tmp/t9_attr_sh_code
+          grep -qx 200 /tmp/t9_attr_sh_code
+
+      - name: Publish lineage report
+        if: always()
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/scripts/t9_mark_step.sh" "Publish lineage report" || true
+          python3 "${GITHUB_WORKSPACE}/scripts/correlate_http_lineage.py" \
+            --http /mnt/checkpoint/http.log \
+            --lineage /mnt/checkpoint/lineage.log \
+            --steps /mnt/checkpoint/steps.jsonl \
+            --out /mnt/checkpoint/http_lineage.log
+          cp -a /mnt/checkpoint/http_lineage.json "${GITHUB_WORKSPACE}/http_lineage.json"
+          cp -a /mnt/checkpoint/http_lineage.html "${GITHUB_WORKSPACE}/http_lineage.html"
+          echo "steps.jsonl:"
+          cat /mnt/checkpoint/steps.jsonl 2>/dev/null || true
+
+      - name: Upload HTTP lineage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: http-lineage-attribution
+          path: |
+            http_lineage.json
+            http_lineage.html
+          if-no-files-found: ignore
