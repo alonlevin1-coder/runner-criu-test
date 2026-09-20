@@ -30,8 +30,9 @@ func (proxy *ProxyHttpServer) handleHttp(w http.ResponseWriter, r *http.Request)
 	}
 
 	var origBody io.ReadCloser
-
+	usedCL := false
 	if resp != nil {
+		usedCL = originUsedContentLength(resp)
 		origBody = resp.Body
 		defer origBody.Close()
 	}
@@ -52,15 +53,7 @@ func (proxy *ProxyHttpServer) handleHttp(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ctx.Logf("Copying response to client %v [%d]", resp.Status, resp.StatusCode)
-	// http.ResponseWriter will take care of filling the correct response length
-	// Setting it now, might impose wrong value, contradicting the actual new
-	// body the user returned.
-	// We keep the original body to remove the header only if things changed.
-	// This will prevent problems with HEAD requests where there's no body, yet,
-	// the Content-Length header should be set.
-	if origBody != resp.Body {
-		resp.Header.Del("Content-Length")
-	}
+	preserveOriginFraming(resp, usedCL, origBody != resp.Body)
 	copyHeaders(w.Header(), resp.Header, proxy.KeepDestinationHeaders)
 
 	// Announce trailers known at this point (HTTP/1.1 with pre-announced

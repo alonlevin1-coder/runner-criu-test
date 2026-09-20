@@ -516,24 +516,11 @@ func (proxy *ProxyHttpServer) handleHttps(w http.ResponseWriter, r *http.Request
 						}
 						ctx.Logf("resp %v", resp.Status)
 					}
+					origBody := resp.Body
+					usedCL := originUsedContentLength(resp)
 					resp = proxy.filterResponse(resp, ctx)
 					defer resp.Body.Close()
-					// Only chunk when the length is unknown. Replacing Body (logging,
-					// header inspection, or a handler rewrite) must not drop a known
-					// Content-Length: clients such as dockerd reject chunked registry blobs.
-					lengthUnknown := resp.ContentLength <= 0 && resp.Header.Get("Content-Length") == ""
-					if resp.Body != http.NoBody && lengthUnknown {
-						resp.ContentLength = -1
-						resp.Header.Del("Content-Length")
-						resp.TransferEncoding = []string{"chunked"}
-					} else if resp.ContentLength > 0 {
-						resp.Header.Set("Content-Length", fmt.Sprintf("%d", resp.ContentLength))
-						resp.Header.Del("Transfer-Encoding")
-						resp.TransferEncoding = nil
-					} else if cl := resp.Header.Get("Content-Length"); cl != "" {
-						resp.Header.Del("Transfer-Encoding")
-						resp.TransferEncoding = nil
-					}
+					preserveOriginFraming(resp, usedCL, origBody != resp.Body)
 
 					// The MITM'd client speaks HTTP/1.1, but the upstream
 					// response may have been received over HTTP/2. Normalize
