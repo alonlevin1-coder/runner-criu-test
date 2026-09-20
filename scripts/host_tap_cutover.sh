@@ -73,6 +73,13 @@ prepare_tap() {
         exit 1
     fi
     log "host L7 proxy ready"
+    chmod +x "${SCRIPT_DIR}/host_tap_https_intercept.sh"
+    log "installing TAP :443 intercept to host proxy"
+    if ! "${SCRIPT_DIR}/host_tap_https_intercept.sh" "${CHECKPOINT_DIR}"; then
+        log "ERROR: host_tap_https_intercept.sh failed"
+        exit 1
+    fi
+    log "TAP :443 intercept ready"
 }
 
 steal_tcp() {

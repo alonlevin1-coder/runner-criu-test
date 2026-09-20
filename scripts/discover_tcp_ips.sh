@@ -64,9 +64,11 @@ parse_ss_sport() {
 
 declare -A seen=()
 declare -A seen_sports=()
+declare -A seen_peer443=()
 while read -r line; do
     [ -n "${line}" ] || continue
     local_ip_port="$(awk '{print $4}' <<< "${line}")"
+    peer_ip_port="$(awk '{print $5}' <<< "${line}")"
     [ -n "${local_ip_port}" ] || continue
     local_ip="$(parse_ss_local_ip "${line}" "${local_ip_port}" || true)"
     [ -n "${local_ip}" ] || continue
@@ -76,6 +78,16 @@ while read -r line; do
     seen["${local_ip}"]=1
     sport="$(parse_ss_sport "${local_ip_port}")"
     [ -n "${sport}" ] && seen_sports["${sport}"]=1
+    if [ -n "${peer_ip_port}" ]; then
+        peer_ip="$(parse_ss_local_ip "${line}" "${peer_ip_port}" || true)"
+        peer_port="$(parse_ss_sport "${peer_ip_port}")"
+        if [ -n "${peer_ip}" ] && [ "${peer_port}" = "443" ]; then
+            case "${peer_ip}" in
+                0.0.0.0|127.0.0.1) ;;
+                *) seen_peer443["${peer_ip}"]=1 ;;
+            esac
+        fi
+    fi
 done < "${OUT_SS}"
 
 for ip in "${!seen[@]}"; do
@@ -118,6 +130,8 @@ esac
 
 WORKER_SPORTS="${!seen_sports[*]}"
 PRIMARY_SPORT="$(head -n1 <<< "${WORKER_SPORTS// /$'\n'}")"
+PROXY_EXEMPT_DSTS="${!seen_peer443[*]}"
+echo "${PROXY_EXEMPT_DSTS}" | tr ' ' '\n' | grep -E '^[0-9.]+$' | sort -u > "${CHECKPOINT_DIR}/proxy_exempt_dsts.txt" || true
 
 cat > "${OUT_SPEC}" <<EOF
 LOCAL_IP=${LOCAL_IP}
@@ -133,6 +147,7 @@ TAP_PREFIX=${TAP_PREFIX}
 TAP_NETMASK=${TAP_NETMASK}
 WORKER_SPORTS="${WORKER_SPORTS}"
 WORKER_SPORT=${PRIMARY_SPORT}
+PROXY_EXEMPT_DSTS="${PROXY_EXEMPT_DSTS}"
 EOF
 chmod a+rw "${OUT_IPS}" "${OUT_SS}" "${OUT_SPEC}" 2>/dev/null || true
 

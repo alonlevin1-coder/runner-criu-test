@@ -1056,6 +1056,30 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
 fi
 echo "apt_seed_done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 
+echo "[GUEST] Installing host proxy CA into guest trust store"
+if [ -f /mnt/checkpoint/proxy-ca-cert.pem ]; then
+    /bin/busybox mkdir -p /usr/local/share/ca-certificates /etc/ssl/certs
+    /bin/busybox cp -a /mnt/checkpoint/proxy-ca-cert.pem /usr/local/share/ca-certificates/t9-proxy-ca.crt
+    /bin/busybox cp -a /mnt/checkpoint/proxy-ca-cert.pem /etc/ssl/certs/t9-proxy-ca.pem
+    if [ -x /usr/sbin/update-ca-certificates ]; then
+        /usr/sbin/update-ca-certificates >> /mnt/checkpoint/guest_ca.log 2>&1             && echo "[GUEST] update-ca-certificates ok"             || echo "[GUEST] WARN update-ca-certificates failed"
+    else
+        /bin/busybox cat /mnt/checkpoint/proxy-ca-cert.pem >> /etc/ssl/certs/ca-certificates.crt
+        echo "[GUEST] appended proxy CA to ca-certificates.crt"
+    fi
+    {
+        echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+        echo "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+        echo "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+        echo "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt"
+        echo "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/t9-proxy-ca.crt"
+    } >> /etc/environment
+    echo "proxy_ca_installed" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+else
+    echo "[GUEST] WARN proxy-ca-cert.pem missing; HTTPS intercept will fail TLS"
+    echo "proxy_ca_missing" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+fi
+
 TCP_FLAG="--tcp-close"
 if [ -f /mnt/checkpoint/criu_tcp_mode.txt ]; then
     case "$(/bin/busybox cat /mnt/checkpoint/criu_tcp_mode.txt)" in
