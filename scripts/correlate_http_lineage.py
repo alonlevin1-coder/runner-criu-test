@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -155,6 +156,35 @@ def correlate(http_rows: list[dict[str, Any]], lineage_rows: list[dict[str, Any]
     return out
 
 
+def sibling(*parts: str) -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+
+
+def write_report(recs: list[dict[str, Any]], jsonl_path: str) -> tuple[str, str]:
+    base, _ = os.path.splitext(jsonl_path)
+    json_path = base + ".json"
+    html_path = base + ".html"
+    doc = {
+        "event_type": "HTTP_LINEAGE_REPORT",
+        "generated_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "total": len(recs),
+        "matched": sum(1 for r in recs if r.get("matched")),
+        "transactions": recs,
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(json_path)) or ".", exist_ok=True)
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+    template = sibling("..", "visibility", "lineage_viewer.html")
+    if os.path.isfile(template):
+        html = open(template, encoding="utf-8").read()
+        payload = json.dumps(doc, separators=(",", ":")).replace("<", "\\u003c")
+        html = html.replace("/*__EMBEDDED_JSON__*/[]", "/*__EMBEDDED_JSON__*/" + payload, 1)
+        with open(html_path, "w", encoding="utf-8") as fh:
+            fh.write(html)
+    return json_path, html_path
+
+
 def format_lineage(chain: list[dict[str, Any]]) -> str:
     parts = []
     for node in reversed(chain):
@@ -236,8 +266,12 @@ def main() -> int:
                 f"pid={rec.get('pid')} comm={rec.get('comm')} lineage={chain or '-'}",
                 flush=True,
             )
+    json_path, html_path = write_report(recs, args.out)
     matched = sum(1 for r in recs if r.get("matched"))
     print(f"correlated {matched}/{len(recs)} HTTP transactions -> {args.out}", flush=True)
+    print(f"json={json_path}", flush=True)
+    if os.path.isfile(html_path):
+        print(f"html={html_path}", flush=True)
     missing = []
     for needle in args.require_host:
         found = False

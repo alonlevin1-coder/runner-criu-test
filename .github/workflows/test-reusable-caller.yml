@@ -135,6 +135,10 @@ jobs:
             --require-host example.com \
             --require-host amazonaws
           echo "CONFIRMED: HTTP transactions joined to guest PID lineage in /mnt/checkpoint/http_lineage.log"
+          if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+            cp -a /mnt/checkpoint/http_lineage.json "${GITHUB_WORKSPACE}/http_lineage.json" 2>/dev/null || true
+            cp -a /mnt/checkpoint/http_lineage.html "${GITHUB_WORKSPACE}/http_lineage.html" 2>/dev/null || true
+          fi
 
           echo "--- Checking /usr overlay and private /etc ---"
           if ! mount | grep -E "on /usr type overlay"; then
@@ -419,4 +423,14 @@ jobs:
           done
           echo "Step 3 end time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "PASS: Successfully streamed 10 messages from inside MicroVM in Step 3!"
+
+      - name: Upload HTTP lineage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: http-lineage
+          path: |
+            http_lineage.json
+            http_lineage.html
+          if-no-files-found: ignore
 

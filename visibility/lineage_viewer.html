@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HTTP × process lineage</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f4f2;
+      --fg: #1b1b1b;
+      --muted: #5c5c5c;
+      --line: #d4d4d0;
+      --card: #fff;
+      --accent: #0b57d0;
+      --ok: #0f7b3a;
+      --warn: #a15c00;
+      --bad: #b3261e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121212;
+        --fg: #ececec;
+        --muted: #a3a3a3;
+        --line: #2c2c2c;
+        --card: #1c1c1c;
+        --accent: #8ab4f8;
+        --ok: #81c995;
+        --warn: #fdd663;
+        --bad: #f28b82;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.45 ui-sans-serif, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    header {
+      padding: 20px 24px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+    .sub { color: var(--muted); }
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      padding: 12px 24px;
+    }
+    input[type="search"], select {
+      font: inherit;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--fg);
+      border-radius: 4px;
+      min-width: 220px;
+    }
+    button, .file {
+      font: inherit;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--fg);
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+      gap: 0;
+      min-height: calc(100vh - 140px);
+    }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover, tbody tr.sel { background: var(--card); }
+    .status-ok { color: var(--ok); }
+    .status-warn { color: var(--warn); }
+    .status-bad { color: var(--bad); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    aside {
+      border-left: 1px solid var(--line);
+      padding: 16px 20px 32px;
+      background: var(--card);
+    }
+    .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 16px; }
+    .node {
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      min-width: 90px;
+    }
+    .node .comm { font-weight: 600; }
+    .node .pid { color: var(--muted); font-size: 12px; }
+    .arrow { color: var(--muted); }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--bg);
+      padding: 10px;
+      border: 1px solid var(--line);
+      font-size: 12px;
+    }
+    .list-wrap { overflow: auto; padding: 0 12px 24px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>HTTP × process lineage</h1>
+    <div class="sub" id="summary">Load a report JSON or open a generated html file.</div>
+  </header>
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Filter host, path, comm, pid" />
+    <select id="comm">
+      <option value="">All processes</option>
+    </select>
+    <label class="file">Open JSON<input id="file" type="file" accept="application/json,.json" hidden /></label>
+  </div>
+  <div class="layout">
+    <div class="list-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Request</th>
+            <th>Process</th>
+            <th>Client</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <aside id="detail">
+      <div class="sub">Select a request to see the PID chain.</div>
+    </aside>
+  </div>
+  <script type="application/json" id="embedded-data">/*__EMBEDDED_JSON__*/[]</script>
+  <script>
+    const rowsEl = document.getElementById("rows");
+    const detailEl = document.getElementById("detail");
+    const qEl = document.getElementById("q");
+    const commEl = document.getElementById("comm");
+    const summaryEl = document.getElementById("summary");
+    let data = [];
+    let selected = -1;
+
+    function parseEmbedded() {
+      const raw = document.getElementById("embedded-data").textContent
+        .replace("/*__EMBEDDED_JSON__*/", "").trim();
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : (parsed.transactions || []);
+      } catch {
+        return [];
+      }
+    }
+
+    function statusClass(s) {
+      const n = Number(s);
+      if (n >= 200 && n < 400) return "status-ok";
+      if (n >= 400 && n < 500) return "status-warn";
+      if (n >= 500) return "status-bad";
+      return "";
+    }
+
+    function chain(rec) {
+      const lin = rec.lineage || [];
+      return lin.slice().reverse();
+    }
+
+    function renderList() {
+      const q = qEl.value.trim().toLowerCase();
+      const comm = commEl.value;
+      rowsEl.innerHTML = "";
+      data.forEach((rec, i) => {
+        const blob = [
+          rec.method, rec.host, rec.path, rec.comm, rec.pid,
+          rec.client_addr, (rec.lineage || []).map(n => n.comm).join(" ")
+        ].join(" ").toLowerCase();
+        if (q && !blob.includes(q)) return;
+        if (comm && rec.comm !== comm) return;
+        const tr = document.createElement("tr");
+        if (i === selected) tr.className = "sel";
+        tr.innerHTML = `
+          <td class="${statusClass(rec.status)}">${rec.status ?? ""}</td>
+          <td><span class="mono">${esc(rec.method || "")}</span> ${esc(rec.host || "")}${esc(rec.path || "")}</td>
+          <td>${esc(rec.comm || "—")} <span class="mono">${rec.pid ?? ""}</span></td>
+          <td class="mono">${esc(rec.client_addr || "")}</td>`;
+        tr.addEventListener("click", () => { selected = i; renderList(); renderDetail(); });
+        rowsEl.appendChild(tr);
+      });
+    }
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[c]));
+    }
+
+    function renderDetail() {
+      const rec = data[selected];
+      if (!rec) {
+        detailEl.innerHTML = `<div class="sub">Select a request to see the PID chain.</div>`;
+        return;
+      }
+      const nodes = chain(rec).map(n => `
+        <div class="node">
+          <div class="comm">${esc(n.comm || "(unknown)")}</div>
+          <div class="pid">pid ${esc(n.pid)}</div>
+        </div>`).join(`<span class="arrow">→</span>`);
+      const cmd = ((rec.lineage || [])[0] || {}).cmdline || [];
+      detailEl.innerHTML = `
+        <div class="mono">${esc(rec.timestamp_utc || "")}</div>
+        <h2 style="font-size:16px;margin:8px 0;">${esc(rec.method)} ${esc(rec.host)}${esc(rec.path)}</h2>
+        <div class="sub">status ${esc(rec.status)} · matched ${esc(rec.matched)}</div>
+        <div class="chain">${nodes || "<div class='sub'>No PID chain</div>"}</div>
+        <div class="sub">Socket</div>
+        <p class="mono">${esc(rec.src_ip || "")}:${esc(rec.src_port || "")} → ${esc(rec.orig_dst_ip || rec.server_addr || "")}:${esc(rec.orig_dst_port || "")}</p>
+        <div class="sub">Command</div>
+        <pre>${esc((cmd || []).join(" ") || rec.comm || "")}</pre>
+        <div class="sub">Raw JSON</div>
+        <pre>${esc(JSON.stringify(rec, null, 2))}</pre>`;
+    }
+
+    function setData(next) {
+      data = Array.isArray(next) ? next : [];
+      const matched = data.filter(r => r.matched).length;
+      summaryEl.textContent = `${data.length} HTTP transactions · ${matched} joined to a guest PID`;
+      const comms = [...new Set(data.map(r => r.comm).filter(Boolean))].sort();
+      commEl.innerHTML = `<option value="">All processes</option>` +
+        comms.map(c => `<option>${esc(c)}</option>`).join("");
+      selected = data.length ? 0 : -1;
+      renderList();
+      renderDetail();
+    }
+
+    document.getElementById("file").addEventListener("change", ev => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const parsed = JSON.parse(reader.result);
+          setData(Array.isArray(parsed) ? parsed : (parsed.transactions || []));
+        } catch (err) {
+          summaryEl.textContent = "Could not parse JSON: " + err;
+        }
+      };
+      reader.readAsText(f);
+    });
+    qEl.addEventListener("input", renderList);
+    commEl.addEventListener("change", renderList);
+    setData(parseEmbedded());
+  </script>
+</body>
+</html>
