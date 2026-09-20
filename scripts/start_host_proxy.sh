@@ -17,6 +17,7 @@ HANDLER_HOST="127.0.0.1"
 HANDLER_PORT="${T9_PROXY_HANDLER_PORT:-8091}"
 HANDLER_LISTEN="${HANDLER_HOST}:${HANDLER_PORT}"
 BIN="${ACTION_DIR}/bin/proxy_core"
+INJECT_BIN="${ACTION_DIR}/bin/t9-ca-inject"
 LOG="${CHECKPOINT_DIR}/host_proxy.log"
 
 mkdir -p "${CHECKPOINT_DIR}" "${PROXY_STATE}" "$(dirname "${BIN}")" "${CA_DIR}" /tmp/t9-proxy
@@ -48,16 +49,29 @@ if ! ip -o addr show to "${TAP_HOST_IP}" 2>/dev/null | grep -q .; then
 fi
 
 ensure_binary() {
-    if [ -x "${BIN}" ]; then
+    if [ -x "${BIN}" ] && [ -x "${INJECT_BIN}" ]; then
         return 0
     fi
-    log "proxy_core missing; building via ensure_proxy_core.sh (fallback)"
+    log "proxy binaries missing; building via ensure_proxy_core.sh (fallback)"
     chmod +x "${SCRIPT_DIR}/ensure_proxy_core.sh"
     "${SCRIPT_DIR}/ensure_proxy_core.sh"
 }
 
+stage_guest_ca_artifacts() {
+    # Guest later needs the cert and installer. Never copy ca-key.pem onto checkpoint 9p.
+    if [ -f "${CA_DIR}/ca-cert.pem" ]; then
+        cp -a "${CA_DIR}/ca-cert.pem" "${CHECKPOINT_DIR}/proxy-ca-cert.pem"
+        chmod a+r "${CHECKPOINT_DIR}/proxy-ca-cert.pem" 2>/dev/null || true
+    fi
+    if [ -x "${INJECT_BIN}" ]; then
+        cp -a "${INJECT_BIN}" "${CHECKPOINT_DIR}/t9-ca-inject"
+        chmod 755 "${CHECKPOINT_DIR}/t9-ca-inject" 2>/dev/null || true
+    fi
+}
+
 if alive "${PROXY_STATE}/proxy.pid" && alive "${PROXY_STATE}/handler.pid"; then
     log "already running listen=$(cat "${PROXY_STATE}/listen.txt" 2>/dev/null || echo unknown)"
+    stage_guest_ca_artifacts
     exit 0
 fi
 
@@ -118,11 +132,8 @@ if [ "${ok}" -ne 1 ]; then
     exit 1
 fi
 
-# Guest later needs the cert only. Never copy ca-key.pem onto checkpoint 9p.
-if [ -f "${CA_DIR}/ca-cert.pem" ]; then
-    cp -a "${CA_DIR}/ca-cert.pem" "${CHECKPOINT_DIR}/proxy-ca-cert.pem"
-    chmod a+r "${CHECKPOINT_DIR}/proxy-ca-cert.pem" 2>/dev/null || true
-fi
+# Guest later needs the cert and t9-ca-inject. Never copy ca-key.pem onto checkpoint 9p.
+stage_guest_ca_artifacts
 
 echo "${LISTEN}" > "${PROXY_STATE}/listen.txt"
 echo "host_proxy=yes listen=${LISTEN} ca_dir=${CA_DIR}" >> "${CHECKPOINT_DIR}/state.txt"

@@ -1056,28 +1056,26 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
 fi
 echo "apt_seed_done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 
-echo "[GUEST] Installing host proxy CA into guest trust store"
-if [ -f /mnt/checkpoint/proxy-ca-cert.pem ]; then
-    /bin/busybox mkdir -p /usr/local/share/ca-certificates /etc/ssl/certs
-    /bin/busybox cp -a /mnt/checkpoint/proxy-ca-cert.pem /usr/local/share/ca-certificates/t9-proxy-ca.crt
-    /bin/busybox cp -a /mnt/checkpoint/proxy-ca-cert.pem /etc/ssl/certs/t9-proxy-ca.pem
-    if [ -x /usr/sbin/update-ca-certificates ]; then
-        /usr/sbin/update-ca-certificates >> /mnt/checkpoint/guest_ca.log 2>&1             && echo "[GUEST] update-ca-certificates ok"             || echo "[GUEST] WARN update-ca-certificates failed"
+echo "[GUEST] Installing host proxy CA via t9-ca-inject"
+if [ -f /mnt/checkpoint/proxy-ca-cert.pem ] && [ -f /mnt/checkpoint/t9-ca-inject ]; then
+    /bin/busybox mkdir -p /usr/local/sbin /etc/profile.d
+    /bin/busybox cp -a /mnt/checkpoint/t9-ca-inject /usr/local/sbin/t9-ca-inject
+    /bin/busybox chmod 755 /usr/local/sbin/t9-ca-inject
+    if /usr/local/sbin/t9-ca-inject \
+        --cert /mnt/checkpoint/proxy-ca-cert.pem \
+        --environment /etc/environment \
+        --profile /etc/profile.d/t9-proxy-ca.sh \
+        --log /mnt/checkpoint/guest_ca.log
+    then
+        echo "[GUEST] t9-ca-inject ok"
+        echo "proxy_ca_installed" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
     else
-        /bin/busybox cat /mnt/checkpoint/proxy-ca-cert.pem >> /etc/ssl/certs/ca-certificates.crt
-        echo "[GUEST] appended proxy CA to ca-certificates.crt"
+        echo "[GUEST] WARN t9-ca-inject failed"
+        echo "proxy_ca_inject_failed" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
     fi
-    {
-        echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
-        echo "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
-        echo "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
-        echo "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt"
-        echo "AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
-        echo "PIP_CERT=/etc/ssl/certs/ca-certificates.crt"
-        echo "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/t9-proxy-ca.crt"
-        echo "NODE_OPTIONS=--use-openssl-ca"
-    } >> /etc/environment
-    echo "proxy_ca_installed" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+elif [ -f /mnt/checkpoint/proxy-ca-cert.pem ]; then
+    echo "[GUEST] WARN t9-ca-inject binary missing; HTTPS intercept will fail for some runtimes"
+    echo "proxy_ca_inject_missing" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 else
     echo "[GUEST] WARN proxy-ca-cert.pem missing; HTTPS intercept will fail TLS"
     echo "proxy_ca_missing" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true

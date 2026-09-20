@@ -24,7 +24,7 @@ type distroTarget struct {
 var knownDistroTargets = map[string]distroTarget{
 	DistroDebian: {
 		family:      DistroDebian,
-		destPath:    "/usr/local/share/ca-certificates/proxy-ca.crt",
+		destPath:    GuestLeafCertPath,
 		commandName: "update-ca-certificates",
 		commandArgs: nil,
 	},
@@ -36,7 +36,7 @@ var knownDistroTargets = map[string]distroTarget{
 	},
 	DistroAlpine: {
 		family:      DistroAlpine,
-		destPath:    "/usr/local/share/ca-certificates/proxy-ca.crt",
+		destPath:    GuestLeafCertPath,
 		commandName: "update-ca-certificates",
 		commandArgs: nil,
 	},

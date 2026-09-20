@@ -72,6 +72,13 @@ jobs:
             exit 1
           fi
           echo "CONFIRMED: guest trusts proxy CA"
+          if [ ! -f /etc/profile.d/t9-proxy-ca.sh ] || ! grep -q '^AWS_CA_BUNDLE=' /etc/environment; then
+            echo "FAIL: t9-ca-inject did not write runtime CA env"
+            cat /mnt/checkpoint/guest_ca.log 2>/dev/null || true
+            cat /etc/environment 2>/dev/null | tail -n 20 || true
+            exit 1
+          fi
+          echo "CONFIRMED: t9-ca-inject wrote AWS_CA_BUNDLE and profile.d"
           CURL_CODE="$(curl -sS -o /tmp/t9_example_body -w '%{http_code}' --connect-timeout 15 --max-time 30 https://example.com/ || echo curl_fail)"
           echo "guest curl https://example.com -> ${CURL_CODE}"
           if [ "${CURL_CODE}" != "200" ]; then
