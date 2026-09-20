@@ -25,19 +25,19 @@ var knownDistroTargets = map[string]distroTarget{
 	DistroDebian: {
 		family:      DistroDebian,
 		destPath:    GuestLeafCertPath,
-		commandName: "update-ca-certificates",
+		commandName: "/usr/sbin/update-ca-certificates",
 		commandArgs: nil,
 	},
 	DistroRHEL: {
 		family:      DistroRHEL,
 		destPath:    "/etc/pki/ca-trust/source/anchors/proxy-ca.pem",
-		commandName: "update-ca-trust",
+		commandName: "/usr/bin/update-ca-trust",
 		commandArgs: []string{"extract"},
 	},
 	DistroAlpine: {
 		family:      DistroAlpine,
 		destPath:    GuestLeafCertPath,
-		commandName: "update-ca-certificates",
+		commandName: "/usr/sbin/update-ca-certificates",
 		commandArgs: nil,
 	},
 }

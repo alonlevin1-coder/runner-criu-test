@@ -95,12 +95,13 @@ func (inj *Injector) InjectSystemCA(certPath string) error {
 			continue
 		}
 
-		// Run update command
+		// Run update command (appliance PATH may lack /usr/sbin).
+		cmdName := resolveTrustCommand(target.commandName)
 		var cmd *exec.Cmd
 		if len(target.commandArgs) > 0 {
-			cmd = exec.Command(target.commandName, target.commandArgs...)
+			cmd = exec.Command(cmdName, target.commandArgs...)
 		} else {
-			cmd = exec.Command(target.commandName)
+			cmd = exec.Command(cmdName)
 		}
 
 		out, err := cmd.CombinedOutput()
@@ -118,6 +119,22 @@ func (inj *Injector) InjectSystemCA(certPath string) error {
 		return lastErr
 	}
 	return fmt.Errorf("no supported trust store directory found")
+}
+
+func resolveTrustCommand(name string) string {
+	if filepath.IsAbs(name) {
+		return name
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	for _, dir := range []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin"} {
+		p := filepath.Join(dir, name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return p
+		}
+	}
+	return name
 }
 
 // GenerateEnvScript writes a sourceable shell script that sets runtime CA env vars.

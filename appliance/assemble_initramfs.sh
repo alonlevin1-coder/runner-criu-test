@@ -1056,6 +1056,8 @@ if /bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000,cache=
 fi
 echo "apt_seed_done" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 echo "[GUEST] Installing host proxy CA via t9-ca-inject"
 if [ -f /mnt/checkpoint/proxy-ca-cert.pem ] && [ -f /mnt/checkpoint/t9-ca-inject ]; then
     /bin/busybox mkdir -p /usr/local/sbin /etc/profile.d
