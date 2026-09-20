@@ -10,3 +10,4 @@ appliance/ssh_id_ed25519
 appliance/ssh_id_ed25519.pub
 bin/proxy_core
 bin/t9-ca-inject
+visibility/ebpf/vmlinux.h

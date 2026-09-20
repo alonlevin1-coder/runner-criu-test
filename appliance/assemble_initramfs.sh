@@ -157,11 +157,13 @@ if [ -f "${REPO_DIR}/scripts/guest_start_lineage.sh" ]; then
     cp -a "${REPO_DIR}/scripts/guest_start_lineage.sh" "${STAGING}/guest_start_lineage.sh"
     chmod 755 "${STAGING}/guest_start_lineage.sh"
 fi
-if [ -d "${REPO_DIR}/visibility/ebpf" ]; then
-    mkdir -p "${STAGING}/t9-ebpf/parsers"
-    cp -a "${REPO_DIR}/visibility/ebpf/"*.c "${STAGING}/t9-ebpf/" 2>/dev/null || true
-    cp -a "${REPO_DIR}/visibility/ebpf/"*.py "${STAGING}/t9-ebpf/" 2>/dev/null || true
-    cp -a "${REPO_DIR}/visibility/ebpf/parsers/"*.py "${STAGING}/t9-ebpf/parsers/" 2>/dev/null || true
+if [ -d "${REPO_DIR}/visibility/ebpf/prebuilt" ]; then
+    mkdir -p "${STAGING}/t9-ebpf"
+    cp -a "${REPO_DIR}/visibility/ebpf/prebuilt/"*.bpf.o "${STAGING}/t9-ebpf/" 2>/dev/null || true
+fi
+if [ -x "${REPO_DIR}/bin/t9-lineage" ]; then
+    cp -a "${REPO_DIR}/bin/t9-lineage" "${STAGING}/t9-lineage"
+    chmod 755 "${STAGING}/t9-lineage"
 fi
 
 # Dropbear for two-stage SSH (host helper runs criu restore after boot).
@@ -859,6 +861,11 @@ if [ -d /t9-ebpf ]; then
     /bin/busybox mkdir -p /newroot/usr/local/share/t9-ebpf
     /bin/busybox cp -a /t9-ebpf/. /newroot/usr/local/share/t9-ebpf/
 fi
+if [ -f /t9-lineage ]; then
+    /bin/busybox mkdir -p /newroot/usr/local/sbin
+    /bin/busybox cp -a /t9-lineage /newroot/usr/local/sbin/t9-lineage
+    /bin/busybox chmod 755 /newroot/usr/local/sbin/t9-lineage
+fi
 if [ -f /guest_start_lineage.sh ]; then
     /bin/busybox mkdir -p /newroot/usr/local/sbin
     /bin/busybox cp -a /guest_start_lineage.sh /newroot/usr/local/sbin/guest_start_lineage.sh
@@ -1118,10 +1125,14 @@ elif [ -f /mnt/checkpoint/guest_start_lineage.sh ]; then
     if [ -d /mnt/checkpoint/ebpf ]; then
         /bin/busybox cp -a /mnt/checkpoint/ebpf/. /usr/local/share/t9-ebpf/
     fi
+    if [ -x /mnt/checkpoint/t9-lineage ]; then
+        /bin/busybox cp -a /mnt/checkpoint/t9-lineage /usr/local/sbin/t9-lineage
+        /bin/busybox chmod 755 /usr/local/sbin/t9-lineage
+    fi
     LINEAGE_SH=/usr/local/sbin/guest_start_lineage.sh
 fi
 if [ -n "${LINEAGE_SH}" ]; then
-    echo "[GUEST] starting eBPF lineage agent in background (not blocking restore)"
+    echo "[GUEST] starting eBPF lineage loader in background (prebuilt objects)"
     T9_LINEAGE_WAIT=0 /usr/bin/bash "${LINEAGE_SH}" \
         >> /mnt/checkpoint/lineage_agent.log 2>&1 &
     echo "lineage_bg" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true

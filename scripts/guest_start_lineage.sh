@@ -1,64 +1,60 @@
 #!/usr/bin/env bash
-# Load process/socket eBPF filters in the guest (same 6.17 headers as bzImage).
+# Load prebuilt process/socket eBPF objects (no clang/BCC at runtime).
 set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 CHECKPOINT="${CHECKPOINT_DIR:-/mnt/checkpoint}"
 export CHECKPOINT_DIR="${CHECKPOINT}"
 SHARE="${T9_EBPF_DIR:-/usr/local/share/t9-ebpf}"
-if [ ! -f "${SHARE}/t9_lineage_agent.py" ] && [ -f "${CHECKPOINT}/ebpf/t9_lineage_agent.py" ]; then
+if [ ! -f "${SHARE}/monitor.bpf.o" ] && [ -f "${CHECKPOINT}/ebpf/monitor.bpf.o" ]; then
   SHARE="${CHECKPOINT}/ebpf"
 fi
 LOG="${CHECKPOINT}/lineage.log"
 AGENT_LOG="${CHECKPOINT}/lineage_agent.log"
-HDR_ROOT=/tmp/t9-kheaders
-KVER="6.17.0-40-generic"
+STATE="${CHECKPOINT}/state.txt"
 
-mkdir -p /sys/fs/bpf /sys/fs/cgroup /sys/kernel/debug /sys/kernel/tracing "${HDR_ROOT}"
+BIN=""
+for candidate in \
+    /usr/local/sbin/t9-lineage \
+    "${SHARE}/t9-lineage" \
+    "${CHECKPOINT}/t9-lineage" \
+    "${CHECKPOINT}/ebpf/t9-lineage"
+do
+  if [ -x "${candidate}" ]; then
+    BIN="${candidate}"
+    break
+  fi
+done
+if [ -z "${BIN}" ]; then
+  echo "FAIL: t9-lineage binary missing" | tee -a "${AGENT_LOG}"
+  exit 1
+fi
+if [ ! -f "${SHARE}/monitor.bpf.o" ] || [ ! -f "${SHARE}/tracer.bpf.o" ]; then
+  echo "FAIL: prebuilt BPF objects missing in ${SHARE}" | tee -a "${AGENT_LOG}"
+  ls -la "${SHARE}" >> "${AGENT_LOG}" 2>/dev/null || true
+  exit 1
+fi
+
+mkdir -p /sys/fs/bpf /sys/fs/cgroup /sys/kernel/debug /sys/kernel/tracing
 mountpoint -q /sys/fs/cgroup || mount -t cgroup2 cgroup2 /sys/fs/cgroup || true
 mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf || true
 mountpoint -q /sys/kernel/debug || mount -t debugfs debugfs /sys/kernel/debug || true
 mountpoint -q /sys/kernel/tracing || mount -t tracefs tracefs /sys/kernel/tracing || true
 
-HDR_TAR=""
-for candidate in \
-    "${CHECKPOINT}/linux-headers-${KVER}.tar.gz" \
-    "${SHARE}/linux-headers-${KVER}.tar.gz" \
-    "/ebpf/linux-headers-${KVER}.tar.gz"
-do
-  if [ -f "${candidate}" ]; then
-    HDR_TAR="${candidate}"
-    break
-  fi
-done
-if [ -n "${HDR_TAR}" ] && [ ! -d "${HDR_ROOT}/linux-headers-${KVER}" ]; then
-  tar -xzf "${HDR_TAR}" -C "${HDR_ROOT}"
-fi
-if [ -d "${HDR_ROOT}/linux-headers-${KVER}" ]; then
-  export BCC_KERNEL_SOURCE="${HDR_ROOT}/linux-headers-${KVER}"
-  mkdir -p "/lib/modules/${KVER}"
-  ln -sfn "${BCC_KERNEL_SOURCE}" "/lib/modules/${KVER}/build"
-fi
-
-if ! python3 -c "from bcc import BPF" >/dev/null 2>&1; then
-  echo "FAIL: python3-bpfcc missing in guest (install on host so /usr overlay has it)" | tee -a "${AGENT_LOG}"
-  exit 1
-fi
-
 : > "${LOG}"
 chmod a+rw "${LOG}" 2>/dev/null || true
-cd "${SHARE}"
-python3 -u "${SHARE}/t9_lineage_agent.py" \
-  --monitor-bpf "${SHARE}/monitor.bpf.c" \
-  --tracer-bpf "${SHARE}/tracer.bpf.c" \
+"${BIN}" \
+  --monitor "${SHARE}/monitor.bpf.o" \
+  --tracer "${SHARE}/tracer.bpf.o" \
   --cgroup /sys/fs/cgroup \
   --log-file "${LOG}" \
+  --state-file "${STATE}" \
   >> "${AGENT_LOG}" 2>&1 &
 echo $! > "${CHECKPOINT}/lineage.pid"
 
 WAIT="${T9_LINEAGE_WAIT:-0}"
 if [ "${WAIT}" -le 0 ]; then
-  echo "[GUEST] t9 lineage agent compiling in background pid=$(cat "${CHECKPOINT}/lineage.pid")"
+  echo "[GUEST] t9 lineage loader started pid=$(cat "${CHECKPOINT}/lineage.pid")"
   exit 0
 fi
 ok=0
@@ -68,16 +64,15 @@ for _ in $(seq 1 "${WAIT}"); do
     break
   fi
   if [ -f "${CHECKPOINT}/lineage.pid" ] && ! kill -0 "$(cat "${CHECKPOINT}/lineage.pid")" 2>/dev/null; then
-    echo "WARN: lineage agent exited during BPF compile" | tee -a "${AGENT_LOG}"
+    echo "WARN: lineage loader exited" | tee -a "${AGENT_LOG}"
     tail -n 40 "${AGENT_LOG}" || true
     exit 1
   fi
   sleep 1
 done
 if [ "${ok}" -ne 1 ]; then
-  echo "WARN: lineage agent did not report start" | tee -a "${AGENT_LOG}"
+  echo "WARN: lineage loader did not report start" | tee -a "${AGENT_LOG}"
   tail -n 40 "${AGENT_LOG}" || true
   exit 1
 fi
-echo "lineage=yes" >> "${CHECKPOINT}/state.txt"
-echo "[GUEST] t9 lineage agent ready"
+echo "[GUEST] t9 lineage loader ready"
