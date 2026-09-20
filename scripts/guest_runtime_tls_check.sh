@@ -111,6 +111,8 @@ const client = new S3Client({
 JS
   (
     cd "${SDKDIR}"
+    export npm_config_cache=/tmp/t9-npm-cache
+    mkdir -p "${npm_config_cache}"
     npm init -y >/dev/null 2>&1
     npm install --no-fund --no-audit @aws-sdk/client-s3@3
     test -d node_modules/@aws-sdk/client-s3 || { echo "FAIL: npm did not install @aws-sdk/client-s3"; ls -la; exit 1; }
