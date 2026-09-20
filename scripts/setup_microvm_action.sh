@@ -351,4 +351,8 @@ export RUNNER_VM_CHECKPOINT="${CHECKPOINT_DIR}"
 export IS_VM_MAX_WAIT_SEC="${IS_VM_MAX_WAIT_SEC:-600}"
 log "Awaiting microVM migration cutover and restore..."
 "${ACTION_DIR}/scripts/is_vm_wait.sh"
+if [ -x "${ACTION_DIR}/scripts/t9_github_env_proxy_ca.sh" ]; then
+    log "Exporting proxy CA into GITHUB_ENV for subsequent actions"
+    CHECKPOINT_DIR="${CHECKPOINT_DIR}" "${ACTION_DIR}/scripts/t9_github_env_proxy_ca.sh" || log "WARN t9_github_env_proxy_ca.sh failed"
+fi
 stage "migrated"

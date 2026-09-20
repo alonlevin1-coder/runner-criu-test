@@ -13,5 +13,9 @@ if [ -x "${ACTION_DIR}/bin/t9-lineage" ]; then
   chmod 755 "${DEST}/t9-lineage" "${CHECKPOINT_DIR}/t9-lineage"
 fi
 cp -a "${SCRIPT_DIR}/guest_start_lineage.sh" "${CHECKPOINT_DIR}/guest_start_lineage.sh"
+if [ -f "${SCRIPT_DIR}/t9_github_env_proxy_ca.sh" ]; then
+  cp -a "${SCRIPT_DIR}/t9_github_env_proxy_ca.sh" "${CHECKPOINT_DIR}/t9_github_env_proxy_ca.sh"
+  chmod 755 "${CHECKPOINT_DIR}/t9_github_env_proxy_ca.sh"
+fi
 chmod 755 "${CHECKPOINT_DIR}/guest_start_lineage.sh"
 echo "guest_lineage_staged=yes" >> "${CHECKPOINT_DIR}/state.txt"

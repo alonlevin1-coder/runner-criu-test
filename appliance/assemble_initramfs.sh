@@ -157,6 +157,10 @@ if [ -f "${REPO_DIR}/scripts/guest_start_lineage.sh" ]; then
     cp -a "${REPO_DIR}/scripts/guest_start_lineage.sh" "${STAGING}/guest_start_lineage.sh"
     chmod 755 "${STAGING}/guest_start_lineage.sh"
 fi
+if [ -f "${REPO_DIR}/scripts/t9_github_env_proxy_ca.sh" ]; then
+    cp -a "${REPO_DIR}/scripts/t9_github_env_proxy_ca.sh" "${STAGING}/t9_github_env_proxy_ca.sh"
+    chmod 755 "${STAGING}/t9_github_env_proxy_ca.sh"
+fi
 if [ -d "${REPO_DIR}/visibility/ebpf/prebuilt" ]; then
     mkdir -p "${STAGING}/t9-ebpf"
     cp -a "${REPO_DIR}/visibility/ebpf/prebuilt/"*.bpf.o "${STAGING}/t9-ebpf/" 2>/dev/null || true
@@ -1102,6 +1106,10 @@ if [ -f /mnt/checkpoint/proxy-ca-cert.pem ] && [ -f /mnt/checkpoint/t9-ca-inject
     then
         echo "[GUEST] t9-ca-inject ok"
         echo "proxy_ca_installed" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+        if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+            /bin/busybox cp -a /etc/ssl/certs/ca-certificates.crt /mnt/checkpoint/ca-bundle-with-proxy.pem
+            /bin/busybox chmod a+r /mnt/checkpoint/ca-bundle-with-proxy.pem 2>/dev/null || true
+        fi
     else
         echo "[GUEST] WARN t9-ca-inject failed"
         echo "proxy_ca_inject_failed" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
@@ -1229,6 +1237,11 @@ for pid in $(/bin/busybox ls /proc 2>/dev/null | /bin/busybox grep -E '^[0-9]+$'
         && echo "uts_hostname pid=${pid} ok" >> "${DIAG}" \
         || echo "uts_hostname pid=${pid} skip" >> "${DIAG}"
 done
+if [ -x /mnt/checkpoint/t9_github_env_proxy_ca.sh ]; then
+    echo "[GUEST] exporting proxy CA into restored GITHUB_ENV"
+    CHECKPOINT_DIR=/mnt/checkpoint /bin/busybox sh /mnt/checkpoint/t9_github_env_proxy_ca.sh \
+        >> /mnt/checkpoint/github_env_ca.log 2>&1 || true
+fi
 echo "post_restore_diag written" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 sync
 exit 0
