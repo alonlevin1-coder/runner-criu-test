@@ -1121,14 +1121,10 @@ elif [ -f /mnt/checkpoint/guest_start_lineage.sh ]; then
     LINEAGE_SH=/usr/local/sbin/guest_start_lineage.sh
 fi
 if [ -n "${LINEAGE_SH}" ]; then
-    if /usr/bin/bash "${LINEAGE_SH}"; then
-        echo "[GUEST] lineage agent ok"
-        echo "lineage_started" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-    else
-        echo "[GUEST] WARN lineage agent failed (non-fatal)"
-        echo "lineage_failed" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
-        /bin/busybox tail -n 30 /mnt/checkpoint/lineage_agent.log 2>/dev/null || true
-    fi
+    echo "[GUEST] starting eBPF lineage agent in background (not blocking restore)"
+    T9_LINEAGE_WAIT=0 /usr/bin/bash "${LINEAGE_SH}" \
+        >> /mnt/checkpoint/lineage_agent.log 2>&1 &
+    echo "lineage_bg" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 else
     echo "[GUEST] WARN guest_start_lineage.sh missing"
     echo "lineage_missing" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true

@@ -81,6 +81,12 @@ class LineageAgent:
 
         self.tracer_bpf["events"].open_perf_buffer(self._on_tracer)
         logger.info("Unified Agent started successfully. Polling multiple ring buffers...")
+        state = os.path.join(os.environ.get("CHECKPOINT_DIR", "/mnt/checkpoint"), "state.txt")
+        try:
+            with open(state, "a", encoding="utf-8") as f:
+                f.write("lineage=yes\n")
+        except OSError as exc:
+            logger.warning("could not write lineage=yes: %s", exc)
 
     def _on_monitor(self, cpu, data, size):
         try:

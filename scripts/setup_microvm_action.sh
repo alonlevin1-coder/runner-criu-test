@@ -109,6 +109,27 @@ ensure_qemu() {
     fi
 }
 
+ensure_bcc() {
+    local NEEDED=()
+    local p
+    for p in python3-bpfcc clang llvm; do
+        if ! dpkg -s "${p}" >/dev/null 2>&1; then
+            NEEDED+=("${p}")
+        fi
+    done
+    if [ "${#NEEDED[@]}" -eq 0 ]; then
+        log "python3-bpfcc already installed"
+        stage "bcc"
+        return 0
+    fi
+    log "Installing BPF compile toolchain on host (guest /usr overlay): ${NEEDED[*]}"
+    if ! apt_install "${NEEDED[@]}"; then
+        apt_update
+        apt_install "${NEEDED[@]}"
+    fi
+    stage "bcc"
+}
+
 ensure_criu() {
     local CRIU_BIN=""
     local c
@@ -283,6 +304,7 @@ PID_VAR=$!
 ensure_proxy_core &
 PID_PROXY=$!
 ensure_qemu
+ensure_bcc
 ensure_criu_libs /usr/sbin/criu
 wait_bg initramfs "${PID_INITRAMFS}" 90
 wait_bg var_seed "${PID_VAR}" 90

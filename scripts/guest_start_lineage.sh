@@ -4,6 +4,7 @@ set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 CHECKPOINT="${CHECKPOINT_DIR:-/mnt/checkpoint}"
+export CHECKPOINT_DIR="${CHECKPOINT}"
 SHARE="${T9_EBPF_DIR:-/usr/local/share/t9-ebpf}"
 if [ ! -f "${SHARE}/t9_lineage_agent.py" ] && [ -f "${CHECKPOINT}/ebpf/t9_lineage_agent.py" ]; then
   SHARE="${CHECKPOINT}/ebpf"
@@ -40,10 +41,8 @@ if [ -d "${HDR_ROOT}/linux-headers-${KVER}" ]; then
 fi
 
 if ! python3 -c "from bcc import BPF" >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y -q >/tmp/t9-bcc-apt.log 2>&1 || true
-  apt-get install -y -q --no-install-recommends python3-bpfcc clang llvm >/tmp/t9-bcc-apt.log 2>&1 \
-    || echo "WARN: could not apt-install python3-bpfcc" | tee -a "${AGENT_LOG}"
+  echo "FAIL: python3-bpfcc missing in guest (install on host so /usr overlay has it)" | tee -a "${AGENT_LOG}"
+  exit 1
 fi
 
 : > "${LOG}"
@@ -57,8 +56,13 @@ python3 -u "${SHARE}/t9_lineage_agent.py" \
   >> "${AGENT_LOG}" 2>&1 &
 echo $! > "${CHECKPOINT}/lineage.pid"
 
+WAIT="${T9_LINEAGE_WAIT:-0}"
+if [ "${WAIT}" -le 0 ]; then
+  echo "[GUEST] t9 lineage agent compiling in background pid=$(cat "${CHECKPOINT}/lineage.pid")"
+  exit 0
+fi
 ok=0
-for _ in $(seq 1 90); do
+for _ in $(seq 1 "${WAIT}"); do
   if grep -q "Unified Agent started successfully" "${AGENT_LOG}" 2>/dev/null; then
     ok=1
     break
