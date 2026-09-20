@@ -73,6 +73,10 @@ prepare_tap() {
         exit 1
     fi
     log "host L7 proxy ready"
+    chmod +x "${SCRIPT_DIR}/stage_guest_lineage.sh"
+    if ! "${SCRIPT_DIR}/stage_guest_lineage.sh" "${CHECKPOINT_DIR}"; then
+        log "WARN stage_guest_lineage.sh failed"
+    fi
     chmod +x "${SCRIPT_DIR}/host_tap_https_intercept.sh"
     log "installing TAP :443 intercept to host proxy"
     if ! "${SCRIPT_DIR}/host_tap_https_intercept.sh" "${CHECKPOINT_DIR}"; then

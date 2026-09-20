@@ -153,6 +153,16 @@ if [ -f "${REPO_DIR}/scripts/t9_host_units.sh" ]; then
     cp -a "${REPO_DIR}/scripts/t9_host_units.sh" "${STAGING}/t9_host_units.sh"
     chmod 755 "${STAGING}/t9_host_units.sh"
 fi
+if [ -f "${REPO_DIR}/scripts/guest_start_lineage.sh" ]; then
+    cp -a "${REPO_DIR}/scripts/guest_start_lineage.sh" "${STAGING}/guest_start_lineage.sh"
+    chmod 755 "${STAGING}/guest_start_lineage.sh"
+fi
+if [ -d "${REPO_DIR}/visibility/ebpf" ]; then
+    mkdir -p "${STAGING}/t9-ebpf/parsers"
+    cp -a "${REPO_DIR}/visibility/ebpf/"*.c "${STAGING}/t9-ebpf/" 2>/dev/null || true
+    cp -a "${REPO_DIR}/visibility/ebpf/"*.py "${STAGING}/t9-ebpf/" 2>/dev/null || true
+    cp -a "${REPO_DIR}/visibility/ebpf/parsers/"*.py "${STAGING}/t9-ebpf/parsers/" 2>/dev/null || true
+fi
 
 # Dropbear for two-stage SSH (host helper runs criu restore after boot).
 echo "[4b/7] Packaging dropbear..."
@@ -845,6 +855,15 @@ if [ -f /t9_host_units.sh ]; then
     /bin/busybox cp -a /t9_host_units.sh /newroot/usr/local/sbin/t9_host_units.sh
     /bin/busybox chmod 755 /newroot/t9_host_units.sh /newroot/usr/local/sbin/t9_host_units.sh
 fi
+if [ -d /t9-ebpf ]; then
+    /bin/busybox mkdir -p /newroot/usr/local/share/t9-ebpf
+    /bin/busybox cp -a /t9-ebpf/. /newroot/usr/local/share/t9-ebpf/
+fi
+if [ -f /guest_start_lineage.sh ]; then
+    /bin/busybox mkdir -p /newroot/usr/local/sbin
+    /bin/busybox cp -a /guest_start_lineage.sh /newroot/usr/local/sbin/guest_start_lineage.sh
+    /bin/busybox chmod 755 /newroot/usr/local/sbin/guest_start_lineage.sh
+fi
 /bin/busybox cp -a /bin/busybox /newroot/bin/busybox 2>/dev/null || true
 /bin/busybox chmod 755 /newroot/bin/busybox 2>/dev/null || true
 
@@ -865,6 +884,11 @@ done
 # 6. Mount pristine virtual kernel filesystems in /newroot
 /bin/busybox mount -t proc proc /newroot/proc 2>/dev/null || true
 /bin/busybox mount -t sysfs sysfs /newroot/sys 2>/dev/null || true
+/bin/busybox mkdir -p /newroot/sys/fs/cgroup /newroot/sys/fs/bpf /newroot/sys/kernel/debug /newroot/sys/kernel/tracing
+/bin/busybox mount -t cgroup2 cgroup2 /newroot/sys/fs/cgroup 2>/dev/null || true
+/bin/busybox mount -t bpf bpf /newroot/sys/fs/bpf 2>/dev/null || true
+/bin/busybox mount -t debugfs debugfs /newroot/sys/kernel/debug 2>/dev/null || true
+/bin/busybox mount -t tracefs tracefs /newroot/sys/kernel/tracing 2>/dev/null || true
 /bin/busybox mount -t devtmpfs devtmpfs /newroot/dev 2>/dev/null || true
 /bin/busybox mount -t tmpfs -o mode=0755 tmpfs /newroot/run 2>/dev/null || true
 /bin/busybox mount -t tmpfs -o mode=1777 tmpfs /newroot/tmp 2>/dev/null || true
@@ -1081,6 +1105,33 @@ elif [ -f /mnt/checkpoint/proxy-ca-cert.pem ]; then
 else
     echo "[GUEST] WARN proxy-ca-cert.pem missing; HTTPS intercept will fail TLS"
     echo "proxy_ca_missing" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+fi
+
+echo "[GUEST] Starting eBPF lineage agent"
+LINEAGE_SH=""
+if [ -x /usr/local/sbin/guest_start_lineage.sh ]; then
+    LINEAGE_SH=/usr/local/sbin/guest_start_lineage.sh
+elif [ -f /mnt/checkpoint/guest_start_lineage.sh ]; then
+    /bin/busybox mkdir -p /usr/local/sbin /usr/local/share/t9-ebpf
+    /bin/busybox cp -a /mnt/checkpoint/guest_start_lineage.sh /usr/local/sbin/guest_start_lineage.sh
+    /bin/busybox chmod 755 /usr/local/sbin/guest_start_lineage.sh
+    if [ -d /mnt/checkpoint/ebpf ]; then
+        /bin/busybox cp -a /mnt/checkpoint/ebpf/. /usr/local/share/t9-ebpf/
+    fi
+    LINEAGE_SH=/usr/local/sbin/guest_start_lineage.sh
+fi
+if [ -n "${LINEAGE_SH}" ]; then
+    if /usr/bin/bash "${LINEAGE_SH}"; then
+        echo "[GUEST] lineage agent ok"
+        echo "lineage_started" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+    else
+        echo "[GUEST] WARN lineage agent failed (non-fatal)"
+        echo "lineage_failed" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+        /bin/busybox tail -n 30 /mnt/checkpoint/lineage_agent.log 2>/dev/null || true
+    fi
+else
+    echo "[GUEST] WARN guest_start_lineage.sh missing"
+    echo "lineage_missing" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 fi
 
 TCP_FLAG="--tcp-close"

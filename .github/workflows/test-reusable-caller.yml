@@ -94,6 +94,21 @@ jobs:
           fi
           echo "CONFIRMED: guest HTTPS intercepted and logged"
 
+          echo "--- eBPF process lineage ---"
+          if ! grep -q 'lineage=yes' /mnt/checkpoint/state.txt 2>/dev/null; then
+            echo "FAIL: guest eBPF lineage agent did not start"
+            cat /mnt/checkpoint/lineage_agent.log 2>/dev/null | tail -n 50 || true
+            cat /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
+            exit 1
+          fi
+          if ! grep -Eq '"event_type": "(PROCESS_EXECVE|CONNECTION_OPEN)"' /mnt/checkpoint/lineage.log 2>/dev/null; then
+            echo "FAIL: lineage.log has no execve/connect events"
+            cat /mnt/checkpoint/lineage.log 2>/dev/null | tail -n 20 || true
+            cat /mnt/checkpoint/lineage_agent.log 2>/dev/null | tail -n 40 || true
+            exit 1
+          fi
+          echo "CONFIRMED: eBPF lineage events in /mnt/checkpoint/lineage.log"
+
           echo "--- Runtime HTTPS + public S3 (python/node/aws SDK) ---"
           "${GITHUB_WORKSPACE}/scripts/guest_runtime_tls_check.sh"
           if ! grep -Eiq 'amazonaws|s3\.|noaa-goes16' /mnt/checkpoint/http.log 2>/dev/null; then
