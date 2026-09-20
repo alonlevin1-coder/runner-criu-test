@@ -74,5 +74,7 @@ func applyResponseModifications(resp *http.Response, mod *types.ResponseModifica
 			resp.Header = make(http.Header)
 		}
 		resp.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+		resp.Header.Del("Transfer-Encoding")
+		resp.TransferEncoding = nil
 	}
 }

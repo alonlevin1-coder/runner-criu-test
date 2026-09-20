@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,6 +116,8 @@ func NewProxyServer(
 	} else {
 		proxy.Tr.TLSClientConfig.InsecureSkipVerify = true
 	}
+	// Do not decompress upstream bodies: that clears Content-Length and forces chunked MITM replies.
+	proxy.Tr.DisableCompression = true
 
 	_, listenPort, _ := net.SplitHostPort(listenAddr)
 
@@ -201,9 +204,16 @@ func NewProxyServer(
 			}
 		}
 
+		needReqBody := false
+		for _, r := range rules {
+			if r.Intercept.Payload.IncludeRequestBody {
+				needReqBody = true
+				break
+			}
+		}
 		var reqData types.RequestData
 		if len(rules) > 0 {
-			reqData = extractRequestData(req)
+			reqData = extractRequestData(req, needReqBody)
 		}
 
 		for _, rule := range requestPhaseRules {
@@ -238,7 +248,7 @@ func NewProxyServer(
 
 			if result.Request != nil {
 				applyRequestModifications(req, result.Request)
-				reqData = extractRequestData(req)
+				reqData = extractRequestData(req, needReqBody)
 				ps.logger.Info("Handler response applied",
 					"rule", rule.Name,
 					"duration", duration,
@@ -280,7 +290,9 @@ func NewProxyServer(
 				"status", resp.StatusCode,
 			)
 
-			respData := extractResponseData(resp)
+			needRespBody := rule.Intercept.Payload.IncludeResponseBody
+			respData := extractResponseData(resp, needRespBody)
+			syncKnownContentLength(resp)
 			start := time.Now()
 			ctxReqContext := context.Background()
 			if ctx.Req != nil && ctx.Req.Context() != nil {
@@ -314,6 +326,7 @@ func NewProxyServer(
 			}
 		}
 
+		syncKnownContentLength(resp)
 		return resp
 	})
 
@@ -409,20 +422,6 @@ func (tl *transparentListener) Accept() (net.Conn, error) {
 		}
 
 		if buf[0] == 0x16 && tl.certCache != nil {
-			rec, err := readTLSRecord(conn, buf[:n])
-			if err != nil {
-				conn.Close()
-				continue
-			}
-			sni := parseClientHelloSNI(rec)
-			if sniBypass(sni) {
-				if tl.logger != nil {
-					tl.logger.Info("TLS passthrough (no MITM)", "sni", sni, "origDst", origDst)
-				}
-				go spliceBypass(conn, rec, origDst, sni)
-				continue
-			}
-			pConn.prefix = rec
 			tlsConfig := &tls.Config{
 				GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 					if hello.ServerName != "" {
@@ -461,7 +460,7 @@ func (o *origDstConn) GetOriginalDst() *net.TCPAddr {
 	return o.origDst
 }
 
-func extractRequestData(req *http.Request) types.RequestData {
+func extractRequestData(req *http.Request, includeBody bool) types.RequestData {
 	var reqData types.RequestData
 	if req == nil {
 		return reqData
@@ -483,11 +482,13 @@ func extractRequestData(req *http.Request) types.RequestData {
 	}
 	reqData.Headers = headers
 
-	if req.Body != nil {
+	if includeBody && req.Body != nil {
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err == nil {
 			req.Body.Close()
 			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			req.ContentLength = int64(len(bodyBytes))
+			req.Header.Set("Content-Length", strconv.FormatInt(req.ContentLength, 10))
 			bodyStr := string(bodyBytes)
 			reqData.Body = &bodyStr
 		}
@@ -496,7 +497,7 @@ func extractRequestData(req *http.Request) types.RequestData {
 	return reqData
 }
 
-func extractResponseData(resp *http.Response) types.ResponseData {
+func extractResponseData(resp *http.Response, includeBody bool) types.ResponseData {
 	var respData types.ResponseData
 	if resp == nil {
 		return respData
@@ -511,15 +512,48 @@ func extractResponseData(resp *http.Response) types.ResponseData {
 	}
 	respData.Headers = headers
 
-	if resp.Body != nil {
+	if includeBody && resp.Body != nil {
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err == nil {
 			resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			resp.ContentLength = int64(len(bodyBytes))
+			if resp.Header == nil {
+				resp.Header = make(http.Header)
+			}
+			resp.Header.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+			resp.Header.Del("Transfer-Encoding")
+			resp.TransferEncoding = nil
 			bodyStr := string(bodyBytes)
 			respData.Body = &bodyStr
 		}
 	}
 
 	return respData
+}
+
+func syncKnownContentLength(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
+	if resp.ContentLength > 0 {
+		resp.Header.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+		resp.Header.Del("Transfer-Encoding")
+		resp.TransferEncoding = nil
+		return
+	}
+	cl := resp.Header.Get("Content-Length")
+	if cl == "" {
+		return
+	}
+	n, err := strconv.ParseInt(cl, 10, 64)
+	if err != nil {
+		return
+	}
+	resp.ContentLength = n
+	resp.Header.Del("Transfer-Encoding")
+	resp.TransferEncoding = nil
 }
