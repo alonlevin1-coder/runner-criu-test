@@ -126,6 +126,46 @@ jobs:
           fi
           echo "CONFIRMED: public S3 traffic intercepted and logged"
 
+          echo "--- HTTP x PID lineage ---"
+          python3 "${GITHUB_WORKSPACE}/scripts/correlate_http_lineage.py" --self-test
+          python3 "${GITHUB_WORKSPACE}/scripts/correlate_http_lineage.py" \
+            --http /mnt/checkpoint/http.log \
+            --lineage /mnt/checkpoint/lineage.log \
+            --out /mnt/checkpoint/http_lineage.log
+          if [ ! -s /mnt/checkpoint/http_lineage.log ]; then
+            echo "FAIL: http_lineage.log empty"
+            cat /mnt/checkpoint/http.log 2>/dev/null | tail -n 20 || true
+            exit 1
+          fi
+          if ! grep -q '"host":"example.com"' /mnt/checkpoint/http_lineage.log \
+             || ! grep -q '"matched":true' /mnt/checkpoint/http_lineage.log; then
+            echo "FAIL: example.com HTTP was not joined to a guest socket/PID"
+            cat /mnt/checkpoint/http_lineage.log | tail -n 40 || true
+            exit 1
+          fi
+          if ! python3 - <<'PY'
+import json
+ok_ex = ok_s3 = False
+with open("/mnt/checkpoint/http_lineage.log", encoding="utf-8") as fh:
+    for line in fh:
+        rec = json.loads(line)
+        if not rec.get("matched") or not rec.get("pid"):
+            continue
+        host = (rec.get("host") or "").lower()
+        if host.startswith("example.com"):
+            ok_ex = True
+        if "amazonaws" in host or "s3." in host or "noaa-goes16" in host:
+            ok_s3 = True
+print(f"matched example.com={ok_ex} s3={ok_s3}")
+raise SystemExit(0 if ok_ex and ok_s3 else 1)
+PY
+          then
+            echo "FAIL: expected matched PID lineage for example.com and public S3"
+            cat /mnt/checkpoint/http_lineage.log | tail -n 50 || true
+            exit 1
+          fi
+          echo "CONFIRMED: HTTP transactions joined to guest PID lineage in /mnt/checkpoint/http_lineage.log"
+
           echo "--- Checking /usr overlay and private /etc ---"
           if ! mount | grep -E "on /usr type overlay"; then
             echo "FAIL: /usr is not mounted as overlay!"

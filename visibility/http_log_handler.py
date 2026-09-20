@@ -51,6 +51,7 @@ class HttpLogHandler(http.server.BaseHTTPRequestHandler):
 
         request = data.get("request") or {}
         response = data.get("response") or {}
+        meta = data.get("meta") or {}
         req_headers = request.get("headers") or {}
         host = _header(req_headers, "Host")
         event = {
@@ -62,6 +63,9 @@ class HttpLogHandler(http.server.BaseHTTPRequestHandler):
             "host": host,
             "path": request.get("path", ""),
             "status": response.get("status") if response else None,
+            "client_addr": meta.get("client_addr", ""),
+            "server_addr": meta.get("server_addr", ""),
+            "request_id": meta.get("request_id", ""),
             "request_headers": req_headers,
             "response_headers": response.get("headers") or {},
         }
