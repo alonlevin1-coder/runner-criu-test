@@ -1,0 +1,12 @@
+# Catch-all HTTP logging. No request mutation (secret injection is later).
+rules:
+  - name: "http-log-response"
+    match: {}
+    intercept:
+      phase: "RESPONSE"
+      handler_endpoint: "http://127.0.0.1:8091/log"
+      payload:
+        include_request_headers: true
+        include_request_body: false
+        include_response_headers: true
+        include_response_body: false

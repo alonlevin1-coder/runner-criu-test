@@ -16,7 +16,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p .github/actions/microvm
-          cp -a action.yml scripts appliance bin .github/actions/microvm/ 2>/dev/null || true
+          cp -a action.yml scripts appliance bin visibility .github/actions/microvm/ 2>/dev/null || true
 
       - name: Migrate Runner to MicroVM
         uses: ./.github/actions/microvm
@@ -45,6 +45,22 @@ jobs:
           echo "${UPTIME}" > /tmp/vm_step1_uptime.txt
           echo "step1_completed" > /tmp/vm_step1_marker.txt
           
+          echo "--- Host L7 proxy (stage 1: listen on TAP, no intercept yet) ---"
+          if [ ! -f /mnt/checkpoint/state.txt ] || ! grep -q "host_proxy=yes" /mnt/checkpoint/state.txt; then
+            echo "FAIL: host proxy did not start during TAP prepare"
+            cat /mnt/checkpoint/host_proxy.log 2>/dev/null || true
+            cat /mnt/checkpoint/proxy_core.log 2>/dev/null || true
+            cat /mnt/checkpoint/state.txt 2>/dev/null || true
+            exit 1
+          fi
+          grep "host_proxy=yes" /mnt/checkpoint/state.txt
+          if [ ! -s /mnt/checkpoint/proxy-ca-cert.pem ]; then
+            echo "FAIL: proxy CA cert missing from checkpoint (guest will need it later)"
+            ls -la /mnt/checkpoint/proxy-ca-cert.pem /tmp/t9-proxy-ca 2>/dev/null || true
+            exit 1
+          fi
+          echo "CONFIRMED: host proxy started ($(grep host_proxy=yes /mnt/checkpoint/state.txt))"
+
           echo "--- Checking /usr overlay and private /etc ---"
           if ! mount | grep -E "on /usr type overlay"; then
             echo "FAIL: /usr is not mounted as overlay!"

@@ -8,3 +8,4 @@ debug_logs/
 vm_serial.log
 appliance/ssh_id_ed25519
 appliance/ssh_id_ed25519.pub
+bin/proxy_core

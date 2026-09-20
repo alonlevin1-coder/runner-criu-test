@@ -6,6 +6,7 @@
 set -euo pipefail
 
 CHECKPOINT_DIR="${1:?checkpoint dir}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPEC="${CHECKPOINT_DIR}/network_spec.env"
 LOG="${CHECKPOINT_DIR}/host_tap_cutover.log"
 TAP_PHASE="${TAP_PHASE:-full}"
@@ -63,6 +64,15 @@ prepare_tap() {
     echo "tap" > "${CHECKPOINT_DIR}/net_mode.txt"
     chmod a+rw "${CHECKPOINT_DIR}/net_mode.txt" 2>/dev/null || true
     echo "host_tap_prepare=yes tap_dev=${TAP_DEV}" >> "${CHECKPOINT_DIR}/state.txt"
+
+    # Stage 1: bind L7 proxy to TAP_HOST_IP now that the address exists.
+    chmod +x "${SCRIPT_DIR}/start_host_proxy.sh"
+    log "starting host L7 proxy on ${TAP_HOST_IP}"
+    if ! "${SCRIPT_DIR}/start_host_proxy.sh" "${CHECKPOINT_DIR}"; then
+        log "ERROR: start_host_proxy.sh failed"
+        exit 1
+    fi
+    log "host L7 proxy ready"
 }
 
 steal_tcp() {

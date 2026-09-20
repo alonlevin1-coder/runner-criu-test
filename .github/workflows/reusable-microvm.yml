@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p .github/actions/microvm
-          cp -a action.yml scripts appliance bin .github/actions/microvm/ 2>/dev/null || true
+          cp -a action.yml scripts appliance bin visibility .github/actions/microvm/ 2>/dev/null || true
 
       - name: Migrate to MicroVM
         uses: ./.github/actions/microvm

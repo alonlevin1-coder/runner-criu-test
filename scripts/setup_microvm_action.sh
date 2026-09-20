@@ -157,6 +157,12 @@ ensure_daemonize() {
     fi
 }
 
+ensure_proxy_core() {
+    chmod +x "${ACTION_DIR}/scripts/ensure_proxy_core.sh"
+    "${ACTION_DIR}/scripts/ensure_proxy_core.sh"
+    stage "proxy_core"
+}
+
 ensure_initramfs() {
     local dest="${ACTION_DIR}/appliance/initramfs.cpio.gz"
     if [ -s "${dest}" ]; then
@@ -274,10 +280,13 @@ ensure_initramfs &
 PID_INITRAMFS=$!
 pack_var_seed &
 PID_VAR=$!
+ensure_proxy_core &
+PID_PROXY=$!
 ensure_qemu
 ensure_criu_libs /usr/sbin/criu
 wait_bg initramfs "${PID_INITRAMFS}" 90
 wait_bg var_seed "${PID_VAR}" 90
+wait_bg proxy_core "${PID_PROXY}" 180
 if [ ! -s "${ACTION_DIR}/appliance/initramfs.cpio.gz" ]; then
     log "ERROR: initramfs.cpio.gz missing"
     exit 1
