@@ -107,6 +107,10 @@ jobs:
           if [ "${lineage_ok}" -ne 1 ]; then
             echo "FAIL: guest eBPF lineage agent did not produce events"
             cat /mnt/checkpoint/lineage_agent.log 2>/dev/null | tail -n 50 || true
+            echo "--- lineage.log ---"
+            wc -c /mnt/checkpoint/lineage.log 2>/dev/null || true
+            cat /mnt/checkpoint/lineage.log 2>/dev/null | tail -n 20 || true
+            ps -ef | grep -E 't9-lineage|lineage' | grep -v grep || true
             cat /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
             cat /mnt/checkpoint/state.txt 2>/dev/null || true
             exit 1

@@ -43,14 +43,15 @@ mountpoint -q /sys/kernel/tracing || mount -t tracefs tracefs /sys/kernel/tracin
 
 : > "${LOG}"
 chmod a+rw "${LOG}" 2>/dev/null || true
-"${BIN}" \
+nohup setsid "${BIN}" \
   --monitor "${SHARE}/monitor.bpf.o" \
   --tracer "${SHARE}/tracer.bpf.o" \
   --cgroup /sys/fs/cgroup \
   --log-file "${LOG}" \
   --state-file "${STATE}" \
-  >> "${AGENT_LOG}" 2>&1 &
+  >> "${AGENT_LOG}" 2>&1 < /dev/null &
 echo $! > "${CHECKPOINT}/lineage.pid"
+disown $! 2>/dev/null || true
 
 WAIT="${T9_LINEAGE_WAIT:-0}"
 if [ "${WAIT}" -le 0 ]; then

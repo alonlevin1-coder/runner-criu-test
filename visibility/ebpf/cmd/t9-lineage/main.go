@@ -123,6 +123,7 @@ func main() {
 		mu.Lock()
 		defer mu.Unlock()
 		_, _ = out.Write(append(b, '\n'))
+		_ = out.Sync()
 	}
 
 	var links []link.Link
@@ -221,6 +222,7 @@ func main() {
 		f, err := os.OpenFile(*stateFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err == nil {
 			_, _ = f.WriteString("lineage=yes\n")
+			_ = f.Sync()
 			_ = f.Close()
 		}
 	}
