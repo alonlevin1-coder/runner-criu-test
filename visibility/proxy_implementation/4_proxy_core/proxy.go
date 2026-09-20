@@ -409,6 +409,20 @@ func (tl *transparentListener) Accept() (net.Conn, error) {
 		}
 
 		if buf[0] == 0x16 && tl.certCache != nil {
+			rec, err := readTLSRecord(conn, buf[:n])
+			if err != nil {
+				conn.Close()
+				continue
+			}
+			sni := parseClientHelloSNI(rec)
+			if sniBypass(sni) {
+				if tl.logger != nil {
+					tl.logger.Info("TLS passthrough (no MITM)", "sni", sni, "origDst", origDst)
+				}
+				go spliceBypass(conn, rec, origDst, sni)
+				continue
+			}
+			pConn.prefix = rec
 			tlsConfig := &tls.Config{
 				GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 					if hello.ServerName != "" {
