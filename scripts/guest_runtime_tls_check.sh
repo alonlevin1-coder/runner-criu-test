@@ -14,6 +14,12 @@ export AWS_CA_BUNDLE="${BUNDLE}"
 export GIT_SSL_CAINFO="${BUNDLE}"
 export NODE_EXTRA_CA_CERTS="${LEAF}"
 export PIP_CERT="${BUNDLE}"
+if [ -z "${NODE_OPTIONS:-}" ]; then
+  export NODE_OPTIONS=--use-openssl-ca
+elif [[ " ${NODE_OPTIONS} " != *" --use-openssl-ca "* ]]; then
+  export NODE_OPTIONS="${NODE_OPTIONS} --use-openssl-ca"
+fi
+export npm_config_cafile="${BUNDLE}"
 if [ -n "${GITHUB_ENV:-}" ]; then
   {
     echo "SSL_CERT_FILE=${BUNDLE}"
@@ -23,6 +29,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "GIT_SSL_CAINFO=${BUNDLE}"
     echo "NODE_EXTRA_CA_CERTS=${LEAF}"
     echo "PIP_CERT=${BUNDLE}"
+    echo "NODE_OPTIONS=--use-openssl-ca"
   } >> "${GITHUB_ENV}"
 fi
 fail() { echo "FAIL: $*"; exit 1; }
@@ -89,11 +96,7 @@ ok "boto3 S3 ListObjects s3://${S3_BUCKET}"
 if command -v npm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
   SDKDIR="$(mktemp -d /tmp/t9-aws-sdk.XXXXXX)"
   export T9_S3_BUCKET="${S3_BUCKET}" T9_S3_REGION="${S3_REGION}"
-  (
-    cd "${SDKDIR}"
-    npm init -y >/dev/null 2>&1
-    npm install --no-fund --no-audit --silent @aws-sdk/client-s3@3
-    node -e '
+  cat > "${SDKDIR}/list-s3.cjs" <<'JS'
 const { S3Client, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const client = new S3Client({
   region: process.env.T9_S3_REGION,
@@ -106,7 +109,13 @@ const client = new S3Client({
   if (!n) throw new Error("empty list");
   console.log("aws-sdk-js", n);
 })().catch((e) => { console.error(e); process.exit(1); });
-'
+JS
+  (
+    cd "${SDKDIR}"
+    npm init -y >/dev/null 2>&1
+    npm install --no-fund --no-audit @aws-sdk/client-s3@3
+    test -d node_modules/@aws-sdk/client-s3 || { echo "FAIL: npm did not install @aws-sdk/client-s3"; ls -la; exit 1; }
+    node ./list-s3.cjs
   ) || fail "node AWS SDK S3"
   ok "node @aws-sdk/client-s3 ListObjects s3://${S3_BUCKET}"
 fi

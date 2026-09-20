@@ -1075,6 +1075,7 @@ if [ -f /mnt/checkpoint/proxy-ca-cert.pem ]; then
         echo "AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
         echo "PIP_CERT=/etc/ssl/certs/ca-certificates.crt"
         echo "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/t9-proxy-ca.crt"
+        echo "NODE_OPTIONS=--use-openssl-ca"
     } >> /etc/environment
     echo "proxy_ca_installed" >> /mnt/checkpoint/guest_progress.txt 2>/dev/null || true
 else
