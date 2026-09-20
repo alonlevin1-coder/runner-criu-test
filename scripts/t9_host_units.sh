@@ -40,6 +40,8 @@ unit_skip() {
             return 0 ;;
         systemd-fsck*|systemd-remount-fs.service|systemd-update-utmp*|systemd-machine-id-commit.service)
             return 0 ;;
+        systemd-timedated.service)
+            return 0 ;;
         kmod-static-nodes.service|ldconfig.service|systemd-hwdb-update.service)
             return 0 ;;
         *)
