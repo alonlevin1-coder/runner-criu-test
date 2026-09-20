@@ -151,9 +151,52 @@ def correlate(http_rows: list[dict[str, Any]], lineage_rows: list[dict[str, Any]
             "orig_dst_ip": (match or {}).get("orig_dst_ip", ""),
             "orig_dst_port": (match or {}).get("orig_dst_port"),
             "lineage": lineage,
+            "step": "",
+            "step_kind": "",
         }
         out.append(rec)
     return out
+
+
+def _parse_ts(value: str) -> str:
+    return str(value or "")
+
+
+def lineage_blob(rec: dict[str, Any]) -> str:
+    parts = [str(rec.get("comm") or ""), str(rec.get("host") or "")]
+    for node in rec.get("lineage") or []:
+        parts.append(str(node.get("comm") or ""))
+        parts.extend(str(x) for x in (node.get("cmdline") or []))
+    return " ".join(parts).lower()
+
+
+def assign_steps(recs: list[dict[str, Any]], step_rows: list[dict[str, Any]]) -> None:
+    stamps = []
+    for row in step_rows:
+        name = str(row.get("name") or "").strip()
+        started = _parse_ts(row.get("started_utc") or "")
+        if name:
+            stamps.append((started, name))
+    stamps.sort(key=lambda x: x[0])
+    for rec in recs:
+        blob = lineage_blob(rec)
+        host = str(rec.get("host") or "").lower()
+        comm = str(rec.get("comm") or "").lower()
+        if comm == "snapd" or "snapcraft.io" in host:
+            rec["step"] = "guest daemon"
+            rec["step_kind"] = "daemon"
+            continue
+        if "ntfy.sh" in host or "is_vm_wait" in blob:
+            rec["step"] = "migrate helper"
+            rec["step_kind"] = "helper"
+            continue
+        ts = _parse_ts(rec.get("timestamp_utc") or "")
+        chosen = ""
+        for started, name in stamps:
+            if not started or ts >= started:
+                chosen = name
+        rec["step"] = chosen or "unattributed"
+        rec["step_kind"] = "workflow" if chosen else "unknown"
 
 
 def sibling(*parts: str) -> str:
@@ -247,6 +290,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Correlate http.log with lineage.log")
     parser.add_argument("--http", default="/mnt/checkpoint/http.log")
     parser.add_argument("--lineage", default="/mnt/checkpoint/lineage.log")
+    parser.add_argument("--steps", default="/mnt/checkpoint/steps.jsonl")
     parser.add_argument("--out", default="/mnt/checkpoint/http_lineage.log")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--require-host", action="append", default=[], help="substring that must appear on a matched HTTP host")
@@ -255,13 +299,14 @@ def main() -> int:
         return run_self_test()
 
     recs = correlate(load_jsonl(args.http), load_jsonl(args.lineage))
+    assign_steps(recs, load_jsonl(args.steps))
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as fh:
         for rec in recs:
             fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
             chain = format_lineage(rec.get("lineage") or [])
             print(
-                f"{rec.get('method')} {rec.get('host')}{rec.get('path')} "
+                f"{rec.get('step') or '-'} {rec.get('method')} {rec.get('host')}{rec.get('path')} "
                 f"status={rec.get('status')} client={rec.get('client_addr')} "
                 f"pid={rec.get('pid')} comm={rec.get('comm')} lineage={chain or '-'}",
                 flush=True,

@@ -28,6 +28,7 @@ jobs:
       - name: Step 1 inside MicroVM (Initial Workload)
         run: |
           echo "=== Step 1 inside MicroVM ==="
+          bash "${GITHUB_WORKSPACE}/scripts/t9_mark_step.sh" "Step 1 inside MicroVM (Initial Workload)"
           echo "Kernel: $(uname -r)"
           echo "Hostname: $(hostname)"
           PID1="$(cat /proc/1/comm 2>/dev/null || ps -p 1 -o comm= 2>/dev/null || echo unknown)"
@@ -131,6 +132,7 @@ jobs:
           python3 "${GITHUB_WORKSPACE}/scripts/correlate_http_lineage.py" \
             --http /mnt/checkpoint/http.log \
             --lineage /mnt/checkpoint/lineage.log \
+            --steps /mnt/checkpoint/steps.jsonl \
             --out /mnt/checkpoint/http_lineage.log \
             --require-host example.com \
             --require-host amazonaws
@@ -320,6 +322,7 @@ jobs:
       - name: Step 2 inside MicroVM (Multi-Step Continuation Test)
         run: |
           echo "=== Step 2 inside MicroVM ==="
+          bash "${GITHUB_WORKSPACE}/scripts/t9_mark_step.sh" "Step 2 inside MicroVM (Multi-Step Continuation Test)"
           echo "Kernel: $(uname -r)"
           echo "Hostname: $(hostname)"
           PID1="$(cat /proc/1/comm 2>/dev/null || ps -p 1 -o comm= 2>/dev/null || echo unknown)"
@@ -406,11 +409,17 @@ jobs:
 
           echo "CONFIRMED: Identical guest kernel Boot ID across Step 1 and Step 2: ${BOOT_ID_STEP2}"
           echo "CONFIRMED: Step 1 marker persisted in guest /tmp: $(cat /tmp/vm_step1_marker.txt)"
+          echo "--- Step 2 HTTPS (python + curl) ---"
+          python3 -c 'import urllib.request; urllib.request.urlopen("https://example.com/?t9step=2", timeout=30).read(64)'
+          curl -sS -o /dev/null --connect-timeout 15 --max-time 20 "https://example.com/?t9step=2"
+          echo "CONFIRMED: Step 2 HTTPS issued"
           echo "PASS: Confirmed Step 2 executed inside the SAME persistent MicroVM instance under systemd PID 1!"
 
       - name: Step 3 inside MicroVM (Live Log Streaming Test)
         run: |
           echo "=== Step 3: Live Log Streaming Test ==="
+          bash "${GITHUB_WORKSPACE}/scripts/t9_mark_step.sh" "Step 3 inside MicroVM (Live Log Streaming Test)"
+          curl -sS -o /dev/null --connect-timeout 15 --max-time 20 "https://example.com/?t9step=3" || true
           echo "Guest Hostname: $(hostname)"
           echo "PID 1 is: $(cat /proc/1/comm 2>/dev/null || ps -p 1 -o comm= 2>/dev/null || echo unknown)"
           echo "Step 3 start time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -422,6 +431,15 @@ jobs:
             sleep 1
           done
           echo "Step 3 end time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 "${GITHUB_WORKSPACE}/scripts/correlate_http_lineage.py" \
+            --http /mnt/checkpoint/http.log \
+            --lineage /mnt/checkpoint/lineage.log \
+            --steps /mnt/checkpoint/steps.jsonl \
+            --out /mnt/checkpoint/http_lineage.log
+          if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+            cp -a /mnt/checkpoint/http_lineage.json "${GITHUB_WORKSPACE}/http_lineage.json" 2>/dev/null || true
+            cp -a /mnt/checkpoint/http_lineage.html "${GITHUB_WORKSPACE}/http_lineage.html" 2>/dev/null || true
+          fi
           echo "PASS: Successfully streamed 10 messages from inside MicroVM in Step 3!"
 
       - name: Upload HTTP lineage report

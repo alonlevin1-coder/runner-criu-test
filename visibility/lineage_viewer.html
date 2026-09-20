@@ -121,6 +121,9 @@
     <select id="comm">
       <option value="">All processes</option>
     </select>
+    <select id="step">
+      <option value="">All steps</option>
+    </select>
     <label class="file">Open JSON<input id="file" type="file" accept="application/json,.json" hidden /></label>
   </div>
   <div class="layout">
@@ -128,6 +131,7 @@
       <table>
         <thead>
           <tr>
+            <th>Step</th>
             <th>Status</th>
             <th>Request</th>
             <th>Process</th>
@@ -147,6 +151,7 @@
     const detailEl = document.getElementById("detail");
     const qEl = document.getElementById("q");
     const commEl = document.getElementById("comm");
+    const stepEl = document.getElementById("step");
     const summaryEl = document.getElementById("summary");
     let data = [];
     let selected = -1;
@@ -178,17 +183,20 @@
     function renderList() {
       const q = qEl.value.trim().toLowerCase();
       const comm = commEl.value;
+      const step = stepEl.value;
       rowsEl.innerHTML = "";
       data.forEach((rec, i) => {
         const blob = [
-          rec.method, rec.host, rec.path, rec.comm, rec.pid,
+          rec.step, rec.method, rec.host, rec.path, rec.comm, rec.pid,
           rec.client_addr, (rec.lineage || []).map(n => n.comm).join(" ")
         ].join(" ").toLowerCase();
         if (q && !blob.includes(q)) return;
         if (comm && rec.comm !== comm) return;
+        if (step && rec.step !== step) return;
         const tr = document.createElement("tr");
         if (i === selected) tr.className = "sel";
         tr.innerHTML = `
+          <td>${esc(rec.step || "—")}</td>
           <td class="${statusClass(rec.status)}">${rec.status ?? ""}</td>
           <td><span class="mono">${esc(rec.method || "")}</span> ${esc(rec.host || "")}${esc(rec.path || "")}</td>
           <td>${esc(rec.comm || "—")} <span class="mono">${rec.pid ?? ""}</span></td>
@@ -219,7 +227,7 @@
       detailEl.innerHTML = `
         <div class="mono">${esc(rec.timestamp_utc || "")}</div>
         <h2 style="font-size:16px;margin:8px 0;">${esc(rec.method)} ${esc(rec.host)}${esc(rec.path)}</h2>
-        <div class="sub">status ${esc(rec.status)} · matched ${esc(rec.matched)}</div>
+        <div class="sub">status ${esc(rec.status)} · ${esc(rec.step || "unattributed")} · matched ${esc(rec.matched)}</div>
         <div class="chain">${nodes || "<div class='sub'>No PID chain</div>"}</div>
         <div class="sub">Socket</div>
         <p class="mono">${esc(rec.src_ip || "")}:${esc(rec.src_port || "")} → ${esc(rec.orig_dst_ip || rec.server_addr || "")}:${esc(rec.orig_dst_port || "")}</p>
@@ -232,10 +240,13 @@
     function setData(next) {
       data = Array.isArray(next) ? next : [];
       const matched = data.filter(r => r.matched).length;
-      summaryEl.textContent = `${data.length} HTTP transactions · ${matched} joined to a guest PID`;
+      const steps = [...new Set(data.map(r => r.step).filter(Boolean))];
+      summaryEl.textContent = `${data.length} HTTP transactions · ${matched} joined to a guest PID · ${steps.length} sources`;
       const comms = [...new Set(data.map(r => r.comm).filter(Boolean))].sort();
       commEl.innerHTML = `<option value="">All processes</option>` +
         comms.map(c => `<option>${esc(c)}</option>`).join("");
+      stepEl.innerHTML = `<option value="">All steps</option>` +
+        steps.map(s => `<option>${esc(s)}</option>`).join("");
       selected = data.length ? 0 : -1;
       renderList();
       renderDetail();
@@ -257,6 +268,7 @@
     });
     qEl.addEventListener("input", renderList);
     commEl.addEventListener("change", renderList);
+    stepEl.addEventListener("change", renderList);
     setData(parseEmbedded());
   </script>
 </body>
