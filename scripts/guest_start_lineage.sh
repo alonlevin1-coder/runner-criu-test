@@ -35,6 +35,8 @@ if [ -n "${HDR_TAR}" ] && [ ! -d "${HDR_ROOT}/linux-headers-${KVER}" ]; then
 fi
 if [ -d "${HDR_ROOT}/linux-headers-${KVER}" ]; then
   export BCC_KERNEL_SOURCE="${HDR_ROOT}/linux-headers-${KVER}"
+  mkdir -p "/lib/modules/${KVER}"
+  ln -sfn "${BCC_KERNEL_SOURCE}" "/lib/modules/${KVER}/build"
 fi
 
 if ! python3 -c "from bcc import BPF" >/dev/null 2>&1; then
