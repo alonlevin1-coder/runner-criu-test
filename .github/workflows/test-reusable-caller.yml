@@ -87,6 +87,15 @@ jobs:
           fi
           echo "CONFIRMED: guest HTTPS intercepted and logged"
 
+          echo "--- Runtime HTTPS + public S3 (python/node/aws SDK) ---"
+          "${GITHUB_WORKSPACE}/scripts/guest_runtime_tls_check.sh"
+          if ! grep -Eiq 'amazonaws|s3\.|noaa-goes16' /mnt/checkpoint/http.log 2>/dev/null; then
+            echo "FAIL: host http.log missing S3/AWS transaction after runtime check"
+            cat /mnt/checkpoint/http.log 2>/dev/null | tail -n 40 || true
+            exit 1
+          fi
+          echo "CONFIRMED: public S3 traffic intercepted and logged"
+
           echo "--- Checking /usr overlay and private /etc ---"
           if ! mount | grep -E "on /usr type overlay"; then
             echo "FAIL: /usr is not mounted as overlay!"
