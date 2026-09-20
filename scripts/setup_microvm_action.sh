@@ -353,6 +353,10 @@ log "Awaiting microVM migration cutover and restore..."
 "${ACTION_DIR}/scripts/is_vm_wait.sh"
 if [ -x "${ACTION_DIR}/scripts/t9_github_env_proxy_ca.sh" ]; then
     log "Exporting proxy CA into GITHUB_ENV for subsequent actions"
-    CHECKPOINT_DIR="${CHECKPOINT_DIR}" "${ACTION_DIR}/scripts/t9_github_env_proxy_ca.sh" || log "WARN t9_github_env_proxy_ca.sh failed"
+    if [ -d /mnt/checkpoint ]; then
+        CHECKPOINT_DIR=/mnt/checkpoint
+    fi
+    export CHECKPOINT_DIR
+    "${ACTION_DIR}/scripts/t9_github_env_proxy_ca.sh" || log "WARN t9_github_env_proxy_ca.sh failed"
 fi
 stage "migrated"
