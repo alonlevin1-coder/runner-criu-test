@@ -218,7 +218,7 @@ def main() -> int:
     parser.add_argument("--http", default="/mnt/checkpoint/http.log")
     parser.add_argument("--lineage", default="/mnt/checkpoint/lineage.log")
     parser.add_argument("--out", default="/mnt/checkpoint/http_lineage.log")
-    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--require-host", action="append", default=[], help="substring that must appear on a matched HTTP host")
     args = parser.parse_args()
     if args.self_test:
         return run_self_test()
@@ -237,6 +237,19 @@ def main() -> int:
             )
     matched = sum(1 for r in recs if r.get("matched"))
     print(f"correlated {matched}/{len(recs)} HTTP transactions -> {args.out}", flush=True)
+    missing = []
+    for needle in args.require_host:
+        found = False
+        for rec in recs:
+            host = str(rec.get("host") or "").lower()
+            if rec.get("matched") and rec.get("pid") and needle.lower() in host:
+                found = True
+                break
+        if not found:
+            missing.append(needle)
+    if missing:
+        print(f"FAIL: no matched PID lineage for hosts {missing}", flush=True)
+        return 1
     return 0
 
 
