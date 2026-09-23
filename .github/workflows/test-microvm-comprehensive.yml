@@ -38,7 +38,7 @@ jobs:
           [ -f /tmp/is_vm ] || { echo "FAIL: /tmp/is_vm missing"; exit 1; }
           echo "${KERNEL}" | grep -q "6.17" || { echo "FAIL: Expected microVM kernel 6.17, got ${KERNEL}"; exit 1; }
           [ "${HOST}" = "qemu-restore-vm" ] || { echo "FAIL: Expected hostname qemu-restore-vm, got ${HOST}"; exit 1; }
-          [ "${PID1_COMM}" != "systemd" ] || { echo "FAIL: PID 1 should be init inside VM, got systemd"; exit 1; }
+          [ "${PID1_COMM}" = "systemd" ] || { echo "FAIL: Expected systemd as guest PID 1, got ${PID1_COMM}"; exit 1; }
           echo "PASS: All isolation assertions passed!"
 
       - name: Test 2 - GitHub Actions Primitives (Env & Output Producer)
