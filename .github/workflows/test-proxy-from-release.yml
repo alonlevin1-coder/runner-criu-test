@@ -43,6 +43,7 @@ jobs:
         run: |
           go build -trimpath -ldflags='-s -w' -o "${GITHUB_WORKSPACE}/proxy_core" ./4_proxy_core/
           go build -trimpath -ldflags='-s -w' -o "${GITHUB_WORKSPACE}/t9-ca-inject" ./cmd/t9-ca-inject/
+          cd "${GITHUB_WORKSPACE}"
           sha256sum proxy_core t9-ca-inject > SHA256SUMS
 
       - name: Create prerelease
