@@ -22,6 +22,22 @@ inputs:
     description: 'Optional ntfy.sh topic for migration progress notifications'
     required: false
     default: ''
+  component-source:
+    description: 'Where to get proxy binaries: auto (local tree if present, else release), local, or release'
+    required: false
+    default: 'auto'
+  components-repo:
+    description: 'Feature-release GitHub repo (owner/name) for gh release download. Private OK.'
+    required: false
+    default: ''
+  proxy-release:
+    description: 'Release tag in the feature repo (e.g. proxy-v0.1.0). Required when component-source is release.'
+    required: false
+    default: ''
+  components-token:
+    description: 'Token with contents:read on components-repo if it is not this repository. Prefer a secret.'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -34,8 +50,12 @@ runs:
         INPUT_MEMORY_MB: ${{ inputs.memory-mb }}
         INPUT_SMP: ${{ inputs.smp }}
         INPUT_NTFY_TOPIC: ${{ inputs.ntfy-topic }}
+        T9_COMPONENT_SOURCE: ${{ inputs.component-source }}
+        T9_COMPONENTS_REPO: ${{ inputs.components-repo }}
+        T9_PROXY_RELEASE: ${{ inputs.proxy-release }}
         GITHUB_TOKEN: ${{ github.token }}
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ inputs.components-token != '' && inputs.components-token || github.token }}
+        COMPONENTS_GITHUB_TOKEN: ${{ inputs.components-token != '' && inputs.components-token || github.token }}
       run: |
         chmod +x "${ACTION_DIR}/scripts/"*.sh "${ACTION_DIR}/appliance/"*.sh 2>/dev/null || true
         chmod 600 "${ACTION_DIR}/appliance/ssh_id_ed25519" 2>/dev/null || true

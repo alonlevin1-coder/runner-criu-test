@@ -1,0 +1,13 @@
+# Pins for feature binaries. The action downloads these; it does not vendor source.
+# Repo may stay private. Override with action inputs / env:
+#   T9_COMPONENTS_REPO, T9_PROXY_RELEASE, T9_COMPONENT_SOURCE=auto|local|release
+
+components_repo: "" # e.g. your-org/runner_idea (feature-release repo)
+
+proxy:
+  # Tag created by .github/workflows/release-proxy.yml (proxy-v*).
+  tag: ""
+  assets:
+    - proxy_core
+    - t9-ca-inject
+    - SHA256SUMS

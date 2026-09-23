@@ -1,0 +1,68 @@
+name: Release proxy binaries
+
+# Feature binaries for the composite action. Tag: proxy-v1.2.3
+# Same private repo is fine; later this workflow lives only in the feature repo.
+on:
+  push:
+    tags:
+      - 'proxy-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create or reuse (e.g. proxy-v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate proxy_implementation
+        id: src
+        run: |
+          if [ -f proxy_implementation/go.mod ]; then
+            echo "dir=proxy_implementation" >> "${GITHUB_OUTPUT}"
+          elif [ -f visibility/proxy_implementation/go.mod ]; then
+            echo "dir=visibility/proxy_implementation" >> "${GITHUB_OUTPUT}"
+          else
+            echo "ERROR: no proxy_implementation tree in this checkout"
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ steps.src.outputs.dir }}/go.mod
+
+      - name: Build
+        working-directory: ${{ steps.src.outputs.dir }}
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+          GOTOOLCHAIN: auto
+        run: |
+          go build -trimpath -ldflags='-s -w' -o "${GITHUB_WORKSPACE}/proxy_core" ./4_proxy_core/
+          go build -trimpath -ldflags='-s -w' -o "${GITHUB_WORKSPACE}/t9-ca-inject" ./cmd/t9-ca-inject/
+
+      - name: Checksums
+        run: |
+          sha256sum proxy_core t9-ca-inject > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" proxy_core t9-ca-inject SHA256SUMS --clobber
+          else
+            gh release create "${TAG}" proxy_core t9-ca-inject SHA256SUMS \
+              --title "${TAG}" \
+              --notes "Linux amd64 proxy_core + t9-ca-inject. Private download via GH_TOKEN."
+          fi
